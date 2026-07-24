@@ -1,0 +1,25 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.cache/
+.DS_Store
+wandb/
+
+# Large data and model outputs
+data/*
+!data/.gitkeep
+outputs/*
+!outputs/.gitkeep
+lightning_logs/
+*.ckpt
+*.pt
+*.pth
+*.tif
+*.tgz
+*.tar
+*.tar.gz
+*.zip
