@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "prithvi-crop-head"
+version = "0.1.0"
+description = "Four-band crop/land-cover segmentation with a frozen Prithvi EO 2.0 backbone"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+  "terratorch==1.2.10",
+  "huggingface-hub>=0.30",
+  "rasterio>=1.3.10,<2",
+  "pandas>=2.2,<3",
+  "pyyaml>=6,<7",
+  "tensorboard>=2.18,<3",
+  "tqdm>=4.66,<5",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8,<9",
+  "ruff>=0.9,<1",
+]
+
+[project.scripts]
+prithvi-download = "prithvi_crop.download_data:main"
+prithvi-validate = "prithvi_crop.validate_data:main"
+prithvi-check-config = "prithvi_crop.check_config:main"
+prithvi-preflight = "prithvi_crop.preflight:main"
+prithvi-smoke = "prithvi_crop.smoke:main"
+prithvi-train = "prithvi_crop.train:main"
+prithvi-evaluate = "prithvi_crop.evaluate:main"
+prithvi-visualize = "prithvi_crop.visualize_examples:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
