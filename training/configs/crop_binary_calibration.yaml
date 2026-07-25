@@ -1,0 +1,20 @@
+schema_version: 1
+checkpoint: outputs/prithvi_4band_europe_replay/checkpoints/epoch=02-macro_f1=0.5062.ckpt
+calibration_scope: internal_validation
+validation_chips: 308
+held_out_test_consumed: false
+
+crop_classification:
+  threshold: 0.615
+  objective: maximum_accuracy
+  accuracy: 0.810223
+  balanced_accuracy: 0.809806
+  false_crop_rate: 0.184473
+
+health_analysis:
+  threshold: 0.76
+  constraint: false_crop_rate_at_most_0.10
+  accuracy: 0.793481
+  crop_precision: 0.855011
+  crop_recall: 0.667730
+  false_crop_rate: 0.097850

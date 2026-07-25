@@ -1,0 +1,104 @@
+{
+  "candidates": {
+    "best_accuracy": {
+      "accuracy": 0.8102229826492863,
+      "balanced_accuracy": 0.8098061401791861,
+      "confusion": {
+        "fn": 1305948,
+        "fp": 1422977,
+        "tn": 6290750,
+        "tp": 5359964
+      },
+      "crop_f1": 0.7970886439163251,
+      "crop_iou": 0.6626329029858118,
+      "crop_precision": 0.7902123872225927,
+      "crop_recall": 0.8040856224924662,
+      "false_crop_rate": 0.1844733421340942,
+      "false_non_crop_rate": 0.19591437750753385,
+      "threshold": 0.615
+    },
+    "best_balanced_accuracy": {
+      "accuracy": 0.8096283223799986,
+      "balanced_accuracy": 0.8104723455180625,
+      "confusion": {
+        "fn": 1186164,
+        "fp": 1551312,
+        "tn": 6162415,
+        "tp": 5479748
+      },
+      "crop_f1": 0.8001400601534412,
+      "crop_iou": 0.6668612173648911,
+      "crop_precision": 0.7793629978978988,
+      "crop_recall": 0.8220552566550533,
+      "false_crop_rate": 0.20111056561892843,
+      "false_non_crop_rate": 0.17794474334494664,
+      "threshold": 0.59
+    },
+    "best_crop_f1": {
+      "accuracy": 0.8043919600485102,
+      "balanced_accuracy": 0.8081520506531432,
+      "confusion": {
+        "fn": 934871,
+        "fp": 1877902,
+        "tn": 5835825,
+        "tp": 5731041
+      },
+      "crop_f1": 0.8029561070848005,
+      "crop_iou": 0.6707825100125073,
+      "crop_precision": 0.753198046036092,
+      "crop_recall": 0.8597534740932674,
+      "false_crop_rate": 0.24344937278698092,
+      "false_non_crop_rate": 0.14024652590673264,
+      "threshold": 0.5299999999999999
+    },
+    "default_0_5": {
+      "accuracy": 0.8000088875666489,
+      "balanced_accuracy": 0.8051862672902688,
+      "confusion": {
+        "fn": 824988,
+        "fp": 2050812,
+        "tn": 5662915,
+        "tp": 5840924
+      },
+      "crop_f1": 0.8024543525162856,
+      "crop_iou": 0.6700824759393552,
+      "crop_precision": 0.7401317023275994,
+      "crop_recall": 0.8762377901178413,
+      "false_crop_rate": 0.26586525553730384,
+      "false_non_crop_rate": 0.12376220988215866,
+      "threshold": 0.5
+    },
+    "recommended_for_health_mask": {
+      "accuracy": 0.7934810463600651,
+      "balanced_accuracy": 0.7849401750909714,
+      "confusion": {
+        "fn": 2214883,
+        "fp": 754785,
+        "tn": 6958942,
+        "tp": 4451029
+      },
+      "crop_f1": 0.749853728093118,
+      "crop_iou": 0.5998127938655897,
+      "crop_precision": 0.8550111471520112,
+      "crop_recall": 0.6677299370288716,
+      "false_crop_rate": 0.09784958684692886,
+      "false_non_crop_rate": 0.3322700629711283,
+      "threshold": 0.7599999999999999
+    }
+  },
+  "checkpoint": "D:\\ML_ComputerVision\\prithvi_crop_head_starter\\outputs\\prithvi_4band_europe_replay\\checkpoints\\epoch=02-macro_f1=0.5062.ckpt",
+  "crop_pixels": 6665912,
+  "evaluated_pixels": 14379639,
+  "evaluation_scope": "internal validation only; held-out test not consumed",
+  "non_crop_pixels": 7713727,
+  "runtime": {
+    "batch_size": 32,
+    "chips_per_second": 7.26233960628014,
+    "gpu": "NVIDIA GeForce RTX 3060 Laptop GPU",
+    "num_workers": 4,
+    "peak_gpu_memory_mib": 1642.46044921875,
+    "seconds": 42.41057519998867
+  },
+  "target_false_crop_rate": 0.1,
+  "validation_chips": 308
+}

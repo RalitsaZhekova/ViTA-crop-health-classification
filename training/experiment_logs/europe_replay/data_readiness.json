@@ -1,0 +1,24 @@
+{
+  "array_headers_inspected": true,
+  "dataset_root": "D:\\ML_ComputerVision\\prithvi_crop_head_starter\\data\\europe\\PASTIS",
+  "extra_targets_ignored": 0,
+  "extra_unlabelled_images_ignored": 35,
+  "fold_counts": {
+    "1": 487,
+    "2": 494,
+    "3": 474,
+    "4": 482,
+    "5": 496
+  },
+  "metadata_patches": 2433,
+  "required_images": 2433,
+  "required_targets": 2433,
+  "reserved_fold": 5,
+  "status": "ready",
+  "training_folds": [
+    1,
+    2,
+    3,
+    4
+  ]
+}

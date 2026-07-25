@@ -1,0 +1,25 @@
+schema_version: 1
+storage_policy: referenced_not_copied
+workspace_total_bytes: 52567537171
+datasets:
+  ibm_nasa_multi_temporal_crop:
+    path: ../../data/multi_temporal_crop
+    bytes: 13053171565
+    files: 7722
+    training_chips: 3083
+    official_validation_chips: 771
+    logical_use:
+      train: official training minus internal validation
+      internal_validation: deterministic 10 percent of official training
+      held_out_test: all official validation chips
+  pastis_optical:
+    path: ../../data/europe
+    bytes: 39514365606
+    files: 14636
+    prepared_root: ../../data/europe/pastis/PASTIS
+    training_folds: [1, 2, 3, 4]
+    held_out_fold: 5
+    replay_fraction: 0.20
+checks:
+  duplicate_dataset_copy_created: false
+  original_paths_modified: false
