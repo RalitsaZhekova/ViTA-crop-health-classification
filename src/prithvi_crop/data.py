@@ -12,7 +12,13 @@ import numpy as np
 from einops import rearrange
 from terratorch.datamodules import MultiTemporalCropClassificationDataModule
 from terratorch.datasets import MultiTemporalCropClassification
-from torch.utils.data import Subset
+from torch.utils.data import ConcatDataset, Subset
+
+from prithvi_crop.europe import (
+    OriginalReplayDataset,
+    PastisReplayDataset,
+    european_sample_count,
+)
 
 
 def chip_id_from_image(path: str | Path) -> str:
@@ -142,6 +148,9 @@ class CropTypeDataModule(MultiTemporalCropClassificationDataModule):
         metadata_file_name: str = "chips_df.csv",
         validation_fraction: float = 0.1,
         split_seed: int = 42,
+        european_data_root: str | None = None,
+        european_fraction: float = 0.0,
+        european_folds: Sequence[int] = (1, 2, 3, 4),
         **kwargs: Any,
     ) -> None:
         super().__init__(
@@ -167,6 +176,15 @@ class CropTypeDataModule(MultiTemporalCropClassificationDataModule):
             raise ValueError("validation_fraction must be strictly between 0 and 1")
         self.validation_fraction = validation_fraction
         self.split_seed = split_seed
+        if european_data_root is None and european_fraction != 0:
+            raise ValueError("european_fraction requires european_data_root")
+        if european_data_root is not None and not 0 < european_fraction < 1:
+            raise ValueError(
+                "european_fraction must be strictly between 0 and 1"
+            )
+        self.european_data_root = european_data_root
+        self.european_fraction = european_fraction
+        self.european_folds = tuple(european_folds)
 
     def _make_dataset(self, split: str, transform: A.Compose | None):
         return self.dataset_class(
@@ -197,7 +215,27 @@ class CropTypeDataModule(MultiTemporalCropClassificationDataModule):
                 self.validation_fraction,
                 self.split_seed,
             )
-            self.train_dataset = Subset(train_base, train_indices)
+            original_train = Subset(train_base, train_indices)
+            if self.european_data_root is None:
+                self.train_dataset = original_train
+            else:
+                europe_count = european_sample_count(
+                    len(original_train),
+                    self.european_fraction,
+                )
+                european_train = PastisReplayDataset(
+                    self.european_data_root,
+                    folds=self.european_folds,
+                    max_samples=europe_count,
+                    seed=self.split_seed,
+                    augment=True,
+                )
+                self.train_dataset = ConcatDataset(
+                    [
+                        OriginalReplayDataset(original_train),
+                        european_train,
+                    ]
+                )
             self.val_dataset = Subset(val_base, val_indices)
         elif stage == "validate":
             val_base = self._make_dataset("train", self.val_transform)

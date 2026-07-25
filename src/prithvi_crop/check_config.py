@@ -75,6 +75,29 @@ def check_config(config_path: Path) -> dict[str, Any]:
         "Prithvi TL time and location encodings must be enabled",
     )
     _require(model_args.get("freeze_backbone") is True, "Prithvi backbone must be frozen")
+    initial_checkpoint = model_args.get("initial_checkpoint")
+    if initial_checkpoint is not None:
+        _require(
+            isinstance(initial_checkpoint, str)
+            and initial_checkpoint.endswith(".ckpt"),
+            "initial_checkpoint must reference a .ckpt file",
+        )
+        _must_be_under_outputs(
+            initial_checkpoint,
+            "model.init_args.initial_checkpoint",
+        )
+        transforms = data_args.get("train_transform", [])
+        mandatory_dihedral = [
+            transform
+            for transform in transforms
+            if transform.get("class_path")
+            == "prithvi_crop.transforms.RandomNonIdentityDihedral"
+        ]
+        _require(
+            len(mandatory_dihedral) == 1
+            and mandatory_dihedral[0].get("init_args", {}).get("p", 1.0) == 1.0,
+            "Checkpoint refinement requires mandatory non-identity augmentation",
+        )
     _require(
         model_args.get("freeze_decoder") is False,
         "The randomly initialized downstream decoder must remain trainable",
@@ -166,12 +189,38 @@ def check_config(config_path: Path) -> dict[str, Any]:
         data_args.get("split_seed") == config.get("seed_everything"),
         "Data split seed and global seed must match",
     )
+    european_data_root = data_args.get("european_data_root")
+    if european_data_root is not None:
+        path = Path(european_data_root)
+        _require(
+            not path.is_absolute() and path.parts and path.parts[0] == "data",
+            "european_data_root must be repository-relative under data/",
+        )
+        european_fraction = data_args.get("european_fraction")
+        _require(
+            isinstance(european_fraction, (int, float))
+            and 0 < european_fraction <= 0.2,
+            "European replay must be no more than 20% of training samples",
+        )
+        folds = data_args.get("european_folds")
+        _require(
+            isinstance(folds, list)
+            and folds
+            and set(folds).issubset({1, 2, 3, 4}),
+            "European training must reserve PASTIS fold 5",
+        )
+        _require(
+            0 < model_args.get("crop_binary_loss_weight", 0) <= 0.5,
+            "European replay requires a conservative binary crop loss",
+        )
 
     summary = {
         "bands": expected_bands,
         "frames": 3,
         "classes": NUM_CLASSES,
         "backbone_frozen": True,
+        "initial_checkpoint": initial_checkpoint,
+        "european_data_root": european_data_root,
         "downstream_decoder_and_classifier_trainable": True,
         "accelerator": trainer["accelerator"],
         "precision": trainer["precision"],

@@ -143,6 +143,27 @@ Best and latest checkpoints are kept at the fixed, resume-safe path
 `outputs/prithvi_4band_head_only/checkpoints/`; TensorBoard event logs are
 versioned separately under `outputs/logs/`.
 
+### European replay refinement
+
+The European refinement reuses the best augmented checkpoint, keeps every
+original training sample, and adds a conservative 20% replay share from the
+optical PASTIS dataset. Only unambiguous PASTIS crop labels receive one of the
+existing fine-grained classes; all other supported agricultural labels provide
+crop/non-crop supervision. No output classes are added, and PASTIS fold 5
+remains reserved.
+
+On Windows, the resumable background pipeline downloads the official archive,
+verifies its checksum, extracts only Sentinel-2 arrays, masks and metadata,
+runs preflight and smoke checks, and then launches training:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_europe_replay_pipeline.ps1
+```
+
+The archive, extracted data, checkpoints and logs remain under the ignored
+`data/` and `outputs/` directories. The reusable adapter, configuration and
+tests stay versioned in Git.
+
 The direct equivalent is shown below. Set the cache variables first when you
 want the direct CLI to use the same repository-local caches as the launcher:
 

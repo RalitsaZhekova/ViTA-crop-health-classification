@@ -16,6 +16,7 @@ from terratorch.datasets.transforms import (
 
 from prithvi_crop.data import CropTypeDataModule
 from prithvi_crop.task import CropSegmentationTask
+from prithvi_crop.transforms import RandomNonIdentityDihedral
 
 
 def load_config(config_path: Path) -> dict[str, Any]:
@@ -37,6 +38,10 @@ def _build_transform(items: list[dict[str, Any]]) -> A.Compose:
         "albumentations.HorizontalFlip": A.HorizontalFlip,
         "albumentations.VerticalFlip": A.VerticalFlip,
         "albumentations.RandomRotate90": A.RandomRotate90,
+        "albumentations.Affine": A.Affine,
+        "prithvi_crop.transforms.RandomNonIdentityDihedral": (
+            RandomNonIdentityDihedral
+        ),
     }
     transforms = []
     for item in items:

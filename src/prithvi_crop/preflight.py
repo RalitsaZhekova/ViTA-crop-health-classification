@@ -13,6 +13,7 @@ import torch
 
 from prithvi_crop.check_config import check_config
 from prithvi_crop.constants import CLASS_NAMES
+from prithvi_crop.europe import resolve_pastis_root
 from prithvi_crop.runtime import build_task, load_config
 
 
@@ -80,6 +81,12 @@ def run_preflight(
         ),
         "pretrained_cache": str(_hugging_face_cache()),
     }
+    if data_args.get("european_data_root") is not None:
+        summary["european_data_root"] = str(
+            resolve_pastis_root(data_args["european_data_root"])
+        )
+        summary["european_fraction"] = data_args["european_fraction"]
+        summary["european_folds"] = data_args["european_folds"]
 
     if instantiate_model:
         task = build_task(config)
@@ -96,6 +103,9 @@ def run_preflight(
             raise RuntimeError("The Prithvi backbone is not completely frozen")
         summary["trainable_parameters"] = trainable
         summary["frozen_parameters"] = frozen
+        summary["initial_checkpoint"] = config["model"]["init_args"].get(
+            "initial_checkpoint"
+        )
         del task
 
     print("Training preflight passed:")

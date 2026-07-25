@@ -13,6 +13,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import torch
+import torch.nn.functional as F
 from terratorch.tasks.segmentation_tasks import (
     SemanticSegmentationTask,
     to_segmentation_prediction,
@@ -29,6 +30,18 @@ from torchmetrics.classification import (
 )
 
 from prithvi_crop.constants import CLASS_NAMES
+from prithvi_crop.europe import PROJECT_CROP_CLASSES, PROJECT_NON_CROP_CLASSES
+
+
+def _cross_entropy_or_zero(
+    logits: Tensor,
+    target: Tensor,
+    ignore_index: int,
+) -> Tensor:
+    """Return a differentiable zero when a target contains no supervised pixels."""
+    if torch.any(target != ignore_index):
+        return F.cross_entropy(logits, target, ignore_index=ignore_index)
+    return logits.sum() * 0
 
 
 def _safe_class_labels(class_names: list[str] | None, num_classes: int) -> list[str]:
@@ -73,8 +86,13 @@ class CropSegmentationTask(SemanticSegmentationTask):
         tiled_inference_on_testing: bool = False,
         tiled_inference_on_validation: bool = False,
         evaluation_output_dir: str = "outputs/prithvi_4band_head_only/evaluation",
+        initial_checkpoint: str | None = None,
+        crop_binary_loss_weight: float = 0.0,
     ) -> None:
         self.evaluation_output_dir = Path(evaluation_output_dir)
+        if not 0 <= crop_binary_loss_weight <= 1:
+            raise ValueError("crop_binary_loss_weight must be between 0 and 1")
+        self.crop_binary_loss_weight = crop_binary_loss_weight
         super().__init__(
             model_args=model_args,
             model_factory=model_factory,
@@ -103,6 +121,89 @@ class CropSegmentationTask(SemanticSegmentationTask):
             tiled_inference_on_testing=tiled_inference_on_testing,
             tiled_inference_on_validation=tiled_inference_on_validation,
         )
+        if initial_checkpoint is not None:
+            self._load_model_weights(Path(initial_checkpoint))
+
+    def _load_model_weights(self, checkpoint_path: Path) -> None:
+        if not checkpoint_path.is_file():
+            raise FileNotFoundError(
+                f"Initial checkpoint not found: {checkpoint_path}"
+            )
+        checkpoint = torch.load(
+            checkpoint_path,
+            map_location="cpu",
+            mmap=True,
+            weights_only=False,
+        )
+        state_dict = checkpoint.get("state_dict")
+        if not isinstance(state_dict, dict):
+            raise ValueError(f"Invalid Lightning checkpoint: {checkpoint_path}")
+        model_state = {
+            name.removeprefix("model."): value
+            for name, value in state_dict.items()
+            if name.startswith("model.")
+        }
+        self.model.load_state_dict(model_state, strict=True)
+        print(f"Initialized model weights from: {checkpoint_path.resolve()}")
+
+    def training_step(
+        self,
+        batch: Any,
+        batch_idx: int,
+        dataloader_idx: int = 0,
+    ) -> Tensor:
+        if "crop_mask" not in batch or self.crop_binary_loss_weight == 0:
+            return super().training_step(batch, batch_idx, dataloader_idx)
+
+        x = batch["image"]
+        fine_target = self.squeeze_ground_truth(batch["mask"])
+        crop_target = self.squeeze_ground_truth(batch["crop_mask"])
+        excluded = {
+            "image",
+            "mask",
+            "crop_mask",
+            "dataset_source",
+            "filename",
+        }
+        model_output = self(
+            x,
+            **{key: batch[key] for key in batch.keys() - excluded},
+        )
+        logits = model_output.output
+
+        if torch.any(fine_target != self.hparams["ignore_index"]):
+            fine_loss = self.criterion(logits, fine_target)
+        else:
+            fine_loss = logits.sum() * 0
+        binary_logits = torch.stack(
+            [
+                torch.logsumexp(
+                    logits[:, PROJECT_NON_CROP_CLASSES],
+                    dim=1,
+                ),
+                torch.logsumexp(
+                    logits[:, PROJECT_CROP_CLASSES],
+                    dim=1,
+                ),
+            ],
+            dim=1,
+        )
+        binary_loss = _cross_entropy_or_zero(
+            binary_logits,
+            crop_target,
+            self.hparams["ignore_index"],
+        )
+        loss = fine_loss + self.crop_binary_loss_weight * binary_loss
+        batch_size = fine_target.shape[0]
+        self.log("train/loss", loss, batch_size=batch_size)
+        self.log("train/fine_loss", fine_loss, batch_size=batch_size)
+        self.log(
+            "train/crop_binary_loss",
+            binary_loss,
+            batch_size=batch_size,
+        )
+        self.train_metrics.update(logits.argmax(dim=1), fine_target)
+        return loss
 
     def configure_metrics(self) -> None:
         num_classes: int = self.hparams["model_args"]["num_classes"]

@@ -6,6 +6,8 @@ from prithvi_crop.check_config import check_config
 from prithvi_crop.constants import CLASS_NAMES, MODEL_BANDS
 
 CONFIG_PATH = Path("configs/prithvi_4band_head_only.yaml")
+REFINE_CONFIG_PATH = Path("configs/prithvi_4band_augmented_refine.yaml")
+EUROPE_CONFIG_PATH = Path("configs/prithvi_4band_europe_replay.yaml")
 
 
 def test_head_only_config_contract() -> None:
@@ -40,3 +42,38 @@ def test_official_validation_is_reserved_for_test() -> None:
     assert checkpoint["init_args"]["monitor"] == "val/Macro_F1"
     assert checkpoint["init_args"]["save_last"] is True
 
+
+def test_augmented_refinement_reuses_best_checkpoint_safely() -> None:
+    summary = check_config(REFINE_CONFIG_PATH)
+    config = yaml.safe_load(REFINE_CONFIG_PATH.read_text(encoding="utf-8"))
+    model = config["model"]["init_args"]
+    transforms = config["data"]["init_args"]["train_transform"]
+
+    assert summary["backbone_frozen"] is True
+    assert model["initial_checkpoint"].endswith(
+        "epoch=41-macro_f1=0.5046.ckpt"
+    )
+    assert model["freeze_decoder"] is False
+    assert any(
+        transform["class_path"]
+        == "prithvi_crop.transforms.RandomNonIdentityDihedral"
+        and transform["init_args"]["p"] == 1.0
+        for transform in transforms
+    )
+    assert config["optimizer"]["init_args"]["lr"] < 0.0003
+
+
+def test_europe_replay_keeps_taxonomy_and_original_checkpoint() -> None:
+    summary = check_config(EUROPE_CONFIG_PATH)
+    config = yaml.safe_load(EUROPE_CONFIG_PATH.read_text(encoding="utf-8"))
+    data = config["data"]["init_args"]
+    model = config["model"]["init_args"]
+
+    assert summary["classes"] == len(CLASS_NAMES)
+    assert data["european_fraction"] == 0.2
+    assert 5 not in data["european_folds"]
+    assert model["class_names"] == list(CLASS_NAMES)
+    assert model["initial_checkpoint"].endswith(
+        "epoch=06-macro_f1=0.5051.ckpt"
+    )
+    assert model["freeze_backbone"] is True
