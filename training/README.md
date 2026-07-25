@@ -13,6 +13,8 @@ model-development work without shipping it to the satellite.
   implementation at extraction time.
 - `experiment_logs/`: compact TensorBoard/config/log artifacts for the
   refinement and European replay experiments.
+- `external_snapshots/vita_cloud_detection_a1ce4d3/`: exact recovery copy of
+  the reviewed ViTA cloud-detection module, including its notebooks and tests.
 
 The source snapshot retains the original `prithvi_crop` imports so it remains
 an exact recovery copy. The working legacy package under `src/prithvi_crop`

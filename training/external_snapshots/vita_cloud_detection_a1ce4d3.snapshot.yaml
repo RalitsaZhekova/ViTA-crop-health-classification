@@ -1,0 +1,12 @@
+schema_version: 1
+mode: exact_non_destructive_copy
+repository: https://github.com/Gab1604/ViTA-SpaceChallenges2026
+branch: feature/cloud-detection-reviewed
+source_directory: phase1/cloud_detection
+commit: a1ce4d3612ea60a39da679a0dc9db52cb59c9800
+copied_at: 2026-07-25
+snapshot_directory: vita_cloud_detection_a1ce4d3
+deployment_included: false
+runtime_copy: ../../payload/src/cloud_detection
+license_file_present_in_source: false
+weights_included_in_snapshot: false
