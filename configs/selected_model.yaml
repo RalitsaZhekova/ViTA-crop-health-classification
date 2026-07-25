@@ -1,0 +1,23 @@
+schema_version: 1
+status: selected
+role: crop_land_cover_and_binary_segmentation
+
+checkpoint:
+  path: outputs/prithvi_4band_europe_replay/checkpoints/epoch=02-macro_f1=0.5062.ckpt
+  sha256: 49383194174c56b66f3b7fa67254a42135db6ad64172e873c43d65d1afae6a65
+  training_config: configs/prithvi_4band_europe_replay.yaml
+
+validation:
+  scope: internal_validation
+  held_out_test_consumed: false
+  fine_macro_f1: 0.506205
+  fine_overall_accuracy: 0.512668
+  crop_binary_accuracy: 0.810223
+
+operating_thresholds:
+  crop_classification: 0.615
+  health_analysis: 0.76
+
+replacement_policy:
+  automatic_replacement: false
+  requirement: explicit_review_and_better_held_out_metrics

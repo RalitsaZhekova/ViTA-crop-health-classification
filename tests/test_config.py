@@ -2,12 +2,17 @@ from pathlib import Path
 
 import yaml
 
+from prithvi_crop.calibration import (
+    CROP_CLASSIFICATION_THRESHOLD,
+    HEALTH_ANALYSIS_CROP_THRESHOLD,
+)
 from prithvi_crop.check_config import check_config
 from prithvi_crop.constants import CLASS_NAMES, MODEL_BANDS
 
 CONFIG_PATH = Path("configs/prithvi_4band_head_only.yaml")
 REFINE_CONFIG_PATH = Path("configs/prithvi_4band_augmented_refine.yaml")
 EUROPE_CONFIG_PATH = Path("configs/prithvi_4band_europe_replay.yaml")
+SELECTED_MODEL_PATH = Path("configs/selected_model.yaml")
 
 
 def test_head_only_config_contract() -> None:
@@ -77,3 +82,22 @@ def test_europe_replay_keeps_taxonomy_and_original_checkpoint() -> None:
         "epoch=06-macro_f1=0.5051.ckpt"
     )
     assert model["freeze_backbone"] is True
+
+
+def test_selected_model_is_pinned_and_cannot_be_replaced_automatically() -> None:
+    selected = yaml.safe_load(SELECTED_MODEL_PATH.read_text(encoding="utf-8"))
+
+    assert selected["status"] == "selected"
+    assert selected["checkpoint"]["path"].endswith(
+        "epoch=02-macro_f1=0.5062.ckpt"
+    )
+    assert len(selected["checkpoint"]["sha256"]) == 64
+    assert (
+        selected["operating_thresholds"]["crop_classification"]
+        == CROP_CLASSIFICATION_THRESHOLD
+    )
+    assert (
+        selected["operating_thresholds"]["health_analysis"]
+        == HEALTH_ANALYSIS_CROP_THRESHOLD
+    )
+    assert selected["replacement_policy"]["automatic_replacement"] is False
