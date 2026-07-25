@@ -1,0 +1,67 @@
+# Health analysis contract
+
+This stage measures crop condition after cloud masking and crop
+classification. It does not train a model and does not diagnose disease,
+nutrient deficiency or crop health from a single image.
+
+## Input contract
+
+Each processing window contains co-registered floating-point surface
+reflectance arrays:
+
+```text
+BLUE, GREEN, RED, NIR
+```
+
+Raw digital numbers and display-stretched RGB are not accepted. The caller
+also supplies a Boolean analysis mask assembled from:
+
+```text
+supported active-crop class
+AND clear pixel
+AND valid reflectance
+AND combined crop probability >= 0.76
+```
+
+Fallow/idle cropland and the ambiguous `Other` class are excluded by default
+so that expected low vegetation is not presented as stress.
+
+The `0.76` health-analysis threshold was calibrated with
+`epoch=02-macro_f1=0.5062.ckpt` on the 308-chip internal validation split. It
+limits false crop detections to below 10% on that split. The normal
+crop/non-crop map uses `0.615`, which maximizes binary accuracy. Both thresholds
+must be recalibrated if the checkpoint or validation split changes.
+
+## Measurements
+
+```text
+NDVI  = (NIR - RED) / (NIR + RED)
+EVI   = 2.5 * (NIR - RED) / (NIR + 6*RED - 7.5*BLUE + 1)
+GNDVI = (NIR - GREEN) / (NIR + GREEN)
+CVI   = (NIR * RED) / GREEN^2
+VARI  = (GREEN - RED) / (GREEN + RED - BLUE)
+ExG   = 2*GREEN - RED - BLUE
+```
+
+Visible brightness is the mean of Blue, Green and Red. Unusable pixels and
+unstable divisions are represented as `NaN` in raster layers and omitted from
+summary statistics.
+
+## Outputs
+
+Per-pixel layers will later be written as Cloud-Optimized GeoTIFFs. Compact
+JSON observations contain:
+
+- scene, region, sensor and acquisition time;
+- algorithm and schema versions;
+- usable-analysis pixel counts and percentage;
+- mean, median, standard deviation and 10th/90th percentiles;
+- references to raster assets.
+
+The only current statuses are `MEASURED` and `INSUFFICIENT_DATA`. A future
+normal/watch/stressed result must compare several valid dates with a
+crop-, region- and growth-stage-aware baseline.
+
+The calculations operate on one image window at a time, allowing the eventual
+GeoTIFF pipeline to stream large scenes without loading a complete image into
+memory.

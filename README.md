@@ -17,6 +17,24 @@ RGB features only on clear, confident crop pixels. Its calibrated-reflectance,
 masking and JSON output rules are documented in
 [`docs/health_analysis_contract.md`](docs/health_analysis_contract.md).
 
+## Extracted components
+
+The selected model is frozen for the current project phase. Its checksum-pinned
+runtime and the remaining system responsibilities are separated into:
+
+- [`training/`](training/README.md): dataset references, augmentation,
+  training/evaluation snapshots, configurations and experiment logs;
+- [`payload/`](payload/README.md): weights-only model inference plus Balkan-1
+  reconstruction and cloud-mask boundaries;
+- [`ground/`](ground/README.md): condition measurements, storage, API and
+  visualization boundaries;
+- [`shared/`](shared/README.md): bands, normalization, classes, thresholds and
+  exchange schemas.
+
+[`COMPONENTS.md`](COMPONENTS.md) defines ownership and the non-destructive
+extraction policy. The original working paths remain intact until the new
+packages are independently accepted.
+
 ## Data and model contract
 
 The official IBM-NASA dataset is hosted at
