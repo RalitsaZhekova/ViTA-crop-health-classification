@@ -1,5 +1,5 @@
-schema_version: 1
-copy_policy: compact_logs_only
+schema_version: 2
+retention_policy: selected_run_summaries_only
 selected_run:
   name: prithvi_4band_europe_replay
   checkpoint: ../../outputs/prithvi_4band_europe_replay/checkpoints/epoch=02-macro_f1=0.5062.ckpt
@@ -7,22 +7,13 @@ selected_run:
   validation_overall_accuracy: 0.512668
   binary_accuracy: 0.810223
   held_out_test_consumed: false
-copied:
-  tensorboard:
-    - prithvi_4band_augmented_refine
-    - prithvi_4band_europe_replay
+retained:
   europe_replay:
-    - pipeline.stderr.log
-    - pipeline.status.txt
-    - training.stderr.log
-    - training.stdout.log
     - data_readiness.json
     - binary_validation_metrics.json
 excluded:
   - all non-selected checkpoints
+  - TensorBoard event files
+  - raw launcher and training logs
   - Hugging Face cache
   - duplicate datasets
-original_outputs:
-  path: ../../outputs
-  bytes: 5288972428
-  modified_by_extraction: false

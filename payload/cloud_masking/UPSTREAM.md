@@ -7,11 +7,10 @@ The payload cloud module was integrated from:
 - source directory: `phase1/cloud_detection`;
 - reviewed commit: `a1ce4d3612ea60a39da679a0dc9db52cb59c9800`.
 
-The complete reviewed source is preserved under
-`training/external_snapshots/vita_cloud_detection_a1ce4d3/`. Its runtime
-package is integrated under `payload/src/cloud_detection/`; configs, docs and
-operational scripts are under `payload/cloud_detection/`; its tests are under
-`tests/cloud_detection_upstream/`.
+Its runtime package is integrated under `payload/src/cloud_detection/`;
+configs, docs and the batch inference script are under
+`payload/cloud_detection/`. The reviewed commit and Git history provide the
+recovery point without retaining a second source tree.
 
 The integrated runtime makes four deployment-specific changes:
 
@@ -38,8 +37,7 @@ external distribution.
 
 ## Validation boundary
 
-The reviewed project has deterministic unit tests but no reported quantitative
-evaluation on its expert-labelled holdout. The integrated tests cover every
-semantic class and the real checkpoint runs on CPU and CUDA. Passing those
-tests proves that the component runs; it does not establish accuracy on
-Sentinel-2 or Balkan-1 imagery.
+The reviewed project has no reported quantitative evaluation on its
+expert-labelled holdout. The retained verification record confirms that all
+semantic classes and the real checkpoint ran on CPU and CUDA. Runtime success
+does not establish accuracy on Sentinel-2 or Balkan-1 imagery.

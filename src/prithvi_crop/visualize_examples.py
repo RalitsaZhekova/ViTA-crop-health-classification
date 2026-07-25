@@ -561,7 +561,7 @@ def main() -> None:
     parser.add_argument(
         "--output-directory",
         type=Path,
-        default=Path("docs/assets/model_examples"),
+        default=Path("outputs/model_examples"),
     )
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--num-workers", type=int, default=4)

@@ -27,11 +27,12 @@
     "checkpoint_sha256": "37205adce72fbbb65a3cfa8f47676c84ebf9b1555a27a3838d584072c954b22d",
     "weights_license": "CC-BY-NC-4.0",
     "commercial_release_approved": false,
-    "integrated_test_suite": {
+    "historical_pre_cleanup_test_suite": {
       "passed": 13,
       "failed": 0,
       "original_upstream_tests": 7,
-      "project_specific_tests": 6
+      "project_specific_tests": 6,
+      "test_sources_retained": false
     },
     "all_class_logic": {
       "classes_present": [0, 1, 2, 3],
@@ -80,9 +81,10 @@
       "output_file_count": 8,
       "runtime_seconds": 0.48848490000818856
     },
-    "whole_repository_regression": {
+    "historical_pre_cleanup_repository_regression": {
       "passed": 57,
-      "failed": 0
+      "failed": 0,
+      "test_sources_retained": false
     },
     "standalone_unusable_mask_generation": true,
     "mask_application_to_crop_inference": false,

@@ -9,9 +9,6 @@ source_checkpoint:
   path: ../../outputs/prithvi_4band_europe_replay/checkpoints/epoch=02-macro_f1=0.5062.ckpt
   bytes: 536560975
   sha256: 49383194174c56b66f3b7fa67254a42135db6ad64172e873c43d65d1afae6a65
-provenance_copy:
-  file: prithvi_crop_classifier_epoch02_f1_0.5062.ckpt
-  deployment_included: false
 replacement_policy:
   automatic_replacement: false
   requirement: explicit_review_and_better_held_out_metrics

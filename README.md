@@ -15,15 +15,15 @@ not present in this dataset.
 The separate rule-based condition stage calculates NDVI, EVI, GNDVI, CVI and
 RGB features only on clear, confident crop pixels. Its calibrated-reflectance,
 masking and JSON output rules are documented in
-[`docs/health_analysis_contract.md`](docs/health_analysis_contract.md).
+[`ground/health_analysis_contract.md`](ground/health_analysis_contract.md).
 
 ## Extracted components
 
 The selected model is frozen for the current project phase. Its checksum-pinned
 runtime and the remaining system responsibilities are separated into:
 
-- [`training/`](training/README.md): dataset references, augmentation,
-  training/evaluation snapshots, configurations and experiment logs;
+- [`training/`](training/README.md): dataset references and retained experiment
+  summaries, with canonical training code and configs at the repository root;
 - [`payload/`](payload/README.md): weights-only model inference plus Balkan-1
   reconstruction and cloud-mask boundaries;
 - [`ground/`](ground/README.md): condition measurements, storage, API and
@@ -31,9 +31,8 @@ runtime and the remaining system responsibilities are separated into:
 - [`shared/`](shared/README.md): bands, normalization, classes, thresholds and
   exchange schemas.
 
-[`COMPONENTS.md`](COMPONENTS.md) defines ownership and the non-destructive
-extraction policy. The original working paths remain intact until the new
-packages are independently accepted.
+[`COMPONENTS.md`](COMPONENTS.md) defines ownership and canonical storage
+locations.
 
 ## Data and model contract
 
@@ -128,16 +127,15 @@ class support, dates, metadata coverage, logical train/validation/test splits,
 and a real TerraTorch batch contract. Its machine-readable report is
 `outputs/dataset_validation.json`.
 
-## Tests and smoke test
+## Lint and smoke test
 
 ```powershell
-python -m pytest
-python -m ruff check src tests
+python -m ruff check src scripts shared/src payload/src ground/src
 python -m prithvi_crop.smoke --config configs/prithvi_4band_head_only.yaml
 ```
 
-If GNU Make is installed, `make unit`, `make lint`, and `make smoke` are
-equivalent. GNU Make is not bundled with Windows.
+If GNU Make is installed, `make lint` and `make smoke` are equivalent. GNU
+Make is not bundled with Windows.
 
 The smoke test loads one real batch (at least two chips because of UPerNet
 BatchNorm), normalizes it, moves image and metadata to CUDA, executes
@@ -184,8 +182,8 @@ powershell -ExecutionPolicy Bypass -File scripts/run_europe_replay_pipeline.ps1
 ```
 
 The archive, extracted data, checkpoints and logs remain under the ignored
-`data/` and `outputs/` directories. The reusable adapter, configuration and
-tests stay versioned in Git.
+`data/` and `outputs/` directories. The reusable adapter and configuration stay
+versioned in Git.
 
 When PASTIS is already extracted, validate all metadata-linked NumPy image
 headers and semantic targets without loading the model:

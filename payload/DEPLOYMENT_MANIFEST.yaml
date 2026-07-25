@@ -22,7 +22,6 @@ include:
   - ../shared/class_mapping.yaml
   - ../shared/schemas/inference_result.schema.json
 exclude:
-  - models/prithvi_crop_classifier_epoch02_f1_0.5062.ckpt
   - ../training
   - ../ground
   - ../data

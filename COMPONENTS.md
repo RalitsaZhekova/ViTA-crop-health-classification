@@ -1,9 +1,7 @@
 # Component layout
 
-This repository is being separated without moving or deleting the validated
-legacy implementation. The original `src/prithvi_crop`, `data`, `outputs`,
-`configs`, and `scripts` paths remain intact while the four deployment domains
-are assembled alongside them.
+This repository separates training, payload, ground, and shared responsibilities
+while keeping one canonical copy of every implementation and configuration.
 
 ```text
 training/  -> shared/
@@ -21,19 +19,16 @@ shared/    -> no project-domain dependency
 | `ground/` | Ground infrastructure | Crop-condition calculations, observations, storage contract, API contract and visualization | Training loop or satellite reconstruction |
 | `shared/` | All components | Band order, normalization, class mapping, thresholds and JSON schemas | Sensor processing or business logic |
 
-## Non-destructive extraction policy
+## Storage policy
 
-- No original file is moved, renamed or deleted.
-- The 49 GiB datasets are referenced from `training/datasets/manifest.yaml`;
-  they are not duplicated.
-- Training source under `training/source_snapshot/` is an immutable recovery
-  snapshot of the validated implementation.
-- Only the selected checkpoint is copied into `payload/models/`.
-- A SHA-256 digest pins the payload copy to the validated checkpoint.
+- Datasets remain under `data/` and are indexed by
+  `training/datasets/manifest.yaml`; they are never duplicated into packages.
+- Training implementation, configuration, and launchers have one canonical
+  home in `src/prithvi_crop/`, `configs/`, and `scripts/`.
+- Required training checkpoints stay under `outputs/`; payload deployment uses
+  checksum-pinned, weights-only artifacts in `payload/models/`.
+- Reproducible previews, caches, raw logs, source snapshots, and test
+  scaffolding are not retained in the working repository.
 - Missing reconstruction, Balkan-1 cloud masking, storage, API and operational
   visualization implementations are documented as explicit boundaries rather
   than represented as finished code.
-
-The legacy paths can be retired only after the extracted components have been
-accepted and independently packaged. That later cleanup is intentionally
-outside this change.

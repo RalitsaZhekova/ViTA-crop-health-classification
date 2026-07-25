@@ -9,12 +9,7 @@ The operational map should display:
 - NDVI, EVI, GNDVI and CVI layers;
 - region history and data-quality indicators.
 
-The current business-ready model examples remain at:
-
-```text
-docs/assets/model_examples/full_classifier_validation.png
-docs/assets/model_examples/crop_binary_validation.png
-```
-
-They are referenced rather than duplicated. They are real internal-validation
-examples, not a held-out evaluation and not health-status maps.
+Business-ready examples should be regenerated from the selected model and
+explicitly labelled as internal-validation examples, not held-out evaluation
+or health-status maps. Generated previews are outputs and are not retained in
+the source repository.

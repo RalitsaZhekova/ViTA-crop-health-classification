@@ -1,24 +1,19 @@
-# Training archive
+# Training component
 
-This directory preserves everything needed to understand or reproduce the
-model-development work without shipping it to the satellite.
+This directory records the data and retained experiment summaries needed to
+understand the model-development work without shipping them to the satellite.
 
 ## Contents
 
 - `datasets/manifest.yaml`: paths, file counts and sizes for the existing
-  datasets; the 49 GiB of data is not duplicated.
-- `configs/`: snapshots of the three training stages and binary calibration.
-- `scripts/`: the data-preparation and training launchers used in the project.
-- `source_snapshot/prithvi_crop/`: a copy of the validated training/evaluation
-  implementation at extraction time.
-- `experiment_logs/`: compact TensorBoard/config/log artifacts for the
-  refinement and European replay experiments.
-- `external_snapshots/vita_cloud_detection_a1ce4d3/`: exact recovery copy of
-  the reviewed ViTA cloud-detection module, including its notebooks and tests.
+  datasets; the data is not duplicated.
+- `experiment_logs/`: compact JSON summaries for the selected European replay
+  experiment.
 
-The source snapshot retains the original `prithvi_crop` imports so it remains
-an exact recovery copy. The working legacy package under `src/prithvi_crop`
-continues to run the current tests. No training code belongs in `payload/`.
+The canonical training implementation is `src/prithvi_crop/`, configurations
+are under `configs/`, and launchers are under `scripts/`. Git history preserves
+older copies and external integration provenance. No training code belongs in
+`payload/`.
 
 ## Dataset policy
 
@@ -29,6 +24,7 @@ payload or ground packages.
 ## Model policy
 
 Training is frozen for now. The selected model is
-`epoch=02-macro_f1=0.5062.ckpt`; its verified payload copy is the only
-checkpoint intended for deployment. Other checkpoints remain untouched in
-`outputs/` for rollback and forensic comparison.
+`epoch=02-macro_f1=0.5062.ckpt`; the full checkpoint remains under `outputs/`
+for provenance and its checksum-pinned weights-only export is deployed from
+`payload/models/`. Earlier stage checkpoints required by the documented
+training configs are retained for safe rollback.

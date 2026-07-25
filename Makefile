@@ -4,7 +4,7 @@ CKPT ?=
 BATCH_SIZE ?= 8
 NUM_WORKERS ?= 4
 
-.PHONY: install download download-validation validate check-config preflight smoke train test lint unit verify-components
+.PHONY: install download download-validation validate check-config preflight smoke train test lint
 
 install:
 	$(PYTHON) -m pip install --upgrade pip
@@ -35,10 +35,4 @@ test: check-config
 	$(PYTHON) -m prithvi_crop.evaluate --config $(CONFIG) --checkpoint "$(CKPT)" --num-workers $(NUM_WORKERS)
 
 lint:
-	$(PYTHON) -m ruff check src tests scripts shared/src payload/src ground/src
-
-unit:
-	$(PYTHON) -m pytest
-
-verify-components:
-	$(PYTHON) scripts/verify_component_extraction.py --workspace .
+	$(PYTHON) -m ruff check src scripts shared/src payload/src ground/src

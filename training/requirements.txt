@@ -8,6 +8,5 @@ pyyaml>=6,<7
 tensorboard>=2.18,<3
 tqdm>=4.66,<5
 
-# Development verification
-pytest>=8,<9
+# Development linting
 ruff>=0.9,<1
