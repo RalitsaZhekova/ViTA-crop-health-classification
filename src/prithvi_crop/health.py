@@ -10,6 +10,8 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
+from prithvi_crop.calibration import HEALTH_ANALYSIS_CROP_THRESHOLD
+
 # Fallow/idle cropland and the ambiguous "Other" class are intentionally
 # excluded. Their low vegetation signal must not be reported as crop stress.
 HEALTH_CROP_CLASS_IDS = (2, 3, 7, 8, 10, 11)
@@ -90,20 +92,20 @@ def build_analysis_mask(
     classification: NDArray[np.integer[Any]],
     cloud_unusable: NDArray[Any],
     *,
-    classification_confidence: FloatArray | None = None,
-    minimum_confidence: float = 0.0,
+    crop_probability: FloatArray,
+    minimum_crop_probability: float = HEALTH_ANALYSIS_CROP_THRESHOLD,
     nodata: NDArray[Any] | None = None,
     crop_class_ids: tuple[int, ...] = HEALTH_CROP_CLASS_IDS,
 ) -> BoolArray:
-    """Combine crop, cloud, confidence and no-data decisions."""
+    """Combine crop class, crop probability, cloud and no-data decisions."""
     classes = np.asarray(classification)
     unusable = np.asarray(cloud_unusable, dtype=bool)
     if classes.ndim != 2 or unusable.shape != classes.shape:
         raise ValueError("Classification and cloud masks must be matching 2D arrays")
     if not crop_class_ids:
         raise ValueError("At least one crop class ID is required")
-    if not 0 <= minimum_confidence <= 1:
-        raise ValueError("minimum_confidence must be between 0 and 1")
+    if not 0 <= minimum_crop_probability <= 1:
+        raise ValueError("minimum_crop_probability must be between 0 and 1")
 
     mask = np.isin(classes, crop_class_ids) & ~unusable
     if nodata is not None:
@@ -112,13 +114,13 @@ def build_analysis_mask(
             raise ValueError("No-data mask shape does not match classification")
         mask &= ~nodata_array
 
-    if classification_confidence is not None:
-        confidence = np.asarray(classification_confidence)
-        if confidence.shape != classes.shape:
-            raise ValueError("Confidence shape does not match classification")
-        mask &= np.isfinite(confidence) & (confidence >= minimum_confidence)
-    elif minimum_confidence > 0:
-        raise ValueError("minimum_confidence requires a confidence array")
+    probability = np.asarray(crop_probability)
+    if probability.shape != classes.shape:
+        raise ValueError("Crop probability shape does not match classification")
+    mask &= (
+        np.isfinite(probability)
+        & (probability >= minimum_crop_probability)
+    )
     return mask
 
 

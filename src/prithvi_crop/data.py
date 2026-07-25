@@ -9,10 +9,11 @@ from typing import Any
 
 import albumentations as A
 import numpy as np
+import torch
 from einops import rearrange
 from terratorch.datamodules import MultiTemporalCropClassificationDataModule
 from terratorch.datasets import MultiTemporalCropClassification
-from torch.utils.data import ConcatDataset, Subset
+from torch.utils.data import ConcatDataset, DataLoader, Subset
 
 from prithvi_crop.europe import (
     OriginalReplayDataset,
@@ -204,6 +205,27 @@ class CropTypeDataModule(MultiTemporalCropClassificationDataModule):
         dataset = self._make_dataset("train", self.val_transform)
         chip_ids = [chip_id_from_image(path) for path in dataset.image_files]
         return deterministic_partition(chip_ids, self.validation_fraction, self.split_seed)
+
+    def _dataloader_factory(self, split: str) -> DataLoader:
+        """Keep Windows workers alive so the GPU is not starved every epoch."""
+        dataset = self._valid_attribute(f"{split}_dataset", "dataset")
+        batch_size = self._valid_attribute(f"{split}_batch_size", "batch_size")
+        worker_options: dict[str, Any] = {}
+        if self.num_workers > 0:
+            worker_options.update(
+                persistent_workers=True,
+                prefetch_factor=2,
+            )
+        return DataLoader(
+            dataset=dataset,
+            batch_size=batch_size,
+            shuffle=split == "train",
+            num_workers=self.num_workers,
+            collate_fn=self.collate_fn,
+            drop_last=split == "train" and self.drop_last,
+            pin_memory=torch.cuda.is_available(),
+            **worker_options,
+        )
 
     def setup(self, stage: str) -> None:
         if stage == "fit":

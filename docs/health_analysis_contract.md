@@ -20,11 +20,17 @@ also supplies a Boolean analysis mask assembled from:
 supported active-crop class
 AND clear pixel
 AND valid reflectance
-AND sufficient classification confidence
+AND combined crop probability >= 0.76
 ```
 
 Fallow/idle cropland and the ambiguous `Other` class are excluded by default
 so that expected low vegetation is not presented as stress.
+
+The `0.76` health-analysis threshold was calibrated with
+`epoch=02-macro_f1=0.5062.ckpt` on the 308-chip internal validation split. It
+limits false crop detections to below 10% on that split. The normal
+crop/non-crop map uses `0.615`, which maximizes binary accuracy. Both thresholds
+must be recalibrated if the checkpoint or validation split changes.
 
 ## Measurements
 

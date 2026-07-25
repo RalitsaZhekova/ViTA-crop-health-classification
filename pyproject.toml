@@ -35,6 +35,7 @@ prithvi-preflight = "prithvi_crop.preflight:main"
 prithvi-smoke = "prithvi_crop.smoke:main"
 prithvi-train = "prithvi_crop.train:main"
 prithvi-evaluate = "prithvi_crop.evaluate:main"
+prithvi-evaluate-binary = "prithvi_crop.evaluate_binary:main"
 prithvi-visualize = "prithvi_crop.visualize_examples:main"
 
 [tool.setuptools.packages.find]

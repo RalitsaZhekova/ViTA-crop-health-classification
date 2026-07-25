@@ -29,8 +29,8 @@ from torchmetrics.classification import (
     MulticlassRecall,
 )
 
+from prithvi_crop.binary import binary_logits_from_fine_logits
 from prithvi_crop.constants import CLASS_NAMES
-from prithvi_crop.europe import PROJECT_CROP_CLASSES, PROJECT_NON_CROP_CLASSES
 
 
 def _cross_entropy_or_zero(
@@ -175,19 +175,7 @@ class CropSegmentationTask(SemanticSegmentationTask):
             fine_loss = self.criterion(logits, fine_target)
         else:
             fine_loss = logits.sum() * 0
-        binary_logits = torch.stack(
-            [
-                torch.logsumexp(
-                    logits[:, PROJECT_NON_CROP_CLASSES],
-                    dim=1,
-                ),
-                torch.logsumexp(
-                    logits[:, PROJECT_CROP_CLASSES],
-                    dim=1,
-                ),
-            ],
-            dim=1,
-        )
+        binary_logits = binary_logits_from_fine_logits(logits)
         binary_loss = _cross_entropy_or_zero(
             binary_logits,
             crop_target,

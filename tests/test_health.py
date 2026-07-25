@@ -22,11 +22,24 @@ def test_analysis_mask_excludes_cloud_fallow_other_and_low_confidence() -> None:
     mask = build_analysis_mask(
         classification,
         unusable,
-        classification_confidence=confidence,
-        minimum_confidence=0.5,
+        crop_probability=confidence,
+        minimum_crop_probability=0.5,
     )
 
     assert mask.tolist() == [[True, False, False], [False, False, False]]
+
+
+def test_analysis_mask_uses_conservative_calibrated_default() -> None:
+    classification = np.asarray([[2, 3]])
+    probability = np.asarray([[0.75, 0.80]], dtype=np.float32)
+
+    mask = build_analysis_mask(
+        classification,
+        np.zeros((1, 2), dtype=bool),
+        crop_probability=probability,
+    )
+
+    assert mask.tolist() == [[False, True]]
 
 
 def test_requested_indices_and_rgb_features_match_definitions() -> None:
