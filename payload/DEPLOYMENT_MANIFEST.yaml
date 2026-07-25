@@ -1,10 +1,20 @@
 schema_version: 1
-bundle_status: inference_core_ready
+bundle_status: prototype_crop_and_sentinel_cloud_classification_ready
+commercial_release:
+  status: blocked
+  reason: dtacs4bands_weights_are_cc_by_nc_4_0
 include:
   - models/prithvi_crop_classifier_v1_weights.pt
   - models/architecture.yaml
   - models/selected_model.yaml
+  - models/cloudsen12/dtacs4bands.pt
+  - models/cloudsen12/model.yaml
   - src/prithvi_payload
+  - src/cloud_detection
+  - cloud_detection/configs/cloud_detector.yaml
+  - cloud_detection/scripts
+  - cloud_masking/classifier.yaml
+  - cloud_masking/UPSTREAM.md
   - requirements.txt
   - ../shared/src/prithvi_shared
   - ../shared/band_definitions.yaml
@@ -22,4 +32,6 @@ exclude:
 not_yet_implemented:
   - raw_balkan_1_reconstruction
   - balkan_1_cloud_mask_adapter
-  - geotiff_scene_tiling_and_stitching
+  - cloud_mask_application_to_crop_inference
+  - windowed_geotiff_streaming_for_very_large_scenes
+  - crop_geotiff_scene_tiling_and_stitching

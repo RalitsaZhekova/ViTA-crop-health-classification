@@ -1,28 +1,53 @@
-# Cloud-mask boundary
+# Cloud detection and masking boundary
 
-The reviewed cloud-detection project remains separate and has not been merged
-or copied here. This preserves the earlier decision not to mix that work into
-the crop repository prematurely.
+The complete reviewed CloudSEN12 pipeline is integrated as an isolated payload
+component. It can classify and post-process a co-registered Sentinel-2 L1C
+GeoTIFF without loading or calling crop inference.
 
-Reviewed source:
-`https://github.com/Gab1604/ViTA-SpaceChallenges2026/tree/feature/cloud-detection-reviewed/phase1/cloud_detection`
+Current input:
 
-## Required adapter contract
+- array layout `[bands, height, width]`;
+- exact band order `[B08, B04, B03, B02]`;
+- Sentinel-2 L1C top-of-atmosphere digital numbers scaled by 10,000, or
+  pre-scaled TOA reflectance with an explicit scale of 1;
+- all-band zero and non-finite pixels reported separately as invalid input.
 
-Input:
+Current output:
 
-- co-registered, radiometrically calibrated Balkan-1 or Sentinel-2 bands;
-- sensor identifier;
-- no-data mask and geospatial metadata.
+- semantic classes: clear, thick cloud, thin cloud and cloud shadow;
+- uncalibrated class confidence scores;
+- georeferenced class-score and semantic GeoTIFFs;
+- invalid-input and binary unusable-pixel maps;
+- cloud, shadow, usable and unusable percentages;
+- `PROCESS`, `PROCESS_CLEAR_AREAS` or `REJECT` decision;
+- JSON metadata and a headless preview PNG.
 
-Output:
+By default, thick cloud, thin cloud, cloud shadow and invalid input are
+unusable. Small detections are removed and remaining unusable areas are
+dilated according to `payload/cloud_detection/configs/cloud_detector.yaml`.
 
-- `cloud_unusable`: Boolean raster aligned exactly to the model output;
-- optional cloud probability;
-- quality metadata including algorithm version and sensor calibration;
-- explicit shadow handling status.
+## Crop integration intentionally not connected yet
 
-Before Balkan-1 use, the existing detector must be validated for its 1.5 m
-resolution, spectral response and 12-bit scale. A Sentinel-trained detector
-must not be declared Balkan-1 compatible solely because both sensors expose
-RGB and NIR.
+The standalone pipeline now creates `cloud_unusable`, but it is not yet applied
+to Prithvi crop output. Real Sentinel-2 scenes must be inspected before that
+connection is enabled.
+
+Cloud classification uses Sentinel-2 `B08`; the crop model uses `B8A`. These
+must not be silently substituted. A scene-ingestion adapter will need to supply
+both NIR choices or perform an explicitly validated resampling/conversion.
+
+Before Balkan-1 use, the classifier must be validated for its 1.5 m resolution,
+spectral response and 12-bit calibration. Shared RGB/NIR labels alone do not
+establish compatibility.
+
+See `UPSTREAM.md` for provenance, validation limits and the non-commercial
+weights licence.
+
+## Run it
+
+```powershell
+$env:PYTHONPATH="payload/src;shared/src"
+.\.venv\Scripts\python.exe -m cloud_detection.cli `
+  --input path\to\sentinel2_l1c.tif `
+  --output outputs\cloud_detection
+```
