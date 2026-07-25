@@ -9,8 +9,9 @@ import shutil
 import zipfile
 from pathlib import Path, PurePosixPath
 
+from prithvi_crop.pastis_validation import validate_pastis
+
 PASTIS_MD5 = "cfc441bf18137ff0bbf4fad58828fb98"
-EXPECTED_PATCHES = 2433
 
 
 def file_md5(path: Path) -> str:
@@ -61,23 +62,18 @@ def prepare(archive: Path, destination: Path) -> dict[str, int | str]:
                 shutil.copyfileobj(input_file, output_file, length=8 * 1024 * 1024)
             extracted += 1
 
-    root = destination / "PASTIS"
-    image_count = len(list((root / "DATA_S2").glob("S2_*.npy")))
-    mask_count = len(list((root / "ANNOTATIONS").glob("TARGET_*.npy")))
-    if image_count != EXPECTED_PATCHES or mask_count != EXPECTED_PATCHES:
-        raise RuntimeError(
-            "Incomplete PASTIS extraction: "
-            f"{image_count} images and {mask_count} masks"
-        )
-    if not (root / "metadata.geojson").is_file():
-        raise RuntimeError("PASTIS metadata was not extracted")
+    validation = validate_pastis(destination, inspect_arrays=True)
+    root = Path(validation["dataset_root"])
 
     report: dict[str, int | str] = {
         "archive": str(archive.resolve()),
         "md5": checksum,
         "extracted_members": extracted,
-        "image_patches": image_count,
-        "mask_patches": mask_count,
+        "image_patches": int(validation["required_images"]),
+        "mask_patches": int(validation["required_targets"]),
+        "extra_unlabelled_images_ignored": int(
+            validation["extra_unlabelled_images_ignored"]
+        ),
         "output": str(root.resolve()),
     }
     (destination / "manifest.json").write_text(

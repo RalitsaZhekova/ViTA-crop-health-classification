@@ -29,6 +29,7 @@ dev = [
 [project.scripts]
 prithvi-download = "prithvi_crop.download_data:main"
 prithvi-validate = "prithvi_crop.validate_data:main"
+prithvi-validate-europe = "prithvi_crop.pastis_validation:main"
 prithvi-check-config = "prithvi_crop.check_config:main"
 prithvi-preflight = "prithvi_crop.preflight:main"
 prithvi-smoke = "prithvi_crop.smoke:main"

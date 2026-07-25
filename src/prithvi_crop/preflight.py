@@ -14,6 +14,7 @@ import torch
 from prithvi_crop.check_config import check_config
 from prithvi_crop.constants import CLASS_NAMES
 from prithvi_crop.europe import resolve_pastis_root
+from prithvi_crop.pastis_validation import validate_pastis
 from prithvi_crop.runtime import build_task, load_config
 
 
@@ -82,11 +83,30 @@ def run_preflight(
         "pretrained_cache": str(_hugging_face_cache()),
     }
     if data_args.get("european_data_root") is not None:
-        summary["european_data_root"] = str(
-            resolve_pastis_root(data_args["european_data_root"])
+        european_root = resolve_pastis_root(data_args["european_data_root"])
+        european_report = validate_pastis(
+            european_root,
+            inspect_arrays=False,
         )
+        summary["european_data_root"] = str(european_root)
         summary["european_fraction"] = data_args["european_fraction"]
         summary["european_folds"] = data_args["european_folds"]
+        summary["european_metadata_patches"] = european_report[
+            "metadata_patches"
+        ]
+        summary["european_extra_images_ignored"] = european_report[
+            "extra_unlabelled_images_ignored"
+        ]
+
+    initial_checkpoint = config["model"]["init_args"].get("initial_checkpoint")
+    if initial_checkpoint is not None:
+        checkpoint_path = Path(initial_checkpoint)
+        if not checkpoint_path.is_file():
+            raise FileNotFoundError(
+                f"Initial checkpoint not found: {checkpoint_path}"
+            )
+        summary["initial_checkpoint"] = str(checkpoint_path)
+        summary["initial_checkpoint_bytes"] = checkpoint_path.stat().st_size
 
     if instantiate_model:
         task = build_task(config)
@@ -103,9 +123,6 @@ def run_preflight(
             raise RuntimeError("The Prithvi backbone is not completely frozen")
         summary["trainable_parameters"] = trainable
         summary["frozen_parameters"] = frozen
-        summary["initial_checkpoint"] = config["model"]["init_args"].get(
-            "initial_checkpoint"
-        )
         del task
 
     print("Training preflight passed:")

@@ -169,6 +169,18 @@ The archive, extracted data, checkpoints and logs remain under the ignored
 `data/` and `outputs/` directories. The reusable adapter, configuration and
 tests stay versioned in Git.
 
+When PASTIS is already extracted, validate all metadata-linked NumPy image
+headers and semantic targets without loading the model:
+
+```powershell
+prithvi-validate-europe --root data/europe/pastis
+```
+
+Extra image arrays without metadata are ignored. Training uses only the 2,433
+patch IDs that have metadata and matching semantic targets. The replay
+pipeline detects a valid extracted dataset and will not download the archive
+again.
+
 The direct equivalent is shown below. Set the cache variables first when you
 want the direct CLI to use the same repository-local caches as the launcher:
 

@@ -12,17 +12,29 @@ $pipelineError = Join-Path $pipelineDirectory "pipeline.stderr.log"
 $trainingOutput = Join-Path $pipelineDirectory "training.stdout.log"
 $trainingError = Join-Path $pipelineDirectory "training.stderr.log"
 $downloadUrl = "https://zenodo.org/records/5012942/files/PASTIS.zip?download=1"
+$directMetadata = Join-Path $pastisDirectory "metadata.geojson"
+$nestedMetadata = Join-Path $pastisDirectory "PASTIS\metadata.geojson"
 
 try {
     Set-Location -LiteralPath $workspace
     New-Item -ItemType Directory -Path $pipelineDirectory -Force | Out-Null
     New-Item -ItemType Directory -Path (Split-Path $archive) -Force | Out-Null
     New-Item -ItemType Directory -Path $pastisDirectory -Force | Out-Null
-    if (Test-Path -LiteralPath $startedMarker) {
+    if (Test-Path -LiteralPath $completedMarker) {
         exit 0
     }
+    if (Test-Path -LiteralPath $startedMarker) {
+        $previousStatus = if (Test-Path -LiteralPath $statusFile) {
+            (Get-Content -LiteralPath $statusFile -Raw).Trim()
+        } else {
+            "unknown"
+        }
+        if ($previousStatus -ne "failed") {
+            exit 0
+        }
+        Remove-Item -LiteralPath $startedMarker
+    }
     New-Item -ItemType File -Path $startedMarker -Force | Out-Null
-    "downloading" | Set-Content -LiteralPath $statusFile
 
     $env:HF_HOME = Join-Path $workspace "outputs\cache\huggingface"
     $env:HF_HUB_OFFLINE = "1"
@@ -31,32 +43,48 @@ try {
     $env:PYTHONUNBUFFERED = "1"
     $ErrorActionPreference = "Continue"
 
-    & curl.exe `
-        --location `
-        --fail `
-        --retry 8 `
-        --retry-delay 15 `
-        --continue-at - `
-        --output $archive `
-        $downloadUrl `
-        1> $pipelineOutput `
-        2> $pipelineError
-    if ($LASTEXITCODE -ne 0) {
-        throw "PASTIS download failed with code $LASTEXITCODE"
+    if (
+        -not (Test-Path -LiteralPath $directMetadata) -and
+        -not (Test-Path -LiteralPath $nestedMetadata)
+    ) {
+        "downloading" | Set-Content -LiteralPath $statusFile
+        & curl.exe `
+            --location `
+            --fail `
+            --retry 8 `
+            --retry-delay 15 `
+            --continue-at - `
+            --output $archive `
+            $downloadUrl `
+            1> $pipelineOutput `
+            2> $pipelineError
+        if ($LASTEXITCODE -ne 0) {
+            throw "PASTIS download failed with code $LASTEXITCODE"
+        }
+
+        "extracting" | Set-Content -LiteralPath $statusFile
+        & "$workspace\.venv\Scripts\python.exe" `
+            scripts\prepare_pastis.py `
+            --archive $archive `
+            --destination $pastisDirectory `
+            1>> $pipelineOutput `
+            2>> $pipelineError
+        if ($LASTEXITCODE -ne 0) {
+            throw "PASTIS preparation failed with code $LASTEXITCODE"
+        }
     }
 
-    "extracting" | Set-Content -LiteralPath $statusFile
+    "validating_data" | Set-Content -LiteralPath $statusFile
     & "$workspace\.venv\Scripts\python.exe" `
-        scripts\prepare_pastis.py `
-        --archive $archive `
-        --destination $pastisDirectory `
+        -m prithvi_crop.pastis_validation `
+        --root $pastisDirectory `
         1>> $pipelineOutput `
         2>> $pipelineError
     if ($LASTEXITCODE -ne 0) {
-        throw "PASTIS preparation failed with code $LASTEXITCODE"
+        throw "PASTIS validation failed with code $LASTEXITCODE"
     }
 
-    "validating" | Set-Content -LiteralPath $statusFile
+    "validating_training" | Set-Content -LiteralPath $statusFile
     & "$workspace\.venv\Scripts\python.exe" `
         -m prithvi_crop.preflight `
         --config configs\prithvi_4band_europe_replay.yaml `
@@ -92,6 +120,9 @@ try {
 }
 catch {
     "failed" | Set-Content -LiteralPath $statusFile
+    if (Test-Path -LiteralPath $startedMarker) {
+        Remove-Item -LiteralPath $startedMarker
+    }
     $_ | Out-String | Add-Content -LiteralPath $pipelineError
     exit 1
 }
