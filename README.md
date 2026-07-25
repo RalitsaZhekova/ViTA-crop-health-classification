@@ -12,6 +12,11 @@ separately supervised health or multitask head. This crop-type checkpoint does
 not infer health: suitable health targets, definitions, and evaluation data are
 not present in this dataset.
 
+The separate rule-based condition stage calculates NDVI, EVI, GNDVI, CVI and
+RGB features only on clear, confident crop pixels. Its calibrated-reflectance,
+masking and JSON output rules are documented in
+[`docs/health_analysis_contract.md`](docs/health_analysis_contract.md).
+
 ## Data and model contract
 
 The official IBM-NASA dataset is hosted at
