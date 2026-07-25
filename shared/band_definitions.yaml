@@ -1,0 +1,25 @@
+schema_version: 1
+model_input:
+  layout: batch_channels_time_height_width
+  bands:
+    - BLUE
+    - GREEN
+    - RED
+    - NIR_NARROW
+  time_steps: 3
+  nominal_chip_size: [224, 224]
+
+sentinel_2:
+  BLUE: B02
+  GREEN: B03
+  RED: B04
+  NIR_NARROW: B8A
+
+balkan_1:
+  required_logical_bands:
+    - BLUE
+    - GREEN
+    - RED
+    - NIR_NARROW
+  panchromatic_role: reconstruction_optional
+  exact_source_band_mapping: pending_sensor_metadata
