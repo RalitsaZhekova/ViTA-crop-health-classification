@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "verified_at": "2026-07-25",
+  "source_checkpoint_bytes": 536560975,
+  "source_checkpoint_sha256": "49383194174c56b66f3b7fa67254a42135db6ad64172e873c43d65d1afae6a65",
+  "inference_weights_bytes": 409025203,
+  "inference_weights_sha256": "732e9b32f2a8fa7cbd1285882148d3103302fac90c96236b438849469ac28098",
+  "training_state_bytes_removed": 127535772,
+  "device": "NVIDIA GeForce RTX 3060 Laptop GPU",
+  "standalone_gpu_smoke": {
+    "fine_shape": [1, 224, 224],
+    "binary_shape": [1, 224, 224],
+    "crop_probability_finite": true,
+    "peak_gpu_memory_mib": 454.67
+  },
+  "legacy_equivalence": {
+    "scope": "one real internal-validation chip",
+    "chip_id": "chip_114_441",
+    "fine_class_equal": true,
+    "max_crop_probability_difference": 3.5762786865234375e-07,
+    "binary_decision_equal_fraction": 1.0
+  },
+  "held_out_test_consumed": false
+}

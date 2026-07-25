@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "prithvi-crop-payload"
+version = "0.1.0"
+description = "Minimal crop segmentation inference for the Balkan-1 payload"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+  "prithvi-crop-shared==0.1.0",
+  "torch>=2.5,<3",
+  "terratorch==1.2.10",
+  "pyyaml>=6,<7",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

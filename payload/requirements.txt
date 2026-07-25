@@ -1,0 +1,7 @@
+# Core model inference
+torch>=2.5,<3
+terratorch==1.2.10
+pyyaml>=6,<7
+
+# Scene I/O; model-tile inference itself does not import this.
+rasterio>=1.3.10,<2

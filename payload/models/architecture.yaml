@@ -1,0 +1,25 @@
+schema_version: 1
+model_factory: EncoderDecoderFactory
+task: segmentation
+model_args:
+  backbone: prithvi_eo_v2_100_tl
+  backbone_pretrained: false
+  backbone_num_frames: 3
+  backbone_coords_encoding:
+    - time
+    - location
+  backbone_bands:
+    - BLUE
+    - GREEN
+    - RED
+    - NIR_NARROW
+  rescale: true
+  necks:
+    - name: SelectIndices
+      indices: [2, 5, 8, 11]
+    - name: ReshapeTokensToImage
+      effective_time_dim: 3
+  decoder: UperNetDecoder
+  decoder_channels: 256
+  head_dropout: 0.2
+  num_classes: 13

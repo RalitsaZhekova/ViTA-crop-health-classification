@@ -1,0 +1,25 @@
+schema_version: 1
+bundle_status: inference_core_ready
+include:
+  - models/prithvi_crop_classifier_v1_weights.pt
+  - models/architecture.yaml
+  - models/selected_model.yaml
+  - src/prithvi_payload
+  - requirements.txt
+  - ../shared/src/prithvi_shared
+  - ../shared/band_definitions.yaml
+  - ../shared/normalization.yaml
+  - ../shared/class_mapping.yaml
+  - ../shared/schemas/inference_result.schema.json
+exclude:
+  - models/prithvi_crop_classifier_epoch02_f1_0.5062.ckpt
+  - ../training
+  - ../ground
+  - ../data
+  - ../outputs
+  - "**/experiment_logs/**"
+  - "**/__pycache__/**"
+not_yet_implemented:
+  - raw_balkan_1_reconstruction
+  - balkan_1_cloud_mask_adapter
+  - geotiff_scene_tiling_and_stitching
