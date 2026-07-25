@@ -8,14 +8,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-
-from ._cloudsen12 import (
-    CloudBackend,
-    CloudSEN12Backend,
-    normalize_reflectance,
-    reconstruct,
-    split_tiles,
-)
+from cloud_detection.backend import CloudBackend, CloudSEN12Backend
+from cloud_detection.preprocessing import normalize_reflectance
+from cloud_detection.tiling import reconstruct, split_tiles
 
 CLOUD_MODEL_NAME = "dtacs4bands"
 CLOUD_MODEL_SHA256 = "37205adce72fbbb65a3cfa8f47676c84ebf9b1555a27a3838d584072c954b22d"
@@ -104,6 +99,7 @@ class PayloadCloudClassifier:
             CLOUD_MODEL_NAME,
             weights_directory,
             device=device,
+            expected_sha256=CLOUD_MODEL_SHA256,
         )
         return cls(
             backend,

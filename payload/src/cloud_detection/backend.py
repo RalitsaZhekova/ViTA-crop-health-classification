@@ -1,12 +1,15 @@
-"""Backend adapted from ViTA cloud detection revision a1ce4d3."""
-
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
 import numpy as np
+
+DEFAULT_WEIGHTS_FOLDER = (
+    Path(__file__).resolve().parents[2] / "models" / "cloudsen12"
+)
 
 
 class BackendError(RuntimeError):
@@ -27,17 +30,19 @@ class CloudBackend(Protocol):
 class CloudSEN12Backend:
     """Adapter for the official CloudSEN12 ``dtacs4bands`` model.
 
-    The upstream public API returns a discrete semantic map. The distributed
-    model emits logits, so this adapter uses those logits when available and
-    converts them to softmax confidence scores. These are not calibrated
-    probabilities.
+    The upstream public ``predict`` API returns a discrete semantic mask. The distributed
+    TorchScript model itself emits class logits, so this adapter first attempts to call the
+    wrapped TorchScript module directly and converts logits to softmax scores. If upstream
+    internals change, it safely falls back to the documented semantic API and emits one-hot
+    scores. Softmax scores are model confidence values, not calibrated probabilities.
     """
 
     def __init__(
         self,
         name: str = "dtacs4bands",
-        weights_folder: str | Path = "models/cloudsen12",
+        weights_folder: str | Path = DEFAULT_WEIGHTS_FOLDER,
         device: str = "auto",
+        expected_sha256: str | None = None,
     ) -> None:
         if name != "dtacs4bands":
             raise BackendError("Only dtacs4bands is supported by this four-band pipeline.")
@@ -47,8 +52,7 @@ class CloudSEN12Backend:
             from cloudsen12_models import cloudsen12
         except ImportError as exc:
             raise BackendError(
-                "Install cloudsen12_models==1.0.2 and torch before loading "
-                "the real backend."
+                "Install cloudsen12_models and torch before loading the real backend."
             ) from exc
 
         self.torch = torch
@@ -58,6 +62,23 @@ class CloudSEN12Backend:
         if self.device.type == "cuda" and not torch.cuda.is_available():
             raise BackendError("CUDA was requested but is unavailable.")
         Path(weights_folder).mkdir(parents=True, exist_ok=True)
+        model_path = Path(weights_folder) / f"{name}.pt"
+        if expected_sha256 is not None:
+            if not model_path.is_file():
+                raise BackendError(
+                    f"Missing verified checkpoint {model_path}. Run "
+                    "payload/scripts/download_cloud_weights.py while online."
+                )
+            digest = hashlib.sha256()
+            with model_path.open("rb") as file:
+                for chunk in iter(lambda: file.read(8 * 1024 * 1024), b""):
+                    digest.update(chunk)
+            actual_sha256 = digest.hexdigest()
+            if actual_sha256 != expected_sha256:
+                raise BackendError(
+                    "Cloud checkpoint checksum mismatch: "
+                    f"expected {expected_sha256}, got {actual_sha256}."
+                )
 
         try:
             self.model = cloudsen12.load_model_by_name(
@@ -96,7 +117,6 @@ class CloudSEN12Backend:
                         score_kind="softmax_confidence",
                     )
             except Exception:
-                # Preserve the reviewed adapter's fallback to the public API.
                 pass
 
         try:

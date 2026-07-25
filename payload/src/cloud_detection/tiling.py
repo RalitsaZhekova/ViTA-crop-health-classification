@@ -1,5 +1,3 @@
-"""Overlap tiling adapted from ViTA cloud detection revision a1ce4d3."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -39,7 +37,9 @@ def split_tiles(
     pad_height = max(0, size - height)
     pad_width = max(0, size - width)
     effective_mode = (
-        "edge" if padding_mode == "reflect" and (height == 1 or width == 1) else padding_mode
+        "edge"
+        if padding_mode == "reflect" and (height == 1 or width == 1)
+        else padding_mode
     )
     padded = np.pad(
         image,

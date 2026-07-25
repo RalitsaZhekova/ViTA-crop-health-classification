@@ -8,7 +8,7 @@ PAYLOAD_SOURCE = Path("payload/src").resolve()
 if str(PAYLOAD_SOURCE) not in sys.path:
     sys.path.insert(0, str(PAYLOAD_SOURCE))
 
-from prithvi_payload._cloudsen12 import TestBackend  # noqa: E402
+from cloud_detection.backend import TestBackend  # noqa: E402
 from prithvi_payload.cloud_classifier import (  # noqa: E402
     CLOUD_BANDS,
     CLOUD_CLASS_NAMES,

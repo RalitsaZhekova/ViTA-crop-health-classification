@@ -1,5 +1,3 @@
-"""Reflectance normalization adapted from ViTA revision a1ce4d3."""
-
 from __future__ import annotations
 
 import numpy as np
@@ -12,7 +10,11 @@ def normalize_reflectance(
     clip_max: float | None = None,
     nodata_value: int | float | None = 0,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Convert digital numbers to float32 top-of-atmosphere reflectance."""
+    """Convert Sentinel-2 digital numbers to float32 reflectance.
+
+    The official CloudSEN12 example divides L1C values by 10,000. Clipping is optional and
+    disabled by default so the wrapper does not silently alter bright observations.
+    """
     if array.ndim != 3:
         raise ValueError(f"Expected C x H x W input, found {array.shape}.")
     if scale <= 0:

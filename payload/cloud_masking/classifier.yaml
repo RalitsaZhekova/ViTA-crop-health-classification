@@ -1,5 +1,7 @@
 schema_version: 1
 status: integrated_classifier_only
+component: prithvi_payload.PayloadCloudClassifier
+full_pipeline_config: ../cloud_detection/configs/cloud_detector.yaml
 model:
   name: dtacs4bands
   package: cloudsen12_models
