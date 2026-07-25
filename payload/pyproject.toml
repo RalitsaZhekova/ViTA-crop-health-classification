@@ -9,8 +9,10 @@ description = "Minimal crop segmentation inference for the Balkan-1 payload"
 requires-python = ">=3.10,<3.14"
 dependencies = [
   "prithvi-crop-shared==0.1.0",
+  "numpy>=1.26,<3",
   "torch>=2.5,<3",
   "terratorch==1.2.10",
+  "cloudsen12_models==1.0.2",
   "pyyaml>=6,<7",
 ]
 

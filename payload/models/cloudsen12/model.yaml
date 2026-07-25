@@ -1,0 +1,14 @@
+schema_version: 1
+status: prototype_only
+name: dtacs4bands
+file: dtacs4bands.pt
+bytes: 41267324
+package: cloudsen12_models
+package_version: 1.0.2
+sha256: 37205adce72fbbb65a3cfa8f47676c84ebf9b1555a27a3838d584072c954b22d
+bands: [B08, B04, B03, B02]
+classes: [clear, thick_cloud, thin_cloud, cloud_shadow]
+training_sensor: Sentinel-2
+training_product: L1C_top_of_atmosphere
+weights_license: CC-BY-NC-4.0
+commercial_deployment_approved: false
