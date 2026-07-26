@@ -21,6 +21,7 @@ dependencies = [
 
 [project.scripts]
 cloud-detect = "cloud_detection.cli:main"
+scene-inspect = "prithvi_payload.scene_intake:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
