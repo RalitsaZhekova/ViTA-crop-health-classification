@@ -4,7 +4,7 @@ task: segmentation
 model_args:
   backbone: prithvi_eo_v2_100_tl
   backbone_pretrained: false
-  backbone_num_frames: 3
+  backbone_num_frames: 1
   backbone_coords_encoding:
     - time
     - location
@@ -18,8 +18,8 @@ model_args:
     - name: SelectIndices
       indices: [2, 5, 8, 11]
     - name: ReshapeTokensToImage
-      effective_time_dim: 3
+      effective_time_dim: 1
   decoder: UperNetDecoder
   decoder_channels: 256
   head_dropout: 0.2
-  num_classes: 13
+  num_classes: 2

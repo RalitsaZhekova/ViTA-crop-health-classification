@@ -66,6 +66,8 @@ def check_config(config_path: Path) -> dict[str, Any]:
     )
     single_frame = data_args.get("single_frame", False)
     _require(isinstance(single_frame, bool), "single_frame must be a boolean")
+    binary_only = model_args.get("binary_only", False)
+    _require(isinstance(binary_only, bool), "binary_only must be a boolean")
     expected_frames = 1 if single_frame else 3
     _require(
         backbone_args.get("backbone_num_frames") == expected_frames,
@@ -110,9 +112,10 @@ def check_config(config_path: Path) -> dict[str, Any]:
             initial_checkpoint is not None,
             "Single-frame training must warm-start from a validated checkpoint",
         )
+        expected_adapter = "fine_to_binary" if binary_only else "three_to_one_frame"
         _require(
-            checkpoint_adapter == "three_to_one_frame",
-            "Single-frame training requires the explicit three_to_one_frame adapter",
+            checkpoint_adapter == expected_adapter,
+            f"Single-frame training requires the explicit {expected_adapter} adapter",
         )
     else:
         _require(
@@ -147,17 +150,22 @@ def check_config(config_path: Path) -> dict[str, Any]:
         "Unexpected Prithvi backbone",
     )
     _require(backbone_args.get("backbone_pretrained") is True, "Pretrained weights are required")
-    _require(backbone_args.get("num_classes") == NUM_CLASSES, "Expected 13 output classes")
+    output_classes = 2 if binary_only else NUM_CLASSES
+    expected_class_names = ["Non-crop", "Crop"] if binary_only else list(CLASS_NAMES)
     _require(
-        model_args.get("class_names") == list(CLASS_NAMES),
-        "Class names/order must match the dataset",
+        backbone_args.get("num_classes") == output_classes,
+        f"Expected {output_classes} output classes",
+    )
+    _require(
+        model_args.get("class_names") == expected_class_names,
+        "Class names/order must match the configured task",
     )
     weights = model_args.get("class_weights")
     _require(
         isinstance(weights, list)
-        and len(weights) == NUM_CLASSES
+        and len(weights) == output_classes
         and all(isinstance(value, (int, float)) and value > 0 for value in weights),
-        "class_weights must contain 13 positive values",
+        f"class_weights must contain {output_classes} positive values",
     )
     _require(model_args.get("ignore_index") == -1, "Reduced no-data labels must use -1")
     _require(model_args.get("loss") == "ce", "Expected weighted cross-entropy loss")
@@ -198,7 +206,10 @@ def check_config(config_path: Path) -> dict[str, Any]:
     )
     _require(checkpoint_args.get("save_last") is True, "A resumable last.ckpt is required")
     _require(checkpoint_args.get("save_top_k", 0) > 0, "At least one best checkpoint is required")
-    expected_monitor = "val/Deployment_Score" if single_frame else "val/Macro_F1"
+    if binary_only:
+        expected_monitor = "val/Overall_Accuracy"
+    else:
+        expected_monitor = "val/Deployment_Score" if single_frame else "val/Macro_F1"
     _require(
         checkpoint_args.get("monitor") == expected_monitor
         and checkpoint_args.get("mode") == "max",
@@ -246,16 +257,23 @@ def check_config(config_path: Path) -> dict[str, Any]:
             and set(folds).issubset({1, 2, 3, 4}),
             "European training must reserve PASTIS fold 5",
         )
-        _require(
-            0 < model_args.get("crop_binary_loss_weight", 0) <= 0.5,
-            "European replay requires a conservative binary crop loss",
-        )
+        if binary_only:
+            _require(
+                model_args.get("crop_binary_loss_weight", 0) == 0,
+                "Binary-only training must use its direct two-class loss",
+            )
+        else:
+            _require(
+                0 < model_args.get("crop_binary_loss_weight", 0) <= 0.5,
+                "European replay requires a conservative binary crop loss",
+            )
 
     summary = {
         "bands": expected_bands,
         "frames": expected_frames,
         "single_frame": single_frame,
-        "classes": NUM_CLASSES,
+        "classes": output_classes,
+        "binary_only": binary_only,
         "backbone_frozen": True,
         "initial_checkpoint": initial_checkpoint,
         "european_data_root": european_data_root,

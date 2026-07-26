@@ -151,7 +151,7 @@ def _load_selected_examples(
     data_module.setup("validate")
 
     config["model"]["init_args"]["initial_checkpoint"] = None
-    task = build_task(config)
+    task = build_task(config, load_initial_weights=False)
     checkpoint_data = torch.load(
         checkpoint,
         map_location="cpu",

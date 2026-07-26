@@ -82,6 +82,7 @@ def evaluate_binary_validation(
         raise ValueError("target_false_crop_rate must be strictly between 0 and 1")
 
     config = load_config(config_path)
+    binary_only = bool(config["model"]["init_args"].get("binary_only", False))
     data = build_data_module(
         config,
         batch_size=batch_size,
@@ -89,7 +90,7 @@ def evaluate_binary_validation(
     )
     data.setup("validate")
 
-    task = build_task(config)
+    task = build_task(config, load_initial_weights=False)
     checkpoint = torch.load(
         checkpoint_path,
         map_location="cpu",
@@ -114,7 +115,11 @@ def evaluate_binary_validation(
                     temporal_coords=normalized["temporal_coords"],
                     location_coords=normalized["location_coords"],
                 )
-            probabilities = crop_probability_from_fine_logits(output.output)
+            probabilities = (
+                output.output.softmax(dim=1)[:, 1]
+                if binary_only
+                else crop_probability_from_fine_logits(output.output)
+            )
             targets = binary_targets_from_fine_targets(normalized["mask"])
             valid = targets != -1
             positive_scores.append(

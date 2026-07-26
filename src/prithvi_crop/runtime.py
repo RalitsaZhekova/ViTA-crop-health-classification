@@ -70,5 +70,17 @@ def build_data_module(
     return CropTypeDataModule(**args)
 
 
-def build_task(config: dict[str, Any]) -> CropSegmentationTask:
-    return CropSegmentationTask(**deepcopy(config["model"]["init_args"]))
+def build_task(
+    config: dict[str, Any],
+    *,
+    load_initial_weights: bool = True,
+) -> CropSegmentationTask:
+    args = deepcopy(config["model"]["init_args"])
+    if not load_initial_weights:
+        # A complete Lightning checkpoint supplies every model tensor. Avoid a
+        # redundant Hub lookup and a redundant warm-start checkpoint load when
+        # constructing the architecture for evaluation.
+        args["model_args"]["backbone_pretrained"] = False
+        args["initial_checkpoint"] = None
+        args["initial_checkpoint_adapter"] = None
+    return CropSegmentationTask(**args)

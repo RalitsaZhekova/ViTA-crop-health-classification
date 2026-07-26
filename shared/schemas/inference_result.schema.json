@@ -31,9 +31,10 @@
     "raster_assets": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["fine_class", "crop_binary", "crop_probability", "cloud_mask"],
+      "required": ["crop_binary", "crop_probability", "cloud_mask"],
       "properties": {
         "fine_class": {"type": "string"},
+        "crop_confidence": {"type": "string"},
         "crop_binary": {"type": "string"},
         "crop_probability": {"type": "string"},
         "cloud_mask": {"type": "string"}

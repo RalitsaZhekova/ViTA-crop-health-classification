@@ -35,6 +35,7 @@ from prithvi_crop.binary import (
     binary_targets_from_fine_targets,
 )
 from prithvi_crop.constants import CLASS_NAMES
+from prithvi_crop.europe import PROJECT_CROP_CLASSES, PROJECT_NON_CROP_CLASSES
 
 
 def _cross_entropy_or_zero(
@@ -129,6 +130,33 @@ def _adapt_three_frame_state_dict(
     return adapted
 
 
+def _adapt_fine_head_to_binary(
+    source: dict[str, Tensor],
+    destination: dict[str, Tensor],
+) -> dict[str, Tensor]:
+    """Warm-start a two-class model from a trained single-frame fine model."""
+    adapted: dict[str, Tensor] = {}
+    head_tensors = {"head.head.2.weight", "head.head.2.bias"}
+    groups = (PROJECT_NON_CROP_CLASSES, PROJECT_CROP_CLASSES)
+    for name, target in destination.items():
+        if name not in source:
+            raise ValueError(f"Initial checkpoint is missing model tensor: {name}")
+        value = source[name]
+        if value.shape == target.shape:
+            adapted[name] = value
+            continue
+        if name in head_tensors and value.shape[0] == 13 and target.shape[0] == 2:
+            adapted[name] = torch.stack(
+                [value[list(class_indices)].mean(dim=0) for class_indices in groups]
+            )
+            continue
+        raise ValueError(
+            f"Unsupported fine-to-binary tensor change for {name}: "
+            f"{tuple(value.shape)} -> {tuple(target.shape)}"
+        )
+    return adapted
+
+
 class CropSegmentationTask(SemanticSegmentationTask):
     """TerraTorch segmentation task with the metrics required by this project."""
 
@@ -166,8 +194,10 @@ class CropSegmentationTask(SemanticSegmentationTask):
         crop_binary_loss_weight: float = 0.0,
         validation_crop_threshold: float = 0.5,
         selection_binary_weight: float = 0.7,
+        binary_only: bool = False,
     ) -> None:
         self.evaluation_output_dir = Path(evaluation_output_dir)
+        self.binary_only = binary_only
         if not 0 <= crop_binary_loss_weight <= 1:
             raise ValueError("crop_binary_loss_weight must be between 0 and 1")
         self.crop_binary_loss_weight = crop_binary_loss_weight
@@ -243,6 +273,11 @@ class CropSegmentationTask(SemanticSegmentationTask):
                 model_state,
                 self.model.state_dict(),
             )
+        elif adapter == "fine_to_binary":
+            adapted_state = _adapt_fine_head_to_binary(
+                model_state,
+                self.model.state_dict(),
+            )
         else:
             raise ValueError(f"Unknown initial checkpoint adapter: {adapter}")
         self.model.load_state_dict(adapted_state, strict=True)
@@ -255,6 +290,13 @@ class CropSegmentationTask(SemanticSegmentationTask):
         batch_idx: int,
         dataloader_idx: int = 0,
     ) -> Tensor:
+        if self.binary_only:
+            return SemanticSegmentationTask.training_step(
+                self,
+                self._binary_batch(batch),
+                batch_idx,
+                dataloader_idx,
+            )
         if "crop_mask" not in batch or self.crop_binary_loss_weight == 0:
             return super().training_step(batch, batch_idx, dataloader_idx)
 
@@ -295,6 +337,26 @@ class CropSegmentationTask(SemanticSegmentationTask):
         )
         self.train_metrics.update(logits.argmax(dim=1), fine_target)
         return loss
+
+    def _binary_batch(self, batch: dict[str, Any]) -> dict[str, Any]:
+        target = batch.get("crop_mask")
+        if target is None:
+            target = binary_targets_from_fine_targets(
+                batch["mask"],
+                ignore_index=self.hparams["ignore_index"],
+            )
+        converted = {
+            key: batch[key]
+            for key in (
+                "image",
+                "temporal_coords",
+                "location_coords",
+                "filename",
+            )
+            if key in batch
+        }
+        converted["mask"] = target
+        return converted
 
     def configure_metrics(self) -> None:
         num_classes: int = self.hparams["model_args"]["num_classes"]
@@ -403,6 +465,13 @@ class CropSegmentationTask(SemanticSegmentationTask):
         batch_idx: int,
         dataloader_idx: int = 0,
     ) -> None:
+        if self.binary_only:
+            return SemanticSegmentationTask.validation_step(
+                self,
+                self._binary_batch(batch),
+                batch_idx,
+                dataloader_idx,
+            )
         x = batch["image"]
         target = self.squeeze_ground_truth(batch["mask"])
         excluded = {
@@ -441,6 +510,8 @@ class CropSegmentationTask(SemanticSegmentationTask):
         self.val_binary_metrics.update(binary_prediction, binary_target)
 
     def on_validation_epoch_end(self) -> None:
+        if self.binary_only:
+            return SemanticSegmentationTask.on_validation_epoch_end(self)
         fine_metrics = self.val_metrics.compute()
         binary_metrics = self.val_binary_metrics.compute()
         fine_f1 = fine_metrics["val/Macro_F1"]
@@ -455,6 +526,13 @@ class CropSegmentationTask(SemanticSegmentationTask):
         super().on_validation_epoch_end()
 
     def test_step(self, batch: Any, batch_idx: int, dataloader_idx: int = 0) -> None:
+        if self.binary_only:
+            return SemanticSegmentationTask.test_step(
+                self,
+                self._binary_batch(batch),
+                batch_idx,
+                dataloader_idx,
+            )
         x = batch["image"]
         y = self.squeeze_ground_truth(batch["mask"])
         other_keys = batch.keys() - {"image", "mask", "filename"}

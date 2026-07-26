@@ -1,8 +1,10 @@
 # Prithvi four-band crop and land-cover model
 
-This repository trains a pixel-wise crop/land-cover classifier on three HLS
-observations using a frozen `Prithvi-EO-2.0-100M-TL` backbone and a trainable
-UPerNet task head. The only inputs are `BLUE`, `GREEN`, `RED`, and
+This repository trains pixel-wise crop models using a frozen
+`Prithvi-EO-2.0-100M-TL` backbone and a trainable UPerNet task head. The
+selected payload model classifies crop/non-crop from one image; preserved
+experiments classify crop type from one or three observations. The only inputs
+are `BLUE`, `GREEN`, `RED`, and
 `NIR_NARROW`, in that order. No SWIR channel is passed to the model and no
 synthetic, copied, or imputed SWIR channel is created.
 
@@ -197,14 +199,14 @@ patch IDs that have metadata and matching semantic targets. The replay
 pipeline detects a valid extracted dataset and will not download the archive
 again.
 
-### Single-image payload candidate
+### Selected single-image payload model
 
-`configs/prithvi_4band_single_frame.yaml` trains a separate one-date candidate
-for on-demand payload inference. Each source date becomes an independent
+`configs/prithvi_4band_single_frame_binary.yaml` trains the selected direct
+crop/non-crop model from one image. Each source date becomes an independent
 example while the split remains grouped by chip. The frozen Prithvi backbone
-uses its native one-frame positional encoding, and compatible decoder weights
-are warm-started from the selected three-date checkpoint. This experiment does
-not replace the selected deployment model unless its validation gate passes.
+uses its native one-frame positional encoding and warm-started downstream
+weights. The one- and three-frame crop-type checkpoints remain preserved under
+`outputs/` but are not shipped in the base payload bundle.
 
 The direct equivalent is shown below. Set the cache variables first when you
 want the direct CLI to use the same repository-local caches as the launcher:

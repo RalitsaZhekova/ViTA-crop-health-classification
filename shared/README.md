@@ -5,9 +5,9 @@ payload inference and ground processing.
 
 It owns:
 
-- the four-band model input order and three-time-step shape;
+- the four-band, single-image model input shape;
 - the exact training normalization values;
-- the 13 fine classes and crop/no-crop mappings;
+- the preserved 13 fine classes and active crop/no-crop contract;
 - the selected checkpoint identity and calibrated thresholds;
 - JSON schemas exchanged between payload and ground.
 

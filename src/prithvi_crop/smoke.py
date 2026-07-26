@@ -34,6 +34,10 @@ def run_smoke(config_path: Path, batch_size: int | None = None) -> None:
     expected_frames = int(
         config["model"]["init_args"]["model_args"]["backbone_num_frames"]
     )
+    expected_classes = int(
+        config["model"]["init_args"]["model_args"]["num_classes"]
+    )
+    binary_only = bool(config["model"]["init_args"].get("binary_only", False))
     expected_shape = (smoke_batch_size, 4, expected_frames, 224, 224)
     if tuple(batch["image"].shape) != expected_shape:
         raise RuntimeError(
@@ -82,9 +86,19 @@ def run_smoke(config_path: Path, batch_size: int | None = None) -> None:
             temporal_coords=batch["temporal_coords"],
             location_coords=batch["location_coords"],
         )
-        if tuple(output.output.shape) != (smoke_batch_size, 13, 224, 224):
+        if tuple(output.output.shape) != (
+            smoke_batch_size,
+            expected_classes,
+            224,
+            224,
+        ):
             raise RuntimeError(f"Unexpected logits shape: {tuple(output.output.shape)}")
-        loss = task.criterion(output.output, batch["mask"])
+        target = (
+            task._binary_batch(batch)["mask"]
+            if binary_only
+            else batch["mask"]
+        )
+        loss = task.criterion(output.output, target)
     loss.backward()
 
     if any(parameter.grad is not None for _, parameter in frozen):

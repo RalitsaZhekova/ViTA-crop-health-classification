@@ -1,7 +1,7 @@
 """Model input bands, shape and training normalization."""
 
 MODEL_BANDS = ("BLUE", "GREEN", "RED", "NIR_NARROW")
-TIME_STEPS = 3
+TIME_STEPS = 1
 INPUT_HEIGHT = 224
 INPUT_WIDTH = 224
 

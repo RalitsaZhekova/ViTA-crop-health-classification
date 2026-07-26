@@ -6,7 +6,7 @@ model_input:
     - GREEN
     - RED
     - NIR_NARROW
-  time_steps: 3
+  time_steps: 1
   nominal_chip_size: [224, 224]
 
 sentinel_2:
@@ -21,5 +21,5 @@ balkan_1:
     - GREEN
     - RED
     - NIR_NARROW
-  panchromatic_role: reconstruction_optional
+  panchromatic_role: required_source_not_model_input
   exact_source_band_mapping: pending_sensor_metadata

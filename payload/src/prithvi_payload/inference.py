@@ -13,7 +13,6 @@ import torch
 import yaml
 from prithvi_shared import (
     CROP_CLASSIFICATION_THRESHOLD,
-    CROP_PROBABILITY_CLASS_IDS,
     MODEL_BANDS,
     NORMALIZATION_MEANS,
     NORMALIZATION_STDS,
@@ -40,12 +39,11 @@ def default_model_directory() -> Path:
 
 @dataclass(frozen=True)
 class InferenceOutput:
-    """Per-pixel outputs for one batch of model tiles."""
+    """Per-pixel crop/non-crop outputs for one batch of model tiles."""
 
-    fine_class: Tensor
-    fine_confidence: Tensor
     crop_probability: Tensor
     crop_binary: Tensor
+    crop_confidence: Tensor
 
 
 def checkpoint_sha256(path: Path) -> str:
@@ -78,7 +76,7 @@ def _model_state(checkpoint: dict[str, Any]) -> dict[str, Tensor]:
 
 
 class PayloadCropModel:
-    """Pinned Prithvi model with calibrated fine and binary outputs."""
+    """Pinned single-image Prithvi model with calibrated binary outputs."""
 
     def __init__(
         self,
@@ -196,17 +194,13 @@ class PayloadCropModel:
                 location_coords=location_coords,
             ).output
             probabilities = logits.softmax(dim=1)
-            fine_confidence, fine_class = probabilities.max(dim=1)
-            crop_probability = probabilities[
-                :,
-                CROP_PROBABILITY_CLASS_IDS,
-            ].sum(dim=1)
+            crop_probability = probabilities[:, 1]
             crop_binary = (
                 crop_probability >= CROP_CLASSIFICATION_THRESHOLD
             ).to(dtype=torch.uint8)
+            crop_confidence = torch.maximum(crop_probability, 1 - crop_probability)
         return InferenceOutput(
-            fine_class=fine_class,
-            fine_confidence=fine_confidence,
             crop_probability=crop_probability,
             crop_binary=crop_binary,
+            crop_confidence=crop_confidence,
         )

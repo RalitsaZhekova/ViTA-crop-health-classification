@@ -17,19 +17,20 @@ Raw digital numbers and display-stretched RGB are not accepted. The caller
 also supplies a Boolean analysis mask assembled from:
 
 ```text
-supported active-crop class
+crop pixel
 AND clear pixel
 AND valid reflectance
-AND combined crop probability >= 0.76
+AND direct crop probability >= 0.645
 ```
 
-Fallow/idle cropland and the ambiguous `Other` class are excluded by default
-so that expected low vegetation is not presented as stress.
+The base model does not identify crop type, so fallow fields cannot yet be
+excluded automatically. Temporal baselines must therefore prevent expected
+seasonal low vegetation from being presented as stress.
 
-The `0.76` health-analysis threshold was calibrated with
-`epoch=02-macro_f1=0.5062.ckpt` on the 308-chip internal validation split. It
+The `0.645` health-analysis threshold was calibrated with
+`epoch=14-binary_acc=0.7949.ckpt` on the 308-chip internal validation split. It
 limits false crop detections to below 10% on that split. The normal
-crop/non-crop map uses `0.615`, which maximizes binary accuracy. Both thresholds
+crop/non-crop map uses `0.49`, which maximizes binary accuracy. Both thresholds
 must be recalibrated if the checkpoint or validation split changes.
 
 ## Measurements

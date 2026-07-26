@@ -12,7 +12,6 @@ from typing import Any
 import torch
 
 from prithvi_crop.check_config import check_config
-from prithvi_crop.constants import CLASS_NAMES
 from prithvi_crop.europe import resolve_pastis_root
 from prithvi_crop.pastis_validation import validate_pastis
 from prithvi_crop.runtime import build_task, load_config
@@ -49,6 +48,8 @@ def run_preflight(
     config = load_config(config_path)
     data_args = config["data"]["init_args"]
     trainer = config["trainer"]
+    model_init_args = config["model"]["init_args"]
+    configured_class_names = model_init_args["class_names"]
     device = torch.cuda.get_device_properties(0)
     split_report = report["logical_model_splits"]
     summary: dict[str, Any] = {
@@ -75,7 +76,7 @@ def run_preflight(
         "logical_split_policy": split_report["policy"],
         "cross_split_chip_id_overlap": split_report["cross_split_chip_id_overlap"],
         "cross_split_spatial_overlap": split_report["cross_split_spatial_overlap"],
-        "number_of_classes": len(CLASS_NAMES),
+        "number_of_classes": len(configured_class_names),
         "class_distribution": split_report["class_pixel_counts"]["training"],
         "class_distribution_scope": "logical training split only",
         "output_directory": trainer["default_root_dir"],
@@ -101,7 +102,7 @@ def run_preflight(
             "extra_unlabelled_images_ignored"
         ]
 
-    initial_checkpoint = config["model"]["init_args"].get("initial_checkpoint")
+    initial_checkpoint = model_init_args.get("initial_checkpoint")
     if initial_checkpoint is not None:
         checkpoint_path = Path(initial_checkpoint)
         if not checkpoint_path.is_file():
