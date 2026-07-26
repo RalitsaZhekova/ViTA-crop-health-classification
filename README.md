@@ -197,6 +197,15 @@ patch IDs that have metadata and matching semantic targets. The replay
 pipeline detects a valid extracted dataset and will not download the archive
 again.
 
+### Single-image payload candidate
+
+`configs/prithvi_4band_single_frame.yaml` trains a separate one-date candidate
+for on-demand payload inference. Each source date becomes an independent
+example while the split remains grouped by chip. The frozen Prithvi backbone
+uses its native one-frame positional encoding, and compatible decoder weights
+are warm-started from the selected three-date checkpoint. This experiment does
+not replace the selected deployment model unless its validation gate passes.
+
 The direct equivalent is shown below. Set the cache variables first when you
 want the direct CLI to use the same repository-local caches as the launcher:
 

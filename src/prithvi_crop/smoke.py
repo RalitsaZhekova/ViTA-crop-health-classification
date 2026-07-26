@@ -31,7 +31,10 @@ def run_smoke(config_path: Path, batch_size: int | None = None) -> None:
     module = build_data_module(config, batch_size=smoke_batch_size, num_workers=0)
     module.setup("fit")
     batch = next(iter(module.train_dataloader()))
-    expected_shape = (smoke_batch_size, 4, 3, 224, 224)
+    expected_frames = int(
+        config["model"]["init_args"]["model_args"]["backbone_num_frames"]
+    )
+    expected_shape = (smoke_batch_size, 4, expected_frames, 224, 224)
     if tuple(batch["image"].shape) != expected_shape:
         raise RuntimeError(
             f"Expected real-data batch shape {expected_shape}, got {tuple(batch['image'].shape)}"

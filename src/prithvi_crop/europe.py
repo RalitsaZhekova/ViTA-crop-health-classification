@@ -162,10 +162,12 @@ class PastisReplayDataset(Dataset):
         seed: int = 42,
         output_size: int = 224,
         augment: bool = True,
+        single_frame: bool = False,
     ) -> None:
         self.root = resolve_pastis_root(root)
         self.output_size = output_size
         self.augment = augment
+        self.single_frame = single_frame
         metadata = gpd.read_file(self.root / "metadata.geojson")
         metadata["Fold"] = metadata["Fold"].astype(int)
         metadata = metadata[metadata["Fold"].isin(folds)].copy()
@@ -187,10 +189,14 @@ class PastisReplayDataset(Dataset):
             raise ValueError("The selected PASTIS folds contain no samples")
 
     def __len__(self) -> int:
-        return len(self.metadata)
+        return len(self.metadata) * 3 if self.single_frame else len(self.metadata)
 
     def __getitem__(self, index: int) -> dict[str, Tensor]:
-        row = self.metadata.iloc[index]
+        if self.single_frame:
+            patch_index, frame_index = divmod(index, 3)
+        else:
+            patch_index, frame_index = index, None
+        row = self.metadata.iloc[patch_index]
         patch_id = int(row["ID_PATCH"])
         image_array = np.load(
             self.root / "DATA_S2" / f"S2_{patch_id}.npy",
@@ -207,6 +213,9 @@ class PastisReplayDataset(Dataset):
             )
         ]
         date_indices, temporal_coords = select_seasonal_dates(ordered_dates)
+        if self.single_frame:
+            date_indices = date_indices[frame_index : frame_index + 1]
+            temporal_coords = temporal_coords[frame_index : frame_index + 1]
         image = torch.from_numpy(
             np.asarray(
                 image_array[np.asarray(date_indices)][:, PASTIS_BAND_INDICES],

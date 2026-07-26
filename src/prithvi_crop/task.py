@@ -29,7 +29,11 @@ from torchmetrics.classification import (
     MulticlassRecall,
 )
 
-from prithvi_crop.binary import binary_logits_from_fine_logits
+from prithvi_crop.binary import (
+    binary_logits_from_fine_logits,
+    binary_predictions_from_fine_logits,
+    binary_targets_from_fine_targets,
+)
 from prithvi_crop.constants import CLASS_NAMES
 
 
@@ -52,6 +56,77 @@ def _safe_class_labels(class_names: list[str] | None, num_classes: int) -> list[
         name.lower().replace(" / ", "_").replace(" ", "_").replace("/", "_")
         for name in names
     ]
+
+
+def _adapt_three_frame_state_dict(
+    source: dict[str, Tensor],
+    destination: dict[str, Tensor],
+) -> dict[str, Tensor]:
+    """Adapt a trained three-frame decoder to the native one-frame backbone."""
+    adapted: dict[str, Tensor] = {}
+    temporal_convolutions = {
+        "decoder.psp_modules.0.1.conv.weight",
+        "decoder.psp_modules.1.1.conv.weight",
+        "decoder.psp_modules.2.1.conv.weight",
+        "decoder.psp_modules.3.1.conv.weight",
+        "decoder.lateral_convs.0.conv.weight",
+        "decoder.lateral_convs.1.conv.weight",
+        "decoder.lateral_convs.2.conv.weight",
+    }
+    for name, target in destination.items():
+        if name not in source:
+            raise ValueError(f"Initial checkpoint is missing model tensor: {name}")
+        value = source[name]
+        if value.shape == target.shape:
+            adapted[name] = value
+            continue
+        if name == "encoder.pos_embed":
+            # Prithvi's fixed 3-D sinusoidal positions depend on frame count.
+            # Keep the correctly generated native one-frame buffer.
+            adapted[name] = target
+            continue
+        if name in temporal_convolutions:
+            if (
+                value.ndim != 4
+                or target.ndim != 4
+                or value.shape[0] != target.shape[0]
+                or value.shape[1] != target.shape[1] * 3
+                or value.shape[2:] != target.shape[2:]
+            ):
+                raise ValueError(f"Cannot adapt temporal convolution {name}")
+            adapted[name] = value.reshape(
+                value.shape[0],
+                3,
+                target.shape[1],
+                *value.shape[2:],
+            ).sum(dim=1)
+            continue
+        if name == "decoder.bottleneck.conv.weight":
+            temporal_channels = 768
+            shared_channels = target.shape[1] - temporal_channels
+            temporal_source = value[:, shared_channels:]
+            if (
+                value.ndim != 4
+                or target.ndim != 4
+                or shared_channels < 0
+                or value.shape[0] != target.shape[0]
+                or value.shape[1] != shared_channels + 3 * temporal_channels
+                or value.shape[2:] != target.shape[2:]
+            ):
+                raise ValueError("Cannot adapt decoder bottleneck")
+            collapsed = temporal_source.reshape(
+                value.shape[0],
+                3,
+                temporal_channels,
+                *value.shape[2:],
+            ).sum(dim=1)
+            adapted[name] = torch.cat((value[:, :shared_channels], collapsed), dim=1)
+            continue
+        raise ValueError(
+            f"Unsupported three-to-one-frame tensor change for {name}: "
+            f"{tuple(value.shape)} -> {tuple(target.shape)}"
+        )
+    return adapted
 
 
 class CropSegmentationTask(SemanticSegmentationTask):
@@ -87,12 +162,22 @@ class CropSegmentationTask(SemanticSegmentationTask):
         tiled_inference_on_validation: bool = False,
         evaluation_output_dir: str = "outputs/prithvi_4band_head_only/evaluation",
         initial_checkpoint: str | None = None,
+        initial_checkpoint_adapter: str | None = None,
         crop_binary_loss_weight: float = 0.0,
+        validation_crop_threshold: float = 0.5,
+        selection_binary_weight: float = 0.7,
     ) -> None:
         self.evaluation_output_dir = Path(evaluation_output_dir)
         if not 0 <= crop_binary_loss_weight <= 1:
             raise ValueError("crop_binary_loss_weight must be between 0 and 1")
         self.crop_binary_loss_weight = crop_binary_loss_weight
+        if not 0 < validation_crop_threshold < 1:
+            raise ValueError("validation_crop_threshold must be strictly between 0 and 1")
+        if not 0 <= selection_binary_weight <= 1:
+            raise ValueError("selection_binary_weight must be between 0 and 1")
+        self.validation_crop_threshold = validation_crop_threshold
+        self.selection_binary_weight = selection_binary_weight
+        self.initial_checkpoint_adapter = initial_checkpoint_adapter
         super().__init__(
             model_args=model_args,
             model_factory=model_factory,
@@ -122,9 +207,17 @@ class CropSegmentationTask(SemanticSegmentationTask):
             tiled_inference_on_validation=tiled_inference_on_validation,
         )
         if initial_checkpoint is not None:
-            self._load_model_weights(Path(initial_checkpoint))
+            self._load_model_weights(
+                Path(initial_checkpoint),
+                adapter=initial_checkpoint_adapter,
+            )
 
-    def _load_model_weights(self, checkpoint_path: Path) -> None:
+    def _load_model_weights(
+        self,
+        checkpoint_path: Path,
+        *,
+        adapter: str | None = None,
+    ) -> None:
         if not checkpoint_path.is_file():
             raise FileNotFoundError(
                 f"Initial checkpoint not found: {checkpoint_path}"
@@ -143,8 +236,18 @@ class CropSegmentationTask(SemanticSegmentationTask):
             for name, value in state_dict.items()
             if name.startswith("model.")
         }
-        self.model.load_state_dict(model_state, strict=True)
-        print(f"Initialized model weights from: {checkpoint_path.resolve()}")
+        if adapter is None:
+            adapted_state = model_state
+        elif adapter == "three_to_one_frame":
+            adapted_state = _adapt_three_frame_state_dict(
+                model_state,
+                self.model.state_dict(),
+            )
+        else:
+            raise ValueError(f"Unknown initial checkpoint adapter: {adapter}")
+        self.model.load_state_dict(adapted_state, strict=True)
+        suffix = f" with {adapter}" if adapter else ""
+        print(f"Initialized model weights from: {checkpoint_path.resolve()}{suffix}")
 
     def training_step(
         self,
@@ -273,6 +376,83 @@ class CropSegmentationTask(SemanticSegmentationTask):
             ]
         )
         self.test_loss_metrics = nn.ModuleList([MeanMetric() for _ in prefixes])
+        self.val_binary_metrics = MetricCollection(
+            {
+                "Crop_Binary_Accuracy": MulticlassAccuracy(
+                    num_classes=2,
+                    ignore_index=ignore_index,
+                    average="micro",
+                ),
+                "Crop_Binary_Balanced_Accuracy": MulticlassRecall(
+                    num_classes=2,
+                    ignore_index=ignore_index,
+                    average="macro",
+                ),
+                "Crop_Binary_Macro_F1": MulticlassF1Score(
+                    num_classes=2,
+                    ignore_index=ignore_index,
+                    average="macro",
+                ),
+            },
+            prefix="val/",
+        )
+
+    def validation_step(
+        self,
+        batch: Any,
+        batch_idx: int,
+        dataloader_idx: int = 0,
+    ) -> None:
+        x = batch["image"]
+        target = self.squeeze_ground_truth(batch["mask"])
+        excluded = {
+            "image",
+            "mask",
+            "crop_mask",
+            "dataset_source",
+            "filename",
+        }
+        model_output = self.handle_full_or_tiled_inference(
+            x,
+            self.tiled_inference_on_validation,
+            **{key: batch[key] for key in batch.keys() - excluded},
+        )
+        loss = self.val_loss_handler.compute_loss(
+            model_output,
+            target,
+            self.criterion,
+            self.aux_loss,
+        )
+        self.val_loss_handler.log_loss(
+            self.log,
+            loss_dict=loss,
+            batch_size=target.shape[0],
+        )
+        prediction = to_segmentation_prediction(model_output)
+        self.val_metrics.update(prediction, target)
+        binary_target = binary_targets_from_fine_targets(
+            target,
+            ignore_index=self.hparams["ignore_index"],
+        )
+        binary_prediction = binary_predictions_from_fine_logits(
+            model_output.output,
+            crop_threshold=self.validation_crop_threshold,
+        )
+        self.val_binary_metrics.update(binary_prediction, binary_target)
+
+    def on_validation_epoch_end(self) -> None:
+        fine_metrics = self.val_metrics.compute()
+        binary_metrics = self.val_binary_metrics.compute()
+        fine_f1 = fine_metrics["val/Macro_F1"]
+        binary_accuracy = binary_metrics["val/Crop_Binary_Accuracy"]
+        deployment_score = (
+            self.selection_binary_weight * binary_accuracy
+            + (1 - self.selection_binary_weight) * fine_f1
+        )
+        self.log_dict(binary_metrics)
+        self.log("val/Deployment_Score", deployment_score)
+        self.val_binary_metrics.reset()
+        super().on_validation_epoch_end()
 
     def test_step(self, batch: Any, batch_idx: int, dataloader_idx: int = 0) -> None:
         x = batch["image"]

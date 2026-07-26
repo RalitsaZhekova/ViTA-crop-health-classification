@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -78,16 +79,30 @@ def select_temporal_bands(
 class CropTypeDataset(MultiTemporalCropClassification):
     """Fix four-band temporal selection in the TerraTorch 1.2.10 dataset."""
 
+    source_frame_count = 3
+
+    def __init__(self, *args: Any, single_frame: bool = False, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.single_frame = single_frame
+
+    def __len__(self) -> int:
+        base_length = super().__len__()
+        return base_length * self.source_frame_count if self.single_frame else base_length
+
     def __getitem__(self, index: int) -> dict[str, Any]:
+        if self.single_frame:
+            base_index, frame_index = divmod(index, self.source_frame_count)
+        else:
+            base_index, frame_index = index, None
         image_data = self._load_file(
-            self.image_files[index],
+            self.image_files[base_index],
             nan_replace=self.no_data_replace,
         )
 
         location_coords, temporal_coords = None, None
         if self.use_metadata:
             location_coords = self._get_coords(image_data)
-            metadata_index = self.image_to_metadata_index.get(index)
+            metadata_index = self.image_to_metadata_index.get(base_index)
             if metadata_index is not None:
                 temporal_coords = self._get_date(self.metadata.iloc[metadata_index])
 
@@ -97,10 +112,20 @@ class CropTypeDataset(MultiTemporalCropClassification):
             len(self.all_band_names),
             self.expand_temporal_dimension,
         )
+        if self.single_frame:
+            if not self.expand_temporal_dimension:
+                raise ValueError("Single-frame samples require an explicit temporal dimension")
+            if image.shape[0] != self.source_frame_count:
+                raise ValueError(
+                    f"Expected {self.source_frame_count} source frames, got {image.shape[0]}"
+                )
+            image = image[frame_index : frame_index + 1]
+            if temporal_coords is not None:
+                temporal_coords = temporal_coords[frame_index : frame_index + 1]
         output = {
             "image": image.astype(np.float32),
             "mask": self._load_file(
-                self.segmentation_mask_files[index],
+                self.segmentation_mask_files[base_index],
                 nan_replace=self.no_label_replace,
             ).to_numpy()[0],
         }
@@ -152,6 +177,7 @@ class CropTypeDataModule(MultiTemporalCropClassificationDataModule):
         european_data_root: str | None = None,
         european_fraction: float = 0.0,
         european_folds: Sequence[int] = (1, 2, 3, 4),
+        single_frame: bool = False,
         **kwargs: Any,
     ) -> None:
         super().__init__(
@@ -186,6 +212,7 @@ class CropTypeDataModule(MultiTemporalCropClassificationDataModule):
         self.european_data_root = european_data_root
         self.european_fraction = european_fraction
         self.european_folds = tuple(european_folds)
+        self.single_frame = single_frame
 
     def _make_dataset(self, split: str, transform: A.Compose | None):
         return self.dataset_class(
@@ -199,12 +226,30 @@ class CropTypeDataModule(MultiTemporalCropClassificationDataModule):
             reduce_zero_label=self.reduce_zero_label,
             use_metadata=self.use_metadata,
             metadata_file_name=self.metadata_file_name,
+            single_frame=self.single_frame,
         )
+
+    def _expand_base_indices(self, indices: Sequence[int]) -> list[int]:
+        if not self.single_frame:
+            return list(indices)
+        return [
+            index * self.dataset_class.source_frame_count + frame_index
+            for index in indices
+            for frame_index in range(self.dataset_class.source_frame_count)
+        ]
 
     def _training_partition(self) -> tuple[list[int], list[int]]:
         dataset = self._make_dataset("train", self.val_transform)
         chip_ids = [chip_id_from_image(path) for path in dataset.image_files]
-        return deterministic_partition(chip_ids, self.validation_fraction, self.split_seed)
+        train_indices, validation_indices = deterministic_partition(
+            chip_ids,
+            self.validation_fraction,
+            self.split_seed,
+        )
+        return (
+            self._expand_base_indices(train_indices),
+            self._expand_base_indices(validation_indices),
+        )
 
     def _dataloader_factory(self, split: str) -> DataLoader:
         """Keep Windows workers alive so the GPU is not starved every epoch."""
@@ -232,11 +277,13 @@ class CropTypeDataModule(MultiTemporalCropClassificationDataModule):
             train_base = self._make_dataset("train", self.train_transform)
             val_base = self._make_dataset("train", self.val_transform)
             chip_ids = [chip_id_from_image(path) for path in train_base.image_files]
-            train_indices, val_indices = deterministic_partition(
+            train_base_indices, val_base_indices = deterministic_partition(
                 chip_ids,
                 self.validation_fraction,
                 self.split_seed,
             )
+            train_indices = self._expand_base_indices(train_base_indices)
+            val_indices = self._expand_base_indices(val_base_indices)
             original_train = Subset(train_base, train_indices)
             if self.european_data_root is None:
                 self.train_dataset = original_train
@@ -245,12 +292,24 @@ class CropTypeDataModule(MultiTemporalCropClassificationDataModule):
                     len(original_train),
                     self.european_fraction,
                 )
-                european_train = PastisReplayDataset(
+                source_frame_count = self.dataset_class.source_frame_count
+                european_patch_count = (
+                    math.ceil(europe_count / source_frame_count)
+                    if self.single_frame
+                    else europe_count
+                )
+                european_base = PastisReplayDataset(
                     self.european_data_root,
                     folds=self.european_folds,
-                    max_samples=europe_count,
+                    max_samples=european_patch_count,
                     seed=self.split_seed,
                     augment=True,
+                    single_frame=self.single_frame,
+                )
+                european_train = (
+                    Subset(european_base, range(europe_count))
+                    if self.single_frame
+                    else european_base
                 )
                 self.train_dataset = ConcatDataset(
                     [
@@ -262,11 +321,12 @@ class CropTypeDataModule(MultiTemporalCropClassificationDataModule):
         elif stage == "validate":
             val_base = self._make_dataset("train", self.val_transform)
             chip_ids = [chip_id_from_image(path) for path in val_base.image_files]
-            _, val_indices = deterministic_partition(
+            _, val_base_indices = deterministic_partition(
                 chip_ids,
                 self.validation_fraction,
                 self.split_seed,
             )
+            val_indices = self._expand_base_indices(val_base_indices)
             self.val_dataset = Subset(val_base, val_indices)
         elif stage == "test":
             self.test_dataset = self._make_dataset("val", self.test_transform)

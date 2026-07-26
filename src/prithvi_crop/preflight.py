@@ -63,6 +63,9 @@ def run_preflight(
         ),
         "batch_size": data_args["batch_size"],
         "num_workers": data_args["num_workers"],
+        "frames_per_example": (
+            1 if data_args.get("single_frame", False) else 3
+        ),
         "precision": trainer["precision"],
         "gradient_accumulation": trainer.get("accumulate_grad_batches", 1),
         "logical_split_sizes": {

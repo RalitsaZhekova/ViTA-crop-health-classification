@@ -64,7 +64,13 @@ def check_config(config_path: Path) -> dict[str, Any]:
         backbone_args.get("backbone_bands") == expected_bands,
         "Data/model band order mismatch",
     )
-    _require(backbone_args.get("backbone_num_frames") == 3, "Exactly 3 dates are required")
+    single_frame = data_args.get("single_frame", False)
+    _require(isinstance(single_frame, bool), "single_frame must be a boolean")
+    expected_frames = 1 if single_frame else 3
+    _require(
+        backbone_args.get("backbone_num_frames") == expected_frames,
+        f"Expected exactly {expected_frames} frame(s)",
+    )
     _require(
         data_args.get("expand_temporal_dimension") is True,
         "Temporal dimension must be explicit",
@@ -76,6 +82,7 @@ def check_config(config_path: Path) -> dict[str, Any]:
     )
     _require(model_args.get("freeze_backbone") is True, "Prithvi backbone must be frozen")
     initial_checkpoint = model_args.get("initial_checkpoint")
+    checkpoint_adapter = model_args.get("initial_checkpoint_adapter")
     if initial_checkpoint is not None:
         _require(
             isinstance(initial_checkpoint, str)
@@ -97,6 +104,35 @@ def check_config(config_path: Path) -> dict[str, Any]:
             len(mandatory_dihedral) == 1
             and mandatory_dihedral[0].get("init_args", {}).get("p", 1.0) == 1.0,
             "Checkpoint refinement requires mandatory non-identity augmentation",
+        )
+    if single_frame:
+        _require(
+            initial_checkpoint is not None,
+            "Single-frame training must warm-start from a validated checkpoint",
+        )
+        _require(
+            checkpoint_adapter == "three_to_one_frame",
+            "Single-frame training requires the explicit three_to_one_frame adapter",
+        )
+    else:
+        _require(
+            checkpoint_adapter is None,
+            "The checkpoint adapter is only valid for single-frame training",
+        )
+    for split in ("train", "val", "test"):
+        transforms = data_args.get(f"{split}_transform", [])
+        unflatten = [
+            transform
+            for transform in transforms
+            if transform.get("class_path", "").endswith(
+                "UnflattenTemporalFromChannels"
+            )
+        ]
+        _require(
+            len(unflatten) == 1
+            and unflatten[0].get("init_args", {}).get("n_timesteps")
+            == expected_frames,
+            f"{split} transform must restore exactly {expected_frames} frame(s)",
         )
     _require(
         model_args.get("freeze_decoder") is False,
@@ -162,10 +198,11 @@ def check_config(config_path: Path) -> dict[str, Any]:
     )
     _require(checkpoint_args.get("save_last") is True, "A resumable last.ckpt is required")
     _require(checkpoint_args.get("save_top_k", 0) > 0, "At least one best checkpoint is required")
+    expected_monitor = "val/Deployment_Score" if single_frame else "val/Macro_F1"
     _require(
-        checkpoint_args.get("monitor") == "val/Macro_F1"
+        checkpoint_args.get("monitor") == expected_monitor
         and checkpoint_args.get("mode") == "max",
-        "Checkpoint selection must maximize validation macro F1",
+        f"Checkpoint selection must maximize {expected_monitor}",
     )
 
     all_text = " ".join(_all_strings(config)).lower()
@@ -216,7 +253,8 @@ def check_config(config_path: Path) -> dict[str, Any]:
 
     summary = {
         "bands": expected_bands,
-        "frames": 3,
+        "frames": expected_frames,
+        "single_frame": single_frame,
         "classes": NUM_CLASSES,
         "backbone_frozen": True,
         "initial_checkpoint": initial_checkpoint,
