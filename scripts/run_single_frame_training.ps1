@@ -15,6 +15,10 @@ $env:HF_HUB_OFFLINE = "1"
 $env:NO_ALBUMENTATIONS_UPDATE = "1"
 $env:MPLCONFIGDIR = Join-Path $workspace "outputs\cache\matplotlib"
 $env:PYTHONUNBUFFERED = "1"
+# Windows PowerShell surfaces native stderr as NativeCommandError. PyTorch and
+# Lightning write non-fatal diagnostics there, so native success is determined
+# explicitly from LASTEXITCODE below.
+$ErrorActionPreference = "Continue"
 
 try {
     if (-not (Test-Path -LiteralPath $validationReport)) {
