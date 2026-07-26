@@ -1,23 +1,22 @@
 {
   "schema_version": 1,
-  "verified_at": "2026-07-25",
-  "source_checkpoint_bytes": 536560975,
-  "source_checkpoint_sha256": "49383194174c56b66f3b7fa67254a42135db6ad64172e873c43d65d1afae6a65",
-  "inference_weights_bytes": 409025203,
-  "inference_weights_sha256": "732e9b32f2a8fa7cbd1285882148d3103302fac90c96236b438849469ac28098",
-  "training_state_bytes_removed": 127535772,
+  "verified_at": "2026-07-26",
+  "source_checkpoint_bytes": 459825997,
+  "source_checkpoint_sha256": "b309566176ce63eb556ca481e18c0ef2fbc00df846833a4a36ef0076f34ba466",
+  "inference_weights_bytes": 382645915,
+  "inference_weights_sha256": "c948977bffdaeb89ecf4f4d069db13c7ed81d4f3403eec9e257c45c235b1484e",
+  "training_state_bytes_removed": 77180082,
   "device": "NVIDIA GeForce RTX 3060 Laptop GPU",
   "standalone_gpu_smoke": {
-    "fine_shape": [1, 224, 224],
+    "input_shape": [1, 4, 1, 224, 224],
     "binary_shape": [1, 224, 224],
+    "probability_shape": [1, 224, 224],
     "crop_probability_finite": true,
-    "peak_gpu_memory_mib": 454.67
+    "peak_gpu_memory_mib": 399.81
   },
-  "legacy_equivalence": {
+  "source_checkpoint_equivalence": {
     "scope": "one real internal-validation chip",
-    "chip_id": "chip_114_441",
-    "fine_class_equal": true,
-    "max_crop_probability_difference": 3.5762786865234375e-07,
+    "max_crop_probability_difference": 0.0,
     "binary_decision_equal_fraction": 1.0
   },
   "cloud_classifier": {
@@ -81,6 +80,22 @@
       "output_file_count": 8,
       "runtime_seconds": 0.48848490000818856
     },
+    "windowed_real_sentinel_execution": {
+      "completed": true,
+      "scope": "execution validation; no cloud ground-truth labels",
+      "input_shape": [4, 1153, 2275],
+      "tile_count": 24,
+      "tile_size": 512,
+      "runtime_seconds": 5.306203300016932,
+      "geospatial_metadata_preserved": true,
+      "decision": "REJECT",
+      "unusable_percentage": 97.30564318595542
+    },
+    "manual_pipeline_launcher_smoke": {
+      "completed": true,
+      "command": "payload/scripts/run_scene.ps1",
+      "stopped_after": "intake"
+    },
     "historical_pre_cleanup_repository_regression": {
       "passed": 57,
       "failed": 0,
@@ -88,7 +103,8 @@
     },
     "standalone_unusable_mask_generation": true,
     "mask_application_to_crop_inference": false,
-    "real_scene_validated": false,
+    "real_scene_execution_validated": true,
+    "real_scene_accuracy_validated": false,
     "balkan_1_validated": false
   },
   "held_out_test_consumed": false

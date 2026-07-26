@@ -26,6 +26,19 @@ By default, thick cloud, thin cloud, cloud shadow and invalid input are
 unusable. Small detections are removed and remaining unusable areas are
 dilated according to `payload/cloud_detection/configs/cloud_detector.yaml`.
 
+## Integrated scene route
+
+`prithvi_payload.pipeline` now connects scene intake to cloud detection for a
+single preprocessed GeoTIFF. It reorders declared source bands without creating
+a full-scene intermediate array and writes semantic, unusable and invalid-input
+masks window by window. The older `cloud-detect` command remains available for
+the original exact four-band Sentinel-2 contract.
+
+For Balkan-1, a five-band `RED, GREEN, BLUE, NIR, PAN` product is required. PAN
+is retained but not sent to CloudSEN12. Reflectance-calibrated input is accepted;
+raw 12-bit DN input is blocked unless a verified calibration scale is supplied.
+Cloud results remain provisional until tested against real Balkan-1 imagery.
+
 ## Crop integration intentionally not connected yet
 
 The standalone pipeline now creates `cloud_unusable`, but it is not yet applied
@@ -43,7 +56,7 @@ establish compatibility.
 See `UPSTREAM.md` for provenance, validation limits and the non-commercial
 weights licence.
 
-## Run it
+## Run the original standalone detector
 
 ```powershell
 $env:PYTHONPATH="payload/src;shared/src"

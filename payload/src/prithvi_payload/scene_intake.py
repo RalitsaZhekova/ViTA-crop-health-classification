@@ -53,6 +53,12 @@ def _validate_acquired_at(value: str | None) -> str | None:
     return parsed.isoformat()
 
 
+def _validate_scene_id(value: str) -> str:
+    if not value or value in {".", ".."} or any(separator in value for separator in ("/", "\\")):
+        raise ValueError("scene_id must be a non-empty filename-safe identifier")
+    return value
+
+
 def _sample_band(dataset: rasterio.DatasetReader, index: int) -> dict[str, Any]:
     height = min(dataset.height, 256)
     width = min(dataset.width, 256)
@@ -247,9 +253,10 @@ def inspect_scene(
             for role in ("BLUE", "GREEN", "RED", "NIR_BROAD")
         ]
 
+    resolved_scene_id = _validate_scene_id(scene_id or raster_path.stem)
     return {
         "schema_version": SCHEMA_VERSION,
-        "scene_id": scene_id or raster_path.stem,
+        "scene_id": resolved_scene_id,
         "source_path": str(raster_path.resolve()),
         "source_bytes": raster_path.stat().st_size,
         "sensor": sensor,

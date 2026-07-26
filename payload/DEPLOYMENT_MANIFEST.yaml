@@ -4,7 +4,7 @@ commercial_release:
   status: blocked
   reason: dtacs4bands_weights_are_cc_by_nc_4_0
 include:
-  - models/prithvi_crop_classifier_v1_weights.pt
+  - models/prithvi_crop_binary_single_frame_v1_weights.pt
   - models/architecture.yaml
   - models/selected_model.yaml
   - models/cloudsen12/dtacs4bands.pt
@@ -30,7 +30,6 @@ exclude:
   - "**/__pycache__/**"
 not_yet_implemented:
   - raw_balkan_1_reconstruction
-  - balkan_1_cloud_mask_adapter
+  - real_balkan_1_cloud_mask_validation
   - cloud_mask_application_to_crop_inference
-  - windowed_geotiff_streaming_for_very_large_scenes
   - crop_geotiff_scene_tiling_and_stitching
