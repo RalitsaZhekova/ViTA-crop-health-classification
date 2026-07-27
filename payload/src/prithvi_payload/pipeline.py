@@ -14,6 +14,10 @@ from cloud_detection.pipeline import CloudDetectionPipeline
 
 from prithvi_payload.cloud_executor import execute_cloud_stage
 from prithvi_payload.cloud_stage import build_cloud_stage_plan
+from prithvi_payload.crop_stage import (
+    DEFAULT_MAX_CLOUD_PERCENTAGE,
+    build_crop_stage_plan,
+)
 from prithvi_payload.scene_intake import SUPPORTED_SENSORS, inspect_scene
 
 
@@ -38,13 +42,14 @@ def run_scene(
     scene_id: str | None = None,
     reflectance_scale: float | None = None,
     stop_after: str = "cloud",
+    max_crop_cloud_percentage: float = DEFAULT_MAX_CLOUD_PERCENTAGE,
     cloud_config_path: str | Path = DEFAULT_CONFIG,
     cloud_backend: CloudBackend | None = None,
     cloud_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run only the explicitly selected stages for one preprocessed scene."""
-    if stop_after not in {"intake", "cloud"}:
-        raise ValueError("stop_after must be intake or cloud")
+    if stop_after not in {"intake", "cloud", "crop"}:
+        raise ValueError("stop_after must be intake, cloud or crop")
     output_root = Path(output_root)
     intake = inspect_scene(
         input_path,
@@ -125,6 +130,54 @@ def run_scene(
         "runtime_seconds": cloud_metadata["runtime"]["seconds"],
     }
     result["stage_metadata"]["cloud"] = cloud_metadata
+    if stop_after == "cloud":
+        return _finish(output_root, result)
+
+    crop_plan = build_crop_stage_plan(
+        intake,
+        plan,
+        cloud_metadata,
+        max_cloud_percentage=max_crop_cloud_percentage,
+    )
+    crop_plan_path = output_root / "metadata" / f"{resolved_scene_id}_crop_plan.json"
+    _write_json(crop_plan_path, crop_plan)
+    result["artifacts"]["crop_plan"] = str(crop_plan_path.resolve())
+    result["stage_metadata"]["crop_plan"] = crop_plan
+    result["warnings"].extend(crop_plan["warnings"])
+    result["errors"].extend(crop_plan["errors"])
+    if crop_plan["readiness"] == "SKIPPED_CLOUD_GATE":
+        result["status"] = "CROP_SKIPPED_CLOUD_GATE"
+        result["crop_decision"] = "SKIP_CLOUD_COVERAGE"
+        result["summary"]["crop"] = {
+            "decision": "SKIP_CLOUD_COVERAGE",
+            "cloud_percentage": crop_plan["gate"]["observed_percentage"],
+            "maximum_cloud_percentage": crop_plan["gate"]["maximum_percentage"],
+        }
+        return _finish(output_root, result)
+    if crop_plan["readiness"] != "READY":
+        result["status"] = "BLOCKED_AT_CROP_PLAN"
+        return _finish(output_root, result)
+
+    # Keep the 100M crop model and TerraTorch out of intake/cloud-only runs.
+    from prithvi_payload.crop_executor import execute_crop_stage
+
+    crop_metadata = execute_crop_stage(crop_plan, output_root=output_root)
+    result["completed_stages"].append("crop")
+    result["status"] = "CROP_COMPLETE"
+    result["crop_decision"] = "CLASSIFIED"
+    result["artifacts"]["crop"] = crop_metadata["output_files"]
+    result["summary"]["crop"] = {
+        "decision": "CLASSIFIED",
+        "crop_percentage_usable": crop_metadata["crop_percentage_usable"],
+        "usable_percentage": crop_metadata["usable_percentage"],
+        "mean_crop_probability_usable": crop_metadata[
+            "mean_crop_probability_usable"
+        ],
+        "mean_confidence_usable": crop_metadata["mean_confidence_usable"],
+        "runtime_seconds": crop_metadata["runtime"]["seconds"],
+        "device": crop_metadata["runtime"]["device"],
+    }
+    result["stage_metadata"]["crop"] = crop_metadata
     return _finish(output_root, result)
 
 
@@ -138,7 +191,16 @@ def main() -> None:
     parser.add_argument("--acquired-at")
     parser.add_argument("--scene-id")
     parser.add_argument("--reflectance-scale", type=float)
-    parser.add_argument("--stop-after", choices=("intake", "cloud"), default="cloud")
+    parser.add_argument(
+        "--stop-after",
+        choices=("intake", "cloud", "crop"),
+        default="cloud",
+    )
+    parser.add_argument(
+        "--max-crop-cloud-percentage",
+        type=float,
+        default=DEFAULT_MAX_CLOUD_PERCENTAGE,
+    )
     parser.add_argument("--cloud-config", type=Path, default=DEFAULT_CONFIG)
     args = parser.parse_args()
 
@@ -150,6 +212,7 @@ def main() -> None:
         scene_id=args.scene_id,
         reflectance_scale=args.reflectance_scale,
         stop_after=args.stop_after,
+        max_crop_cloud_percentage=args.max_crop_cloud_percentage,
         cloud_config_path=args.cloud_config,
     )
     console_result = {
@@ -167,7 +230,13 @@ def main() -> None:
         )
     }
     print(json.dumps(console_result, indent=2, sort_keys=True))
-    raise SystemExit(0 if result["status"] in {"INTAKE_READY", "CLOUD_COMPLETE"} else 2)
+    successful_statuses = {
+        "INTAKE_READY",
+        "CLOUD_COMPLETE",
+        "CROP_COMPLETE",
+        "CROP_SKIPPED_CLOUD_GATE",
+    }
+    raise SystemExit(0 if result["status"] in successful_statuses else 2)
 
 
 if __name__ == "__main__":

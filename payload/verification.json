@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "verified_at": "2026-07-26",
+  "verified_at": "2026-07-27",
   "source_checkpoint_bytes": 459825997,
   "source_checkpoint_sha256": "b309566176ce63eb556ca481e18c0ef2fbc00df846833a4a36ef0076f34ba466",
   "inference_weights_bytes": 382645915,
@@ -102,7 +102,40 @@
       "test_sources_retained": false
     },
     "standalone_unusable_mask_generation": true,
-    "mask_application_to_crop_inference": false,
+    "cloud_to_crop_pipeline": {
+      "completed": true,
+      "scope": "integration validation on PASTIS training patch 40011; not a held-out performance estimate",
+      "acquired_at": "2019-07-24T00:00:00Z",
+      "cloud_percentage": 0.0,
+      "cloud_gate_max_percentage": 60.0,
+      "crop_runtime_seconds": 0.5156590999686159,
+      "crop_device": "cuda",
+      "crop_percentage_usable": 77.679443359375,
+      "reference_pixel_accuracy": 0.7621040432655164,
+      "reference_crop_f1": 0.8530522966792603,
+      "geospatial_metadata_preserved": true,
+      "unusable_pixels_excluded": true
+    },
+    "masked_crop_integration": {
+      "completed": true,
+      "scope": "mask and geospatial-contract validation on PASTIS training patch 10422; not a held-out performance estimate",
+      "acquired_at": "2019-07-16T00:00:00Z",
+      "cloud_percentage": 13.31787109375,
+      "unusable_percentage": 15.008544921875,
+      "masked_output_pixels": 2459,
+      "masked_probability_is_nodata": true,
+      "masked_binary_is_nodata": true,
+      "masked_confidence_is_nodata": true,
+      "geospatial_metadata_preserved": true,
+      "individual_scene_accuracy_warning": "This scene had low crop recall and demonstrates that one training scene is not an accuracy estimate."
+    },
+    "cloud_gate_skip": {
+      "completed": true,
+      "cloud_percentage": 88.48111472222486,
+      "status": "CROP_SKIPPED_CLOUD_GATE",
+      "crop_model_loaded": false
+    },
+    "mask_application_to_crop_inference": true,
     "real_scene_execution_validated": true,
     "real_scene_accuracy_validated": false,
     "balkan_1_validated": false

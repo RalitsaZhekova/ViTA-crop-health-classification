@@ -1,5 +1,5 @@
 schema_version: 1
-bundle_status: prototype_crop_and_sentinel_cloud_classification_ready
+bundle_status: prototype_cloud_to_crop_pipeline_ready
 commercial_release:
   status: blocked
   reason: dtacs4bands_weights_are_cc_by_nc_4_0
@@ -31,5 +31,4 @@ exclude:
 not_yet_implemented:
   - raw_balkan_1_reconstruction
   - real_balkan_1_cloud_mask_validation
-  - cloud_mask_application_to_crop_inference
-  - crop_geotiff_scene_tiling_and_stitching
+  - real_balkan_1_crop_validation

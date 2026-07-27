@@ -39,15 +39,20 @@ is retained but not sent to CloudSEN12. Reflectance-calibrated input is accepted
 raw 12-bit DN input is blocked unless a verified calibration scale is supplied.
 Cloud results remain provisional until tested against real Balkan-1 imagery.
 
-## Crop integration intentionally not connected yet
+## Crop integration
 
-The standalone pipeline now creates `cloud_unusable`, but it is not yet applied
-to Prithvi crop output. Real Sentinel-2 scenes must be inspected before that
-connection is enabled.
+The manual `prithvi_payload.pipeline` route applies the operational unusable
+mask to Prithvi crop inference. Original finite pixels remain unchanged during
+model execution to avoid introducing artificial masked regions that were not in
+the training distribution. Invalid/nodata values are made numerically safe, and
+all unusable probability, binary and confidence outputs are written as nodata.
+Crop inference is skipped before the model is loaded when cloud coverage is at
+or above the configured 60% gate.
 
 Cloud classification uses Sentinel-2 `B08`; the crop model uses `B8A`. These
-must not be silently substituted. A scene-ingestion adapter will need to supply
-both NIR choices or perform an explicitly validated resampling/conversion.
+must not be silently substituted. Sentinel-2 crop runs therefore require both
+bands in the preprocessed scene. A future sensor adapter may perform an
+explicitly validated conversion when only one NIR band is available.
 
 Before Balkan-1 use, the classifier must be validated for its 1.5 m resolution,
 spectral response and 12-bit calibration. Shared RGB/NIR labels alone do not

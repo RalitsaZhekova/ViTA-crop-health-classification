@@ -9,9 +9,10 @@ param(
     [string]$AcquiredAt,
     [string]$SceneId,
     [string]$Output,
-    [ValidateSet("intake", "cloud")]
+    [ValidateSet("intake", "cloud", "crop")]
     [string]$StopAfter = "cloud",
-    [Nullable[double]]$ReflectanceScale
+    [Nullable[double]]$ReflectanceScale,
+    [double]$MaxCropCloudPercentage = 60.0
 )
 
 $ErrorActionPreference = "Stop"
@@ -32,7 +33,10 @@ $pipelineArguments = @(
     $resolvedInput,
     "--sensor", $Sensor,
     "--output", $Output,
-    "--stop-after", $StopAfter
+    "--stop-after", $StopAfter,
+    "--max-crop-cloud-percentage", $MaxCropCloudPercentage.ToString(
+        [System.Globalization.CultureInfo]::InvariantCulture
+    )
 )
 if ($AcquiredAt) {
     $pipelineArguments += @("--acquired-at", $AcquiredAt)

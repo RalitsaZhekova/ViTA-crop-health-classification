@@ -23,12 +23,12 @@ the checkpoint and `architecture.yaml`; source checkouts resolve
 The selected base model emits crop/non-crop output only. The preserved crop-type
 models remain ground-side under `outputs/` and are not part of the flight bundle.
 
-Cloud detection is independent of crop inference. `scene-run` inspects a
-preprocessed Sentinel-2 or Balkan-1 GeoTIFF, resolves its declared band order,
-and runs cloud detection through bounded 512-pixel windows. It writes
-georeferenced semantic, unusable and invalid-input masks plus JSON metadata.
-The Balkan-1 route is provisional until real imagery is radiometrically and
-spectrally validated. The cloud mask is not yet applied to crop output.
+`scene-run` inspects a preprocessed Sentinel-2 or Balkan-1 GeoTIFF, resolves its
+declared band order, and runs cloud detection through bounded 512-pixel windows.
+When explicitly requested, scenes below the 60% cloud gate continue through
+bounded crop segmentation. Every cloud-shadow, cloud and invalid pixel in the
+operational unusable mask is excluded from the crop outputs. The Balkan-1 route
+is provisional until real imagery is radiometrically and spectrally validated.
 
 Run only from an explicit command:
 
@@ -40,6 +40,23 @@ Run only from an explicit command:
   -StopAfter cloud `
   -Output testing\runs\sentinel2_demo
 ```
+
+Continue through crop classification:
+
+```powershell
+.\payload\scripts\run_scene.ps1 `
+  -InputPath path\to\preprocessed_scene.tif `
+  -Sensor sentinel-2 `
+  -AcquiredAt 2026-07-26T12:00:00Z `
+  -StopAfter crop `
+  -MaxCropCloudPercentage 60 `
+  -Output testing\runs\sentinel2_crop_demo
+```
+
+The crop route requires both Sentinel-2 `B08` for CloudSEN12 and `B8A` for the
+selected Prithvi model. It writes crop probability, binary crop and confidence
+GeoTIFFs, crop metadata and a combined PNG. A scene at or above the configured
+cloud percentage is stopped before the crop model is loaded.
 
 Each run writes one canonical `result.json` containing the summarized metadata
 for every completed stage and links to detailed stage JSON, GeoTIFF masks and
@@ -57,6 +74,5 @@ files remain available for debugging and audit.
 ## Current limits
 
 Crop inference is ready for tiled arrays, and the cloud stage streams large
-GeoTIFFs without loading a full scene. Connecting its mask to crop output,
-Balkan-1 raw-band reconstruction, real Balkan-1 cloud validation and final
-single-image crop-model packaging are not yet implemented.
+GeoTIFFs without loading a full scene. Balkan-1 raw-band reconstruction and
+real Balkan-1 cloud/crop validation are not yet implemented.

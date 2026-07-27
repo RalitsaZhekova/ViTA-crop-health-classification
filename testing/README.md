@@ -26,3 +26,19 @@ Run a Sentinel-2 scene:
 
 The primary API-facing artifact is `<run-name>/result.json`. Detailed stage
 metadata, masks and visualizations are stored beside it in named subfolders.
+
+Run cloud detection and then crop classification when cloud coverage is below
+60%:
+
+```powershell
+.\payload\scripts\run_scene.ps1 `
+  -InputPath "testing\inputs\sentinel2\your_five_band_scene.tif" `
+  -Sensor sentinel-2 `
+  -AcquiredAt "2026-07-27T12:00:00Z" `
+  -StopAfter crop `
+  -Output "testing\runs\your_crop_run"
+```
+
+The Sentinel-2 file must declare `B02`, `B03`, `B04`, `B08` and `B8A` band
+descriptions. Band order is resolved from those descriptions. Crop outputs are
+written to `crop_maps/` and the combined preview to `visualisations/`.
