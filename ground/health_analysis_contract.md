@@ -23,6 +23,18 @@ AND valid reflectance
 AND direct crop probability >= 0.645
 ```
 
+The deployed crop raster is binary and has the following exact semantics:
+
+```text
+0   = non-crop
+1   = crop
+255 = unusable/nodata
+```
+
+The operational unusable raster uses `0 = usable` and `1 = unusable`. The
+ground mask builder validates these values and rejects incompatible or corrupt
+masks instead of treating arbitrary non-zero values as crop.
+
 The base model does not identify crop type, so fallow fields cannot yet be
 excluded automatically. Temporal baselines must therefore prevent expected
 seasonal low vegetation from being presented as stress.

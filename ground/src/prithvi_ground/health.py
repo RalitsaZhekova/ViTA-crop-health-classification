@@ -11,12 +11,10 @@ import numpy as np
 from numpy.typing import NDArray
 from prithvi_shared.calibration import HEALTH_ANALYSIS_CROP_THRESHOLD
 
-# Fallow/idle cropland and the ambiguous "Other" class are intentionally
-# excluded. Their low vegetation signal must not be reported as crop stress.
-HEALTH_CROP_CLASS_IDS = (2, 3, 7, 8, 10, 11)
 SUPPORTED_SENSORS = {"balkan-1", "sentinel-2"}
 SCHEMA_VERSION = "1.0"
 ALGORITHM_VERSION = "health-indices-v1"
+CROP_BINARY_NODATA = 255
 
 FloatArray = NDArray[np.floating[Any]]
 BoolArray = NDArray[np.bool_]
@@ -88,38 +86,60 @@ class HealthObservation:
 
 
 def build_analysis_mask(
-    classification: NDArray[np.integer[Any]],
+    crop_binary: NDArray[np.integer[Any] | np.bool_],
     cloud_unusable: NDArray[Any],
     *,
     crop_probability: FloatArray,
     minimum_crop_probability: float = HEALTH_ANALYSIS_CROP_THRESHOLD,
     nodata: NDArray[Any] | None = None,
-    crop_class_ids: tuple[int, ...] = HEALTH_CROP_CLASS_IDS,
 ) -> BoolArray:
-    """Combine crop class, crop probability, cloud and no-data decisions."""
-    classes = np.asarray(classification)
-    unusable = np.asarray(cloud_unusable, dtype=bool)
-    if classes.ndim != 2 or unusable.shape != classes.shape:
-        raise ValueError("Classification and cloud masks must be matching 2D arrays")
-    if not crop_class_ids:
-        raise ValueError("At least one crop class ID is required")
+    """Select clear, confident crop pixels from the deployed binary products.
+
+    ``crop_binary`` must use the payload contract ``0 = non-crop``, ``1 = crop``
+    and optional ``255 = unusable/nodata``. ``cloud_unusable`` must contain only
+    Boolean or ``0/1`` values. Non-finite crop probabilities are always excluded.
+    """
+    crop = np.asarray(crop_binary)
+    unusable_raw = np.asarray(cloud_unusable)
+    probability = np.asarray(crop_probability)
+
+    if crop.ndim != 2:
+        raise ValueError("Crop binary mask must be a 2D array")
+    if unusable_raw.shape != crop.shape:
+        raise ValueError("Unusable mask shape does not match crop binary mask")
+    if probability.shape != crop.shape:
+        raise ValueError("Crop probability shape does not match crop binary mask")
+    if not (np.issubdtype(crop.dtype, np.integer) or np.issubdtype(crop.dtype, np.bool_)):
+        raise TypeError("Crop binary mask must use an integer or Boolean dtype")
+    if not (
+        np.issubdtype(unusable_raw.dtype, np.integer)
+        or np.issubdtype(unusable_raw.dtype, np.bool_)
+    ):
+        raise TypeError("Unusable mask must use an integer or Boolean dtype")
+
+    if not np.all(np.isin(np.unique(crop), (0, 1, CROP_BINARY_NODATA))):
+        raise ValueError("Crop binary mask contains values outside 0, 1 and 255")
+    if not np.all(np.isin(np.unique(unusable_raw), (0, 1))):
+        raise ValueError("Unusable mask contains values outside 0 and 1")
     if not 0 <= minimum_crop_probability <= 1:
         raise ValueError("minimum_crop_probability must be between 0 and 1")
 
-    mask = np.isin(classes, crop_class_ids) & ~unusable
+    unusable = unusable_raw.astype(bool, copy=False)
+    mask = (crop == 1) & ~unusable
     if nodata is not None:
-        nodata_array = np.asarray(nodata, dtype=bool)
-        if nodata_array.shape != classes.shape:
-            raise ValueError("No-data mask shape does not match classification")
-        mask &= ~nodata_array
+        nodata_raw = np.asarray(nodata)
+        if nodata_raw.shape != crop.shape:
+            raise ValueError("No-data mask shape does not match crop binary mask")
+        if not (
+            np.issubdtype(nodata_raw.dtype, np.integer)
+            or np.issubdtype(nodata_raw.dtype, np.bool_)
+        ):
+            raise TypeError("No-data mask must use an integer or Boolean dtype")
+        if not np.all(np.isin(np.unique(nodata_raw), (0, 1))):
+            raise ValueError("No-data mask contains values outside 0 and 1")
+        mask &= ~nodata_raw.astype(bool, copy=False)
 
-    probability = np.asarray(crop_probability)
-    if probability.shape != classes.shape:
-        raise ValueError("Crop probability shape does not match classification")
-    mask &= (
-        np.isfinite(probability)
-        & (probability >= minimum_crop_probability)
-    )
+    mask &= np.isfinite(probability) & (probability >= minimum_crop_probability)
     return mask
 
 
