@@ -297,8 +297,8 @@ def _save_quicklook(
     rgb_indices: list[int],
     reflectance_scale: float,
     condition_path: Path,
+    unusable_mask_path: Path,
     valid_mask_path: Path,
-    alert_path: Path,
     label: str,
     score: float | None,
 ) -> None:
@@ -321,8 +321,8 @@ def _save_quicklook(
         rgb /= reflectance_scale
     with (
         rasterio.open(condition_path) as condition_source,
+        rasterio.open(unusable_mask_path) as unusable_source,
         rasterio.open(valid_mask_path) as valid_source,
-        rasterio.open(alert_path) as alert_source,
     ):
         condition = condition_source.read(
             1,
@@ -330,30 +330,36 @@ def _save_quicklook(
             masked=True,
             resampling=Resampling.bilinear,
         )
+        unusable = unusable_source.read(
+            1,
+            out_shape=(height, width),
+            resampling=Resampling.nearest,
+        )
         valid = valid_source.read(
             1,
             out_shape=(height, width),
             resampling=Resampling.nearest,
         )
-        alert = alert_source.read(
-            1,
-            out_shape=(height, width),
-            resampling=Resampling.nearest,
-        )
 
-    figure = Figure(figsize=(15, 4.5), constrained_layout=True)
+    figure = Figure(figsize=(16, 5.25), constrained_layout=True)
     FigureCanvasAgg(figure)
     axes = figure.subplots(1, 4)
     axes[0].imshow(_preview_rgb(rgb))
     axes[0].set_title("RGB")
-    axes[1].imshow(valid, cmap=ListedColormap(["black", "#32cd32"]), vmin=0, vmax=1)
-    axes[1].set_title("Valid confident crop")
-    condition_image = axes[2].imshow(condition, cmap="RdYlGn", vmin=0, vmax=100)
-    axes[2].set_title("Spectral condition score")
-    figure.colorbar(condition_image, ax=axes[2], fraction=0.046, pad=0.04)
-    axes[3].imshow(alert, cmap=ListedColormap(["black", "#ff3b30"]), vmin=0, vmax=1)
+    axes[1].imshow(unusable, cmap=ListedColormap(["black", "white"]), vmin=0, vmax=1)
+    axes[1].set_title("Unusable pixels\ncloud + shadow + invalid")
+    axes[2].imshow(valid, cmap=ListedColormap(["black", "#32cd32"]), vmin=0, vmax=1)
+    axes[2].set_title("Valid crop pixels\nclear + confident")
     rendered_score = "n/a" if score is None else f"{score:.1f}/100"
-    axes[3].set_title(f"Alerts\n{label}: {rendered_score}")
+    condition_image = axes[3].imshow(condition, cmap="RdYlGn", vmin=0, vmax=100)
+    axes[3].set_title(f"Spectral-vigor screening score\n{label}: {rendered_score}")
+    colorbar = figure.colorbar(condition_image, ax=axes[3], fraction=0.046, pad=0.04)
+    colorbar.set_label("0 = lower vigor\n100 = stronger vigor")
+    figure.suptitle(
+        "Score combines NDVI, GNDVI, EVI and SAVI on clear, confident crop pixels. "
+        "It is not a disease diagnosis.",
+        fontsize=11,
+    )
     for axis in axes:
         axis.axis("off")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -641,8 +647,8 @@ def run_ground_scene(
         rgb_indices=band_indices[:3],
         reflectance_scale=reflectance_scale,
         condition_path=condition_score_path,
+        unusable_mask_path=unusable_path,
         valid_mask_path=valid_mask_path,
-        alert_path=alert_path,
         label=assessment.label,
         score=assessment.condition_score,
     )

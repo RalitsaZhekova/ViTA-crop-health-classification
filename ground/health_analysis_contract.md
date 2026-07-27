@@ -64,15 +64,24 @@ summary statistics.
 ## Spectral condition assessment
 
 The prototype score combines bounded NDVI, GNDVI, EVI and SAVI component
-scores. NDVI has the largest weight; GNDVI, EVI and SAVI provide supporting
-canopy, chlorophyll-related and soil-adjusted evidence. CVI, VARI, excess green
-and RGB brightness remain diagnostics because their absolute ranges are more
-dependent on canopy structure, soil, illumination and the sensor.
+scores. Each valid pixel's index is linearly mapped from its configured low/high
+reference to 0/100 and clipped to that range. Default weights are 40% NDVI, 25%
+GNDVI, 20% EVI and 15% SAVI. CVI, VARI, excess green and RGB brightness remain
+diagnostics because their absolute ranges are more dependent on canopy
+structure, soil, illumination and the sensor.
 
-The region score uses the median and lower quartile of the pixel scores, then
-applies a limited penalty for pixels that are robustly below the crop-region
-median. Median absolute deviation is used with a minimum scale and minimum
-absolute deficit so tiny homogeneous-scene noise is not labeled anomalous.
+The absolute region component is 70% of the median pixel score plus 30% of the
+lower-quartile pixel score. The final region score subtracts a penalty of up to
+20 points according to the fraction of pixels that are robustly below the
+crop-region median. Median absolute deviation is used with a minimum scale and
+minimum absolute deficit so tiny homogeneous-scene noise is not labeled
+anomalous.
+
+Consequently, 0 means low spectral-vigor support under the configured prototype
+references and 100 means strong support. The value is not percent healthy,
+survival probability, calibrated confidence or a diagnosis. It must be read
+with its index components, valid-pixel coverage, evidence-quality indicator,
+crop/season context and explanations.
 
 The fixed reference ranges and label boundaries are transparent prototype
 priors. They are not universal agronomic truths. The emitted labels are
