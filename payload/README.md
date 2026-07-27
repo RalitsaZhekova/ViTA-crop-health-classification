@@ -38,8 +38,13 @@ Run only from an explicit command:
   -Sensor sentinel-2 `
   -AcquiredAt 2026-07-26T12:00:00Z `
   -StopAfter cloud `
-  -Output outputs\pipeline
+  -Output testing\runs\sentinel2_demo
 ```
+
+Each run writes one canonical `result.json` containing the summarized metadata
+for every completed stage and links to detailed stage JSON, GeoTIFF masks and
+PNG visualizations. API and database work should read `result.json`; the stage
+files remain available for debugging and audit.
 
 ## Explicitly excluded
 

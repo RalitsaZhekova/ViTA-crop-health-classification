@@ -8,7 +8,7 @@ param(
 
     [string]$AcquiredAt,
     [string]$SceneId,
-    [string]$Output = "outputs\pipeline",
+    [string]$Output,
     [ValidateSet("intake", "cloud")]
     [string]$StopAfter = "cloud",
     [Nullable[double]]$ReflectanceScale
@@ -17,6 +17,10 @@ param(
 $ErrorActionPreference = "Stop"
 $workspace = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $resolvedInput = (Resolve-Path -LiteralPath $InputPath).Path
+if (-not $Output) {
+    $inputStem = [System.IO.Path]::GetFileNameWithoutExtension($resolvedInput)
+    $Output = Join-Path $workspace "testing\runs\$inputStem"
+}
 $payloadSource = Join-Path $workspace "payload\src"
 $sharedSource = Join-Path $workspace "shared\src"
 $env:PYTHONPATH = "$payloadSource;$sharedSource"

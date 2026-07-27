@@ -23,7 +23,7 @@ def _write_json(path: Path, value: dict[str, Any]) -> None:
 
 
 def _finish(output_root: Path, result: dict[str, Any]) -> dict[str, Any]:
-    summary_path = output_root / "metadata" / f"{result['scene_id']}_run.json"
+    summary_path = output_root / "result.json"
     result["artifacts"]["run_summary"] = str(summary_path.resolve())
     _write_json(summary_path, result)
     return result
@@ -63,6 +63,15 @@ def run_scene(
         "completed_stages": ["intake"],
         "status": "INTAKE_READY",
         "artifacts": {"intake": str(intake_path.resolve())},
+        "summary": {
+            "intake": {
+                "readiness": intake["readiness"]["intake"],
+                "band_count": intake["raster"]["band_count"],
+                "width": intake["raster"]["width"],
+                "height": intake["raster"]["height"],
+            }
+        },
+        "stage_metadata": {"intake": intake},
         "warnings": list(intake["warnings"]),
         "errors": list(intake["errors"]),
     }
@@ -79,6 +88,7 @@ def run_scene(
     plan_path = output_root / "metadata" / f"{resolved_scene_id}_cloud_plan.json"
     _write_json(plan_path, plan)
     result["artifacts"]["cloud_plan"] = str(plan_path.resolve())
+    result["stage_metadata"]["cloud_plan"] = plan
     result["warnings"].extend(plan["warnings"])
     result["errors"].extend(plan["errors"])
     if plan["readiness"] != "READY":
@@ -101,6 +111,20 @@ def run_scene(
     result["status"] = "CLOUD_COMPLETE"
     result["cloud_decision"] = cloud_metadata["decision"]
     result["artifacts"]["cloud"] = cloud_metadata["output_files"]
+    percentages = cloud_metadata["class_percentages"]
+    result["summary"]["cloud"] = {
+        "decision": cloud_metadata["decision"],
+        "clear_percentage": percentages["clear"],
+        "thick_cloud_percentage": percentages["thick_cloud"],
+        "thin_cloud_percentage": percentages["thin_cloud"],
+        "cloud_shadow_percentage": percentages["cloud_shadow"],
+        "total_cloud_percentage": cloud_metadata["cloud_percentage"],
+        "usable_percentage": cloud_metadata["usable_percentage"],
+        "unusable_percentage": cloud_metadata["unusable_percentage"],
+        "invalid_percentage": cloud_metadata["invalid_percentage"],
+        "runtime_seconds": cloud_metadata["runtime"]["seconds"],
+    }
+    result["stage_metadata"]["cloud"] = cloud_metadata
     return _finish(output_root, result)
 
 
@@ -110,7 +134,7 @@ def main() -> None:
     )
     parser.add_argument("input", type=Path)
     parser.add_argument("--sensor", required=True, choices=SUPPORTED_SENSORS)
-    parser.add_argument("--output", type=Path, default=Path("outputs/pipeline"))
+    parser.add_argument("--output", type=Path, default=Path("testing/runs"))
     parser.add_argument("--acquired-at")
     parser.add_argument("--scene-id")
     parser.add_argument("--reflectance-scale", type=float)
@@ -128,7 +152,21 @@ def main() -> None:
         stop_after=args.stop_after,
         cloud_config_path=args.cloud_config,
     )
-    print(json.dumps(result, indent=2, sort_keys=True))
+    console_result = {
+        key: result[key]
+        for key in (
+            "schema_version",
+            "scene_id",
+            "sensor",
+            "status",
+            "completed_stages",
+            "summary",
+            "artifacts",
+            "warnings",
+            "errors",
+        )
+    }
+    print(json.dumps(console_result, indent=2, sort_keys=True))
     raise SystemExit(0 if result["status"] in {"INTAKE_READY", "CLOUD_COMPLETE"} else 2)
 
 

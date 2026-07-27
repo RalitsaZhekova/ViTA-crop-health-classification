@@ -13,6 +13,8 @@ import rasterio
 from cloud_detection.backend import CloudBackend
 from cloud_detection.postprocessing import postprocess
 from cloud_detection.preprocessing import normalize_reflectance
+from cloud_detection.preview import save_preview
+from rasterio.enums import Resampling
 from rasterio.windows import Window as RasterWindow
 
 
@@ -98,8 +100,15 @@ def execute_cloud_stage(
     semantic_path = output_root / "cloud_masks" / f"{stem}_semantic.tif"
     unusable_path = output_root / "cloud_masks" / f"{stem}_unusable.tif"
     invalid_path = output_root / "cloud_masks" / f"{stem}_invalid.tif"
+    preview_path = output_root / "visualisations" / f"{stem}_cloud.png"
     metadata_path = output_root / "metadata" / f"{stem}.json"
-    for path in (semantic_path, unusable_path, invalid_path, metadata_path):
+    for path in (
+        semantic_path,
+        unusable_path,
+        invalid_path,
+        preview_path,
+        metadata_path,
+    ):
         path.parent.mkdir(parents=True, exist_ok=True)
 
     started = time.perf_counter()
@@ -191,6 +200,9 @@ def execute_cloud_stage(
         name: float(class_counts[class_index] / valid_pixels) if valid_pixels else 0.0
         for name, class_index in classes.items()
     }
+    class_percentages = {
+        name: 100.0 * fraction for name, fraction in class_fractions.items()
+    }
     unusable_percentage = _percentage(unusable_count, total_pixels)
     decision_config = config["decision"]
     if unusable_percentage >= float(
@@ -203,6 +215,43 @@ def execute_cloud_stage(
         decision = "PROCESS_CLEAR_AREAS"
     else:
         decision = "PROCESS"
+
+    preview_scale = min(1.0, 1200.0 / max(width, height))
+    preview_height = max(1, round(height * preview_scale))
+    preview_width = max(1, round(width * preview_scale))
+    with rasterio.open(source_path) as source:
+        preview_raw = source.read(
+            indices,
+            out_shape=(4, preview_height, preview_width),
+            resampling=Resampling.bilinear,
+        )
+    preview_image, _ = normalize_reflectance(
+        preview_raw,
+        scale=scale,
+        clip_min=config["input"].get("clip_min"),
+        clip_max=config["input"].get("clip_max"),
+        nodata_value=nodata_value,
+    )
+    with (
+        rasterio.open(semantic_path) as semantic_source,
+        rasterio.open(unusable_path) as unusable_source,
+    ):
+        semantic_preview = semantic_source.read(
+            1,
+            out_shape=(preview_height, preview_width),
+            resampling=Resampling.nearest,
+        )
+        unusable_preview = unusable_source.read(
+            1,
+            out_shape=(preview_height, preview_width),
+            resampling=Resampling.nearest,
+        )
+    save_preview(
+        preview_path,
+        preview_image,
+        semantic_preview,
+        unusable_preview,
+    )
 
     metadata = {
         "schema_version": "0.1-draft",
@@ -220,6 +269,7 @@ def execute_cloud_stage(
             "halo": halo,
         },
         "class_fractions": class_fractions,
+        "class_percentages": class_percentages,
         "cloud_percentage": 100.0
         * (class_fractions["thick_cloud"] + class_fractions["thin_cloud"]),
         "shadow_percentage": 100.0 * class_fractions["cloud_shadow"],
@@ -231,6 +281,7 @@ def execute_cloud_stage(
             "semantic_mask": str(semantic_path.resolve()),
             "unusable_mask": str(unusable_path.resolve()),
             "invalid_mask": str(invalid_path.resolve()),
+            "preview": str(preview_path.resolve()),
             "metadata": str(metadata_path.resolve()),
         },
         "warnings": plan.get("warnings", []),

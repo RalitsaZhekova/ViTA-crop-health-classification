@@ -15,6 +15,12 @@ data/*
 !data/.gitkeep
 outputs/*
 !outputs/.gitkeep
+testing/inputs/sentinel2/*
+!testing/inputs/sentinel2/.gitkeep
+testing/inputs/balkan1/*
+!testing/inputs/balkan1/.gitkeep
+testing/runs/*
+!testing/runs/.gitkeep
 lightning_logs/
 *.ckpt
 *.pt
