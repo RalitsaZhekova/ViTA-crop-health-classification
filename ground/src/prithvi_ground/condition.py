@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -110,6 +111,25 @@ class ConditionLayers:
 
 
 @dataclass(frozen=True)
+class ConditionScoreLayers:
+    """Absolute per-pixel component and combined scores."""
+
+    component_scores: dict[str, FloatArray]
+    condition_score: FloatArray
+    valid_score_mask: BoolArray
+
+
+@dataclass(frozen=True)
+class SpatialConditionLayers:
+    """Spatial evidence calculated against region-level robust statistics."""
+
+    robust_deficit_z: FloatArray
+    relative_anomaly_mask: BoolArray
+    low_vigor_mask: BoolArray
+    alert_mask: BoolArray
+
+
+@dataclass(frozen=True)
 class ConditionAssessment:
     """Region-level spectral condition result with explicit limitations."""
 
@@ -131,7 +151,7 @@ class ConditionAssessment:
     algorithm_version: str = CONDITION_ALGORITHM_VERSION
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return json.loads(json.dumps(asdict(self), allow_nan=False))
 
 
 @dataclass(frozen=True)
@@ -205,27 +225,12 @@ def _label_for_score(score: float, config: ConditionConfig) -> str:
     return "High anomaly"
 
 
-def _empty_spatial_layers(
-    component_scores: dict[str, FloatArray],
-    pixel_score: FloatArray,
-) -> ConditionLayers:
-    return ConditionLayers(
-        component_scores=component_scores,
-        condition_score=pixel_score,
-        robust_deficit_z=np.full(pixel_score.shape, np.nan, dtype=np.float32),
-        relative_anomaly_mask=np.zeros(pixel_score.shape, dtype=bool),
-        low_vigor_mask=np.zeros(pixel_score.shape, dtype=bool),
-        alert_mask=np.zeros(pixel_score.shape, dtype=bool),
-    )
-
-
-def assess_crop_condition(
+def calculate_condition_score_layers(
     health_layers: HealthLayers,
     *,
-    mean_crop_probability: float | None = None,
     config: ConditionConfig | None = None,
-) -> ConditionResult:
-    """Assess spectral condition without inferring a disease or causal stressor."""
+) -> ConditionScoreLayers:
+    """Calculate absolute pixel scores without using scene-level statistics."""
     cfg = config or ConditionConfig()
     missing = [name for name in SCORED_INDEX_NAMES if name not in health_layers.values]
     if missing:
@@ -247,9 +252,76 @@ def assess_crop_condition(
         component_score[~analysis_mask] = np.nan
         component_scores[name] = component_score
     pixel_score = _combine_component_scores(component_scores, analysis_mask, cfg.weights)
-    valid_score = analysis_mask & np.isfinite(pixel_score)
-    analysis_pixels = int(np.count_nonzero(valid_score))
-    total_pixels = int(analysis_mask.size)
+    return ConditionScoreLayers(
+        component_scores=component_scores,
+        condition_score=pixel_score,
+        valid_score_mask=analysis_mask & np.isfinite(pixel_score),
+    )
+
+
+def calculate_spatial_condition_layers(
+    condition_score: FloatArray,
+    valid_score_mask: NDArray[Any],
+    *,
+    median_score: float,
+    median_absolute_deviation: float,
+    config: ConditionConfig | None = None,
+) -> SpatialConditionLayers:
+    """Calculate spatial deficit layers using whole-region robust statistics."""
+    cfg = config or ConditionConfig()
+    score = np.asarray(condition_score, dtype=np.float32)
+    valid = np.asarray(valid_score_mask, dtype=bool)
+    if score.ndim != 2 or valid.shape != score.shape:
+        raise ValueError("Condition score and valid mask must be matching 2D arrays")
+    if not np.isfinite(median_score) or not np.isfinite(median_absolute_deviation):
+        raise ValueError("Region median and median absolute deviation must be finite")
+    if median_absolute_deviation < 0:
+        raise ValueError("Median absolute deviation must be non-negative")
+    valid &= np.isfinite(score)
+
+    robust_scale = max(1.4826 * median_absolute_deviation, cfg.minimum_robust_scale)
+    robust_deficit_z = np.full(score.shape, np.nan, dtype=np.float32)
+    robust_deficit_z[valid] = ((median_score - score[valid]) / robust_scale).astype(
+        np.float32
+    )
+    score_deficit = median_score - score
+    relative_anomaly_mask = (
+        valid
+        & (robust_deficit_z >= cfg.relative_anomaly_z)
+        & (score_deficit >= cfg.minimum_score_deficit)
+    )
+    low_vigor_mask = valid & (score < cfg.absolute_low_score)
+    return SpatialConditionLayers(
+        robust_deficit_z=robust_deficit_z,
+        relative_anomaly_mask=relative_anomaly_mask,
+        low_vigor_mask=low_vigor_mask,
+        alert_mask=relative_anomaly_mask | low_vigor_mask,
+    )
+
+
+def build_condition_assessment(
+    *,
+    analysis_pixels: int,
+    total_pixels: int,
+    median_score: float | None,
+    lower_quartile_score: float | None,
+    relative_anomaly_pixels: int,
+    low_vigor_pixels: int,
+    component_median_scores: dict[str, float | None],
+    mean_crop_probability: float | None = None,
+    config: ConditionConfig | None = None,
+) -> ConditionAssessment:
+    """Build one auditable region assessment from exact or streamed statistics."""
+    cfg = config or ConditionConfig()
+    if analysis_pixels < 0 or total_pixels < 0 or analysis_pixels > total_pixels:
+        raise ValueError("Analysis and total pixel counts are inconsistent")
+    if not 0 <= relative_anomaly_pixels <= analysis_pixels:
+        raise ValueError("Relative anomaly pixel count is inconsistent")
+    if not 0 <= low_vigor_pixels <= analysis_pixels:
+        raise ValueError("Low-vigor pixel count is inconsistent")
+    if set(component_median_scores) != set(SCORED_INDEX_NAMES):
+        raise ValueError("Component median scores do not match the scored indices")
+
     analysis_percentage = 100.0 * analysis_pixels / total_pixels if total_pixels else 0.0
     quality_score, quality_label = _evidence_quality(
         analysis_pixels=analysis_pixels,
@@ -257,7 +329,6 @@ def assess_crop_condition(
         mean_crop_probability=mean_crop_probability,
         config=cfg,
     )
-
     limitations = (
         "The score represents spectral crop condition, not agronomic diagnosis.",
         "Prototype reference ranges are not crop-, cultivar-, season- or growth-stage-specific.",
@@ -268,7 +339,7 @@ def assess_crop_condition(
         analysis_pixels < cfg.minimum_analysis_pixels
         or analysis_percentage < cfg.minimum_analysis_percentage
     ):
-        assessment = ConditionAssessment(
+        return ConditionAssessment(
             status="INSUFFICIENT_DATA",
             label="Insufficient data",
             condition_score=None,
@@ -287,33 +358,17 @@ def assess_crop_condition(
             ),
             limitations=limitations,
         )
-        return ConditionResult(assessment, _empty_spatial_layers(component_scores, pixel_score))
 
-    values = pixel_score[valid_score].astype(np.float64)
-    median_score = float(np.median(values))
-    lower_quartile_score = float(np.percentile(values, 25))
+    if median_score is None or lower_quartile_score is None:
+        raise ValueError("Measured assessments require median and lower-quartile scores")
+    if not np.isfinite(median_score) or not np.isfinite(lower_quartile_score):
+        raise ValueError("Condition score statistics must be finite")
     absolute_vigor_score = (
         cfg.median_weight * median_score
         + cfg.lower_quartile_weight * lower_quartile_score
     )
-
-    median_absolute_deviation = float(np.median(np.abs(values - median_score)))
-    robust_scale = max(1.4826 * median_absolute_deviation, cfg.minimum_robust_scale)
-    robust_deficit_z = np.full(pixel_score.shape, np.nan, dtype=np.float32)
-    robust_deficit_z[valid_score] = (
-        (median_score - pixel_score[valid_score]) / robust_scale
-    ).astype(np.float32)
-    score_deficit = median_score - pixel_score
-    relative_anomaly_mask = (
-        valid_score
-        & (robust_deficit_z >= cfg.relative_anomaly_z)
-        & (score_deficit >= cfg.minimum_score_deficit)
-    )
-    low_vigor_mask = valid_score & (pixel_score < cfg.absolute_low_score)
-    alert_mask = relative_anomaly_mask | low_vigor_mask
-
-    relative_anomaly_fraction = float(np.count_nonzero(relative_anomaly_mask) / analysis_pixels)
-    low_vigor_fraction = float(np.count_nonzero(low_vigor_mask) / analysis_pixels)
+    relative_anomaly_fraction = relative_anomaly_pixels / analysis_pixels
+    low_vigor_fraction = low_vigor_pixels / analysis_pixels
     spatial_penalty = cfg.maximum_spatial_penalty * relative_anomaly_fraction
     final_score = float(np.clip(absolute_vigor_score - spatial_penalty, 0.0, 100.0))
     label = _label_for_score(final_score, cfg)
@@ -321,18 +376,12 @@ def assess_crop_condition(
     if label == "Nominal" and 100.0 * alert_fraction >= cfg.watch_alert_percentage:
         label = "Watch"
 
-    component_medians = {
-        name: float(np.median(score[valid_score & np.isfinite(score)]))
-        if np.any(valid_score & np.isfinite(score))
-        else None
-        for name, score in component_scores.items()
-    }
     explanations = [
         f"Absolute spectral-vigor component: {absolute_vigor_score:.1f}/100.",
     ]
     weak_components = [
         name.upper()
-        for name, score in component_medians.items()
+        for name, score in component_median_scores.items()
         if score is not None and score < 40.0
     ]
     if weak_components:
@@ -355,8 +404,7 @@ def assess_crop_condition(
         "Interpret the label as a screening priority; field inspection or agronomic "
         "evidence is required to identify a cause."
     )
-
-    assessment = ConditionAssessment(
+    return ConditionAssessment(
         status="MEASURED",
         label=label,
         condition_score=final_score,
@@ -368,17 +416,78 @@ def assess_crop_condition(
         analysis_percentage=analysis_percentage,
         relative_anomaly_percentage=100.0 * relative_anomaly_fraction,
         low_vigor_percentage=100.0 * low_vigor_fraction,
-        component_median_scores=component_medians,
+        component_median_scores=component_median_scores,
         configuration=asdict(cfg),
         explanations=tuple(explanations),
         limitations=limitations,
     )
+
+
+def assess_crop_condition(
+    health_layers: HealthLayers,
+    *,
+    mean_crop_probability: float | None = None,
+    config: ConditionConfig | None = None,
+) -> ConditionResult:
+    """Assess spectral condition without inferring a disease or causal stressor."""
+    cfg = config or ConditionConfig()
+    score_layers = calculate_condition_score_layers(health_layers, config=cfg)
+    component_scores = score_layers.component_scores
+    pixel_score = score_layers.condition_score
+    valid_score = score_layers.valid_score_mask
+    analysis_pixels = int(np.count_nonzero(valid_score))
+    total_pixels = int(valid_score.size)
+
+    component_medians = {
+        name: float(np.median(score[valid_score & np.isfinite(score)]))
+        if np.any(valid_score & np.isfinite(score))
+        else None
+        for name, score in component_scores.items()
+    }
+    analysis_percentage = 100.0 * analysis_pixels / total_pixels if total_pixels else 0.0
+    sufficient = (
+        analysis_pixels >= cfg.minimum_analysis_pixels
+        and analysis_percentage >= cfg.minimum_analysis_percentage
+    )
+    if not sufficient:
+        median_score = None
+        lower_quartile_score = None
+        spatial = SpatialConditionLayers(
+            robust_deficit_z=np.full(pixel_score.shape, np.nan, dtype=np.float32),
+            relative_anomaly_mask=np.zeros(pixel_score.shape, dtype=bool),
+            low_vigor_mask=np.zeros(pixel_score.shape, dtype=bool),
+            alert_mask=np.zeros(pixel_score.shape, dtype=bool),
+        )
+    else:
+        values = pixel_score[valid_score].astype(np.float64)
+        median_score = float(np.median(values))
+        lower_quartile_score = float(np.percentile(values, 25))
+        median_absolute_deviation = float(np.median(np.abs(values - median_score)))
+        spatial = calculate_spatial_condition_layers(
+            pixel_score,
+            valid_score,
+            median_score=median_score,
+            median_absolute_deviation=median_absolute_deviation,
+            config=cfg,
+        )
+
+    assessment = build_condition_assessment(
+        analysis_pixels=analysis_pixels,
+        total_pixels=total_pixels,
+        median_score=median_score,
+        lower_quartile_score=lower_quartile_score,
+        relative_anomaly_pixels=int(np.count_nonzero(spatial.relative_anomaly_mask)),
+        low_vigor_pixels=int(np.count_nonzero(spatial.low_vigor_mask)),
+        component_median_scores=component_medians,
+        mean_crop_probability=mean_crop_probability,
+        config=cfg,
+    )
     layers = ConditionLayers(
         component_scores=component_scores,
         condition_score=pixel_score,
-        robust_deficit_z=robust_deficit_z,
-        relative_anomaly_mask=relative_anomaly_mask,
-        low_vigor_mask=low_vigor_mask,
-        alert_mask=alert_mask,
+        robust_deficit_z=spatial.robust_deficit_z,
+        relative_anomaly_mask=spatial.relative_anomaly_mask,
+        low_vigor_mask=spatial.low_vigor_mask,
+        alert_mask=spatial.alert_mask,
     )
     return ConditionResult(assessment, layers)

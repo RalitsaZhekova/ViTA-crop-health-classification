@@ -22,3 +22,27 @@ baselines are still required before these labels can support trend claims.
 
 The API, database adapter and operational map are boundaries, not completed
 services. This prevents a demo stub from being mistaken for production code.
+
+## Run Phase 2 from a payload result
+
+The scene processor requires a payload `result.json` with `CROP_COMPLETE`
+status. It validates the source, unusable mask, crop binary mask and crop
+probability grid before processing any pixels.
+
+```powershell
+$env:PYTHONPATH = "ground/src;shared/src"
+python -m prithvi_ground.scene `
+  testing/runs/example/result.json `
+  --output testing/runs/example/ground
+```
+
+The processor uses bounded windows and three passes for a measured scene:
+
+1. calculate and write vegetation/RGB indices and absolute pixel scores;
+2. calculate a whole-region median absolute deviation;
+3. write robust deficit, relative anomaly, low-vigor and combined alert layers.
+
+Outputs include compressed tiled GeoTIFFs, a portable JSON report with relative
+asset paths, and a PNG quicklook. Means and standard deviations use every valid
+analysis pixel. Percentiles use a deterministic priority-reservoir sample of at
+most 50,000 spatially identified pixels, so results do not depend on tile size.

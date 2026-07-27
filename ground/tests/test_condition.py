@@ -91,6 +91,23 @@ def test_tiny_valid_region_returns_insufficient_data() -> None:
     assert not np.any(result.layers.alert_mask)
 
 
+def test_tiny_low_vigor_region_does_not_emit_anomaly_claims() -> None:
+    layers = _constant_layers(
+        blue=0.20,
+        green=0.25,
+        red=0.30,
+        nir=0.35,
+        shape=(4, 4),
+    )
+
+    result = assess_crop_condition(layers)
+
+    assert result.assessment.status == "INSUFFICIENT_DATA"
+    assert not np.any(result.layers.relative_anomaly_mask)
+    assert not np.any(result.layers.low_vigor_mask)
+    assert not np.any(result.layers.alert_mask)
+
+
 def test_component_maps_are_nan_outside_analysis_mask() -> None:
     layers = _constant_layers(blue=0.05, green=0.10, red=0.05, nir=0.80)
     layers.analysis_mask[0, 0] = False

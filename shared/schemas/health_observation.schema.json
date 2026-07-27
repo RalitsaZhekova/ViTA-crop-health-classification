@@ -14,6 +14,7 @@
     "status",
     "quality",
     "metrics",
+    "condition",
     "raster_assets"
   ],
   "properties": {
@@ -34,9 +35,47 @@
       }
     },
     "metrics": {"type": "object"},
+    "condition": {
+      "type": "object",
+      "required": [
+        "status",
+        "label",
+        "condition_score",
+        "evidence_quality_score",
+        "analysis_pixels",
+        "analysis_percentage",
+        "explanations",
+        "limitations"
+      ],
+      "properties": {
+        "status": {"enum": ["MEASURED", "INSUFFICIENT_DATA"]},
+        "label": {
+          "enum": [
+            "Nominal",
+            "Watch",
+            "Moderate anomaly",
+            "High anomaly",
+            "Insufficient data"
+          ]
+        },
+        "condition_score": {"type": ["number", "null"], "minimum": 0, "maximum": 100},
+        "evidence_quality_score": {"type": "number", "minimum": 0, "maximum": 100},
+        "analysis_pixels": {"type": "integer", "minimum": 0},
+        "analysis_percentage": {"type": "number", "minimum": 0, "maximum": 100},
+        "explanations": {"type": "array", "items": {"type": "string"}},
+        "limitations": {"type": "array", "items": {"type": "string"}}
+      }
+    },
     "raster_assets": {
       "type": "object",
       "additionalProperties": {"type": "string"}
-    }
+    },
+    "index_algorithm_version": {"type": "string"},
+    "condition_algorithm_version": {"type": "string"},
+    "geospatial": {"type": "object"},
+    "radiometry": {"type": "object"},
+    "provenance": {"type": "object"},
+    "runtime": {"type": "object"},
+    "warnings": {"type": "array", "items": {"type": "string"}}
   }
 }
