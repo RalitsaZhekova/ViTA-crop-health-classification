@@ -14,9 +14,11 @@ separately supervised health or multitask head. This crop-type checkpoint does
 not infer health: suitable health targets, definitions, and evaluation data are
 not present in this dataset.
 
-The separate rule-based condition stage calculates NDVI, EVI, GNDVI, CVI and
-RGB features only on clear, confident crop pixels. Its calibrated-reflectance,
-masking and JSON output rules are documented in
+The separate rule-based condition stage calculates NDVI, EVI, GNDVI, SAVI,
+CVI and RGB diagnostics only on clear, confident crop pixels. It combines the
+most defensible normalized vigor components into an auditable screening score,
+then applies robust within-crop-region anomaly analysis. Its reflectance,
+masking, interpretation and JSON output rules are documented in
 [`ground/health_analysis_contract.md`](ground/health_analysis_contract.md).
 
 ## Extracted components
@@ -30,11 +32,38 @@ runtime and the remaining system responsibilities are separated into:
   reconstruction and cloud-mask boundaries;
 - [`ground/`](ground/README.md): condition measurements, storage, API and
   visualization boundaries;
+- [`integration/`](integration/README.md): one-command Sentinel payload-to-ground
+  demonstration orchestration;
 - [`shared/`](shared/README.md): bands, normalization, classes, thresholds and
   exchange schemas.
 
 [`COMPONENTS.md`](COMPONENTS.md) defines ownership and canonical storage
 locations.
+
+## Complete Sentinel demonstration
+
+The current local end-to-end command runs intake, cloud/shadow masking, crop
+segmentation and streamed ground crop-condition analysis:
+
+```powershell
+.\integration\scripts\run_sentinel_end_to_end.ps1 `
+  -InputPath testing\inputs\sentinel2\your_five_band_scene.tif `
+  -AcquiredAt 2026-07-27T12:00:00Z `
+  -ReflectanceScale 10000 `
+  -Output testing\runs\your_end_to_end_run
+```
+
+The Sentinel development route currently requires described B02, B03, B04,
+B08 and B8A bands because the retained cloud and crop models use different NIR
+responses. The final Balkan mission contract remains RGB plus one NIR; this
+five-band development adapter must not be mistaken for that unresolved sensor
+interface.
+
+The result directory contains separate payload and ground records plus a
+portable `end_to_end_result.json`. A condition label is a single-scene spectral
+screening priority—not a disease diagnosis. See
+[`integration/verification.json`](integration/verification.json) for the exact
+accepted Sentinel/PASTIS execution evidence and its limitations.
 
 ## Data and model contract
 

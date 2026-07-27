@@ -66,9 +66,7 @@ class ConditionConfig:
             raise ValueError("Robust anomaly limits are invalid")
         if self.maximum_spatial_penalty < 0:
             raise ValueError("maximum_spatial_penalty must be non-negative")
-        if not (
-            100 >= self.nominal_minimum > self.watch_minimum > self.moderate_minimum >= 0
-        ):
+        if not (100 >= self.nominal_minimum > self.watch_minimum > self.moderate_minimum >= 0):
             raise ValueError("Condition label thresholds must be strictly descending")
         if self.minimum_analysis_pixels <= 0 or self.target_evidence_pixels <= 0:
             raise ValueError("Pixel-count thresholds must be positive")
@@ -281,9 +279,7 @@ def calculate_spatial_condition_layers(
 
     robust_scale = max(1.4826 * median_absolute_deviation, cfg.minimum_robust_scale)
     robust_deficit_z = np.full(score.shape, np.nan, dtype=np.float32)
-    robust_deficit_z[valid] = ((median_score - score[valid]) / robust_scale).astype(
-        np.float32
-    )
+    robust_deficit_z[valid] = ((median_score - score[valid]) / robust_scale).astype(np.float32)
     score_deficit = median_score - score
     relative_anomaly_mask = (
         valid
@@ -353,9 +349,7 @@ def build_condition_assessment(
             low_vigor_percentage=None,
             component_median_scores={name: None for name in SCORED_INDEX_NAMES},
             configuration=asdict(cfg),
-            explanations=(
-                "Too few clear, confident crop pixels were available for assessment.",
-            ),
+            explanations=("Too few clear, confident crop pixels were available for assessment.",),
             limitations=limitations,
         )
 
@@ -364,8 +358,7 @@ def build_condition_assessment(
     if not np.isfinite(median_score) or not np.isfinite(lower_quartile_score):
         raise ValueError("Condition score statistics must be finite")
     absolute_vigor_score = (
-        cfg.median_weight * median_score
-        + cfg.lower_quartile_weight * lower_quartile_score
+        cfg.median_weight * median_score + cfg.lower_quartile_weight * lower_quartile_score
     )
     relative_anomaly_fraction = relative_anomaly_pixels / analysis_pixels
     low_vigor_fraction = low_vigor_pixels / analysis_pixels
@@ -385,9 +378,7 @@ def build_condition_assessment(
         if score is not None and score < 40.0
     ]
     if weak_components:
-        explanations.append(
-            "Low prototype-range support from: " + ", ".join(weak_components) + "."
-        )
+        explanations.append("Low prototype-range support from: " + ", ".join(weak_components) + ".")
     if relative_anomaly_fraction > 0:
         explanations.append(
             f"{100.0 * relative_anomaly_fraction:.1f}% of analyzed crop pixels "

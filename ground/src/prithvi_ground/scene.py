@@ -136,6 +136,7 @@ class StreamingMetric:
         mean = self.total / self.count
         variance = max(0.0, self.total_squared / self.count - mean * mean)
         percentiles = np.percentile(self._values, (10, 25, 50, 90))
+
         def rounded(value: float) -> float:
             return float(round(value, 12))
 
@@ -424,9 +425,7 @@ def run_ground_scene(
     if not isinstance(cloud_input, dict):
         raise ValueError("Cloud plan is missing the radiometric input contract")
     reflectance_scale = cloud_input.get("reflectance_scale")
-    if not isinstance(reflectance_scale, (int, float)) or not np.isfinite(
-        reflectance_scale
-    ):
+    if not isinstance(reflectance_scale, (int, float)) or not np.isfinite(reflectance_scale):
         raise ValueError("A finite reflectance scale is required for ground analysis")
     reflectance_scale = float(reflectance_scale)
     if reflectance_scale <= 0:
@@ -442,9 +441,7 @@ def run_ground_scene(
     for directory in (health_root, condition_root, visual_root):
         directory.mkdir(parents=True, exist_ok=True)
 
-    health_paths = {
-        name: health_root / f"{scene_id}_{name}.tif" for name in HEALTH_LAYER_NAMES
-    }
+    health_paths = {name: health_root / f"{scene_id}_{name}.tif" for name in HEALTH_LAYER_NAMES}
     condition_score_path = condition_root / f"{scene_id}_condition_score.tif"
     valid_mask_path = condition_root / f"{scene_id}_valid_crop.tif"
     deficit_path = condition_root / f"{scene_id}_robust_deficit_z.tif"
@@ -453,9 +450,7 @@ def run_ground_scene(
     alert_path = condition_root / f"{scene_id}_alert.tif"
     quicklook_path = visual_root / f"{scene_id}_crop_condition.png"
 
-    metric_accumulators = {
-        name: StreamingMetric(f"metric:{name}") for name in HEALTH_LAYER_NAMES
-    }
+    metric_accumulators = {name: StreamingMetric(f"metric:{name}") for name in HEALTH_LAYER_NAMES}
     component_accumulators = {
         name: StreamingMetric(f"component:{name}") for name in SCORED_INDEX_NAMES
     }
@@ -492,9 +487,7 @@ def run_ground_scene(
             rasterio.open(condition_score_path, "w", **float_profile)
         )
         condition_output.set_band_description(1, "spectral condition score 0..100")
-        valid_output = stack.enter_context(
-            rasterio.open(valid_mask_path, "w", **byte_profile)
-        )
+        valid_output = stack.enter_context(rasterio.open(valid_mask_path, "w", **byte_profile))
         valid_output.set_band_description(1, "0 excluded, 1 valid confident crop")
 
         windows = _iter_windows(source.width, source.height, tile_size)
@@ -509,9 +502,7 @@ def run_ground_scene(
             crop_binary = crop_source.read(1, window=window)
             unusable = unusable_source.read(1, window=window)
             crop_probability = probability_source.read(1, window=window).astype(np.float32)
-            candidate_crop_pixels += int(
-                np.count_nonzero((crop_binary == 1) & (unusable == 0))
-            )
+            candidate_crop_pixels += int(np.count_nonzero((crop_binary == 1) & (unusable == 0)))
             requested_mask = build_analysis_mask(
                 crop_binary,
                 unusable,
@@ -608,9 +599,7 @@ def run_ground_scene(
                     median_absolute_deviation=median_absolute_deviation,
                     config=cfg,
                 )
-                relative_anomaly_pixels += int(
-                    np.count_nonzero(spatial.relative_anomaly_mask)
-                )
+                relative_anomaly_pixels += int(np.count_nonzero(spatial.relative_anomaly_mask))
                 low_vigor_pixels += int(np.count_nonzero(spatial.low_vigor_mask))
                 _write_float_tile(deficit_output, spatial.robust_deficit_z, window)
                 relative_output.write(
@@ -631,8 +620,7 @@ def run_ground_scene(
                 alert_output.write(zeros, 1, window=window)
 
     component_medians = {
-        name: component_accumulators[name].summary()["median"]
-        for name in SCORED_INDEX_NAMES
+        name: component_accumulators[name].summary()["median"] for name in SCORED_INDEX_NAMES
     }
     probability_summary = probability_accumulator.summary()
     assessment = build_condition_assessment(
@@ -697,8 +685,7 @@ def run_ground_scene(
             "mean_crop_probability": probability_summary["mean"],
         },
         "metrics": {
-            name: accumulator.summary()
-            for name, accumulator in sorted(metric_accumulators.items())
+            name: accumulator.summary() for name, accumulator in sorted(metric_accumulators.items())
         },
         "condition": assessment.to_dict(),
         "raster_assets": raster_assets,

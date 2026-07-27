@@ -54,9 +54,7 @@ def _write_sentinel_scene(path: Path) -> None:
     red[:16, :16] = 0.30
     nir_broad[:16, :16] = 0.34
     nir_narrow[:16, :16] = 0.35
-    values = (10_000 * np.stack((red, green, blue, nir_broad, nir_narrow))).astype(
-        np.uint16
-    )
+    values = (10_000 * np.stack((red, green, blue, nir_broad, nir_narrow))).astype(np.uint16)
     with rasterio.open(
         path,
         "w",
@@ -126,10 +124,7 @@ def test_sentinel_end_to_end_completes_payload_and_ground(tmp_path: Path) -> Non
             if Path(path).suffix == ".tif"
         ),
     ]
-    ground_assets = [
-        ground_report_path.parent / path
-        for path in ground["raster_assets"].values()
-    ]
+    ground_assets = [ground_report_path.parent / path for path in ground["raster_assets"].values()]
     assert len(payload_rasters) == 6
     assert len(ground_assets) == 15
     for path in (*payload_rasters, *ground_assets):

@@ -69,10 +69,7 @@ class HealthObservation:
                 "analysis_pixels": self.analysis_pixels,
                 "analysis_percentage": self.analysis_percentage,
             },
-            "metrics": {
-                name: asdict(summary)
-                for name, summary in sorted(self.metrics.items())
-            },
+            "metrics": {name: asdict(summary) for name, summary in sorted(self.metrics.items())},
             "raster_assets": dict(sorted(self.raster_assets.items())),
         }
 
@@ -112,8 +109,7 @@ def build_analysis_mask(
     if not (np.issubdtype(crop.dtype, np.integer) or np.issubdtype(crop.dtype, np.bool_)):
         raise TypeError("Crop binary mask must use an integer or Boolean dtype")
     if not (
-        np.issubdtype(unusable_raw.dtype, np.integer)
-        or np.issubdtype(unusable_raw.dtype, np.bool_)
+        np.issubdtype(unusable_raw.dtype, np.integer) or np.issubdtype(unusable_raw.dtype, np.bool_)
     ):
         raise TypeError("Unusable mask must use an integer or Boolean dtype")
 
@@ -131,8 +127,7 @@ def build_analysis_mask(
         if nodata_raw.shape != crop.shape:
             raise ValueError("No-data mask shape does not match crop binary mask")
         if not (
-            np.issubdtype(nodata_raw.dtype, np.integer)
-            or np.issubdtype(nodata_raw.dtype, np.bool_)
+            np.issubdtype(nodata_raw.dtype, np.integer) or np.issubdtype(nodata_raw.dtype, np.bool_)
         ):
             raise TypeError("No-data mask must use an integer or Boolean dtype")
         if not np.all(np.isin(np.unique(nodata_raw), (0, 1))):
@@ -195,15 +190,10 @@ def calculate_health_layers(
     if requested.shape != shape:
         raise ValueError("Analysis mask shape does not match reflectance bands")
 
-    bands = {
-        name: array.astype(np.float32, copy=False)
-        for name, array in raw_bands.items()
-    }
+    bands = {name: array.astype(np.float32, copy=False) for name, array in raw_bands.items()}
     finite_and_calibrated = np.ones(shape, dtype=bool)
     for array in bands.values():
-        finite_and_calibrated &= (
-            np.isfinite(array) & (array >= lower) & (array <= upper)
-        )
+        finite_and_calibrated &= np.isfinite(array) & (array >= lower) & (array <= upper)
     valid = requested & finite_and_calibrated
 
     blue_array = bands["blue"]
@@ -245,12 +235,8 @@ def calculate_health_layers(
 
     brightness = np.full(shape, np.nan, dtype=np.float32)
     excess_green = np.full(shape, np.nan, dtype=np.float32)
-    brightness[valid] = (
-        blue_array[valid] + green_array[valid] + red_array[valid]
-    ) / 3.0
-    excess_green[valid] = (
-        2.0 * green_array[valid] - red_array[valid] - blue_array[valid]
-    )
+    brightness[valid] = (blue_array[valid] + green_array[valid] + red_array[valid]) / 3.0
+    excess_green[valid] = 2.0 * green_array[valid] - red_array[valid] - blue_array[valid]
 
     return HealthLayers(
         values={
@@ -304,11 +290,7 @@ def build_health_observation(
 
     total = int(layers.analysis_mask.size)
     analysis = int(layers.analysis_mask.sum())
-    status = (
-        "MEASURED"
-        if analysis >= minimum_analysis_pixels
-        else "INSUFFICIENT_DATA"
-    )
+    status = "MEASURED" if analysis >= minimum_analysis_pixels else "INSUFFICIENT_DATA"
     return HealthObservation(
         scene_id=scene_id,
         region_id=region_id,
@@ -318,9 +300,6 @@ def build_health_observation(
         total_pixels=total,
         analysis_pixels=analysis,
         analysis_percentage=100.0 * analysis / total if total else 0.0,
-        metrics={
-            name: summarize_metric(values)
-            for name, values in layers.values.items()
-        },
+        metrics={name: summarize_metric(values) for name, values in layers.values.items()},
         raster_assets=raster_assets or {},
     )

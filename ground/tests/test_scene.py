@@ -147,9 +147,7 @@ def test_run_ground_scene_writes_complete_geospatial_result(tmp_path: Path) -> N
     )
     assert set(schema["required"]) <= set(saved_report)
     assert set(saved_report) <= set(schema["properties"])
-    assert set(schema["properties"]["condition"]["required"]) <= set(
-        saved_report["condition"]
-    )
+    assert set(schema["properties"]["condition"]["required"]) <= set(saved_report["condition"])
     assert len(report["raster_assets"]) == 15
     for relative_path in report["raster_assets"].values():
         assert not Path(relative_path).is_absolute()

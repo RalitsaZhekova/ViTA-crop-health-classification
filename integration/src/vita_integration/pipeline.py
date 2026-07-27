@@ -116,12 +116,8 @@ def run_sentinel_end_to_end(
             "condition": {
                 "label": ground_report["condition"]["label"],
                 "score": ground_report["condition"]["condition_score"],
-                "evidence_quality_label": ground_report["condition"][
-                    "evidence_quality_label"
-                ],
-                "analysis_percentage": ground_report["quality"][
-                    "analysis_percentage"
-                ],
+                "evidence_quality_label": ground_report["condition"]["evidence_quality_label"],
+                "analysis_percentage": ground_report["quality"]["analysis_percentage"],
             },
         },
         "runtime_seconds": time.perf_counter() - started,

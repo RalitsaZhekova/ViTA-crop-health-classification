@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "verified_at": "2026-07-27",
+  "algorithm_version": "sentinel-end-to-end-v1",
+  "scope": "Local execution and interface acceptance; not an accuracy benchmark or a physical downlink test.",
+  "command": ".\\integration\\scripts\\run_sentinel_end_to_end.ps1 -InputPath testing\\inputs\\sentinel2\\pastis_10425_20190924_5band.tif -AcquiredAt 2019-09-24T00:00:00Z -ReflectanceScale 10000 -Output testing\\runs\\pastis_10425_end_to_end -GroundTileSize 32 -Overwrite",
+  "input": {
+    "scene_id": "pastis_10425_20190924_5band",
+    "sensor": "sentinel-2",
+    "source_scope": "PASTIS training/replay scene; not held-out evaluation data",
+    "bytes": 132580,
+    "sha256": "ffbb7f9da02face84c2329bedd6d3a14809c4662d0bb6f59c8c716b7117e1e27",
+    "width": 128,
+    "height": 128,
+    "crs": "EPSG:32630",
+    "reflectance_scale": 10000.0
+  },
+  "environment": {
+    "crop_device": "cuda",
+    "gpu": "NVIDIA GeForce RTX 3060 Laptop GPU",
+    "gpu_memory_mib": 6144,
+    "driver_version": "560.94"
+  },
+  "result": {
+    "status": "COMPLETE",
+    "payload_status": "CROP_COMPLETE",
+    "ground_status": "MEASURED",
+    "runtime_seconds": 12.987710400018841,
+    "cloud": {
+      "unusable_percentage": 43.048095703125,
+      "decision": "PROCESS_CLEAR_AREAS"
+    },
+    "crop": {
+      "crop_percentage_usable": 69.44593291179937,
+      "mean_crop_probability_usable": 0.5994946396719117,
+      "runtime_seconds": 0.30950360000133514
+    },
+    "condition": {
+      "analysis_pixels": 3832,
+      "analysis_percentage": 23.388671875,
+      "score": 36.2752480030062,
+      "label": "Moderate anomaly",
+      "evidence_quality_label": "HIGH",
+      "low_vigor_percentage": 40.3705636743215,
+      "relative_anomaly_percentage": 0.0,
+      "ground_runtime_seconds": 0.49758500000461936
+    }
+  },
+  "artifact_validation": {
+    "ground_asset_references": 15,
+    "geotiffs_opened_and_grid_checked": 20,
+    "expected_grid": {
+      "width": 128,
+      "height": 128,
+      "crs": "EPSG:32630"
+    },
+    "all_files_present": true,
+    "all_geotiff_grids_equal_source": true,
+    "quicklook_visually_reviewed": true
+  },
+  "automated_validation": {
+    "test_command": "python -m pytest ground/tests integration/tests -q",
+    "passed": 41,
+    "failed": 0,
+    "ruff": "passed",
+    "byte_compilation": "passed"
+  },
+  "limitations": [
+    "The input is a training/replay scene and cannot support a held-out crop-accuracy claim.",
+    "No expert cloud ground truth was used in this execution acceptance run.",
+    "The single-scene condition label is a spectral screening priority, not a disease, cause, yield or agronomic diagnosis.",
+    "The command performs a local payload-to-ground handoff and does not test uplink, mission control, packaging or downlink transport.",
+    "The Sentinel development route uses B08 for cloud detection and B8A for crop inference; the Balkan single-NIR contract remains unresolved.",
+    "No Balkan-1 imagery or payload computer was used."
+  ]
+}
