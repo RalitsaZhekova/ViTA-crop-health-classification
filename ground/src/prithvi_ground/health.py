@@ -13,7 +13,7 @@ from prithvi_shared.calibration import HEALTH_ANALYSIS_CROP_THRESHOLD
 
 SUPPORTED_SENSORS = {"balkan-1", "sentinel-2"}
 SCHEMA_VERSION = "1.0"
-ALGORITHM_VERSION = "health-indices-v1"
+ALGORITHM_VERSION = "health-indices-v2"
 CROP_BINARY_NODATA = 255
 
 FloatArray = NDArray[np.floating[Any]]
@@ -164,6 +164,7 @@ def calculate_health_layers(
     *,
     epsilon: float = 1e-6,
     reflectance_range: tuple[float, float] = (-0.2, 2.0),
+    savi_soil_factor: float = 0.5,
 ) -> HealthLayers:
     """Calculate vegetation indices and RGB features for one image window.
 
@@ -183,6 +184,8 @@ def calculate_health_layers(
         raise TypeError("Reflectance bands must be floating point, not raw integer DN")
     if epsilon <= 0:
         raise ValueError("epsilon must be positive")
+    if not 0 <= savi_soil_factor <= 1:
+        raise ValueError("savi_soil_factor must be between 0 and 1")
     lower, upper = reflectance_range
     if lower >= upper:
         raise ValueError("Invalid reflectance range")
@@ -221,6 +224,12 @@ def calculate_health_layers(
         valid,
         epsilon,
     )
+    savi = _safe_ratio(
+        (1.0 + savi_soil_factor) * (nir_array - red_array),
+        nir_array + red_array + savi_soil_factor,
+        valid,
+        epsilon,
+    )
     cvi = _safe_ratio(
         nir_array * red_array,
         green_array * green_array,
@@ -251,6 +260,7 @@ def calculate_health_layers(
             "gndvi": gndvi,
             "ndvi": ndvi,
             "rgb_brightness": brightness,
+            "savi": savi,
             "vari": vari,
         },
         analysis_mask=valid,
