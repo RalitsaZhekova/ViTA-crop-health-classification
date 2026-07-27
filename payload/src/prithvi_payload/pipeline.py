@@ -46,6 +46,7 @@ def run_scene(
     cloud_config_path: str | Path = DEFAULT_CONFIG,
     cloud_backend: CloudBackend | None = None,
     cloud_config: dict[str, Any] | None = None,
+    crop_model: Any | None = None,
 ) -> dict[str, Any]:
     """Run only the explicitly selected stages for one preprocessed scene."""
     if stop_after not in {"intake", "cloud", "crop"}:
@@ -161,7 +162,11 @@ def run_scene(
     # Keep the 100M crop model and TerraTorch out of intake/cloud-only runs.
     from prithvi_payload.crop_executor import execute_crop_stage
 
-    crop_metadata = execute_crop_stage(crop_plan, output_root=output_root)
+    crop_metadata = execute_crop_stage(
+        crop_plan,
+        output_root=output_root,
+        model=crop_model,
+    )
     result["completed_stages"].append("crop")
     result["status"] = "CROP_COMPLETE"
     result["crop_decision"] = "CLASSIFIED"

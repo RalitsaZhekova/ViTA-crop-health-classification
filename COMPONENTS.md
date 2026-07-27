@@ -7,6 +7,7 @@ while keeping one canonical copy of every implementation and configuration.
 training/  -> shared/
 payload/   -> shared/
 ground/    -> shared/ and payload result records
+integration/ -> payload/, ground/ and shared/ for ground demonstrations only
 shared/    -> no project-domain dependency
 ```
 
@@ -17,6 +18,7 @@ shared/    -> no project-domain dependency
 | `training/` | Development workstation | Dataset references, augmentation, training/evaluation code, configs and experiment logs | Flight runtime or customer API |
 | `payload/` | Balkan-1 payload computer | Pinned model, tiled inference, raw-band reconstruction boundary and cloud-mask boundary | Training data, experiment logs, health history or web UI |
 | `ground/` | Ground infrastructure | Crop-condition calculations, observations, storage contract, API contract and visualization | Training loop or satellite reconstruction |
+| `integration/` | Development/ground demonstration | One-command payload-to-ground orchestration and final run summary | Flight bundle or duplicated model/business logic |
 | `shared/` | All components | Band order, normalization, class mapping, thresholds and JSON schemas | Sensor processing or business logic |
 
 ## Storage policy
