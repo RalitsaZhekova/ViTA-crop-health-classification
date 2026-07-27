@@ -14,12 +14,12 @@ import torch
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.colors import ListedColormap
 from matplotlib.figure import Figure
+from prithvi_shared import NORMALIZATION_MEANS
 from rasterio.enums import Resampling
 from rasterio.warp import transform as transform_coordinates
 from rasterio.windows import Window as RasterWindow
 
 from prithvi_payload.inference import PayloadCropModel
-from prithvi_shared import NORMALIZATION_MEANS
 
 FLOAT_NODATA = -9999.0
 BYTE_NODATA = 255
