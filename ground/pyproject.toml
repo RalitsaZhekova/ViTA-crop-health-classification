@@ -4,12 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "prithvi-crop-ground"
-version = "0.2.0"
+version = "0.3.0"
 description = "Ground-side storage, history, API and client application boundary"
 requires-python = ">=3.10,<3.14"
 dependencies = [
   "prithvi-crop-shared==0.1.0",
+  "pillow>=10,<13",
 ]
+
+[project.scripts]
+vita-ground-ingest = "prithvi_ground.catalog:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

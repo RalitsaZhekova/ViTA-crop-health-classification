@@ -1,6 +1,6 @@
 # Storage contract
 
-The first implementation should store:
+The implemented local catalog stores:
 
 - one immutable scene record per acquisition;
 - region identifier, sensor, acquisition time, CRS and bounds;
@@ -10,9 +10,14 @@ The first implementation should store:
 - the compact RGB preview and condition/quality overlay locations and checksums;
 - the queryable interaction-grid measurements delivered in scene JSON.
 
-For the short demo, SQLite plus files on disk is sufficient. Production should
-use PostgreSQL/PostGIS and object storage. The active downlink contract is
-defined in `shared/schemas/downlink_bundle.schema.json`.
+Each received three-file bundle is checksum-verified, decoded to validate its
+image properties, staged, and then atomically installed. A SQLite index supports
+scene and region history queries while the original bundle remains immutable.
+Identical retransmission is idempotent and conflicting content is rejected.
+
+SQLite plus files on disk is sufficient for the MVP. Production should use
+PostgreSQL/PostGIS and object storage. The active downlink contract is defined in
+`shared/schemas/downlink_bundle.schema.json`.
 
 Historical baselines must be keyed by stable region geometry and acquisition
 date. They must not compare unrelated fields or different growth stages as if

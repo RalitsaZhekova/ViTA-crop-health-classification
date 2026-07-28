@@ -1,8 +1,9 @@
 # Ground component
 
-`ground/` is now the receiving side of the mission. Crop-condition calculations
-run on the payload; the ground component will store compact downlink products,
-build historical series, expose the API and serve the professional web client.
+`ground/` is the receiving side of the mission. Crop-condition calculations run
+on the payload; the ground component verifies and stores compact downlink
+products, builds historical series, exposes the API and serves the professional
+web client.
 
 The authoritative scientific implementation remains available from the shared
 package so payload and ground validation use exactly the same formulas. Ground
@@ -21,4 +22,21 @@ Single-scene labels remain spectral screening priorities. `Nominal`, `Watch`,
 `Moderate anomaly`, `High anomaly` and `Insufficient data` describe the available
 multispectral evidence, not confirmed agronomic health or a specific cause.
 
-The API, database adapter and web application are the next ground deliverables.
+## Verified scene catalog
+
+The implemented catalog accepts only the three-file downlink contract, verifies
+every checksum and image property, and atomically copies valid bundles into an
+immutable scene store backed by SQLite. Re-ingesting the identical bundle is
+safe; reusing a scene identifier for different content is rejected.
+
+```powershell
+vita-ground-ingest `
+  --bundle ..\testing\runs\pastis_10425_compact_downlink\payload\downlink `
+  --store .\runtime
+```
+
+The catalog supports scene, region, latest-observation and chronological-history
+queries. Exact scientific values remain in the verified JSON record; image
+assets are never treated as measurement sources.
+
+The HTTP API and interactive client build on this catalog in the next layers.
