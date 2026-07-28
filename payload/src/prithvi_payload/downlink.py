@@ -24,6 +24,7 @@ DOWNLINK_PRODUCT_TYPE = "vita.crop-condition.web-bundle"
 DOWNLINK_ALGORITHM_VERSION = "compact-downlink-v1"
 DEFAULT_MAX_IMAGE_DIMENSION = 1600
 DEFAULT_GRID_SIZE = 16
+MINIMUM_GRID_CELL_PIXELS = 32
 RGB_WEBP_QUALITY = 82
 
 CONDITION_COLOR_STOPS = (
@@ -188,8 +189,8 @@ def _build_interaction_grid(
 ) -> dict[str, Any]:
     if grid_size <= 0:
         raise ValueError("grid_size must be positive")
-    rows = min(grid_size, source.height)
-    columns = min(grid_size, source.width)
+    rows = min(grid_size, max(1, source.height // MINIMUM_GRID_CELL_PIXELS))
+    columns = min(grid_size, max(1, source.width // MINIMUM_GRID_CELL_PIXELS))
     row_edges = np.rint(np.linspace(0, source.height, rows + 1)).astype(int)
     column_edges = np.rint(np.linspace(0, source.width, columns + 1)).astype(int)
     cells: list[dict[str, Any]] = []

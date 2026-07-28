@@ -14,6 +14,10 @@ Current intermediate layout:
     cloud_masks/
     crop_maps/
     condition_analysis/
+    downlink/
+      scene.webp
+      condition.png
+      scene.json
     metadata/
     visualisations/
 ```
@@ -37,3 +41,7 @@ cloud gate rejects the scene. Existing run summaries are protected unless
 `-Overwrite` is supplied. Accepted real-model execution evidence is recorded in
 [`verification.json`](verification.json); it validates execution and interfaces,
 not held-out crop accuracy, broad cloud accuracy or agronomic diagnosis.
+
+Successful local execution ends with payload status `DOWNLINK_READY`. This
+validates package construction and software interfaces, not radio transfer,
+contact-window scheduling, retry/resume or ground acknowledgement.

@@ -13,7 +13,7 @@ from cloud_detection.cli import DEFAULT_CONFIG
 from prithvi_payload.pipeline import run_scene
 
 INTEGRATION_SCHEMA_VERSION = "1.0"
-INTEGRATION_ALGORITHM_VERSION = "sentinel-end-to-end-v1"
+INTEGRATION_ALGORITHM_VERSION = "sentinel-end-to-end-v2"
 
 
 def _write_json_atomic(path: Path, value: dict[str, Any]) -> None:
@@ -39,6 +39,8 @@ def run_sentinel_end_to_end(
     reflectance_scale: float | None = None,
     max_crop_cloud_percentage: float = 60.0,
     condition_tile_size: int = 512,
+    downlink_max_image_dimension: int = 1600,
+    downlink_grid_size: int = 16,
     cloud_config_path: str | Path = DEFAULT_CONFIG,
     cloud_backend: CloudBackend | None = None,
     cloud_config: dict[str, Any] | None = None,
@@ -64,10 +66,12 @@ def run_sentinel_end_to_end(
         acquired_at=acquired_at,
         scene_id=scene_id,
         reflectance_scale=reflectance_scale,
-        stop_after="condition",
+        stop_after="downlink",
         max_crop_cloud_percentage=max_crop_cloud_percentage,
         region_id=region_id,
         condition_tile_size=condition_tile_size,
+        downlink_max_image_dimension=downlink_max_image_dimension,
+        downlink_grid_size=downlink_grid_size,
         overwrite=overwrite,
         cloud_config_path=cloud_config_path,
         cloud_backend=cloud_backend,
@@ -75,7 +79,7 @@ def run_sentinel_end_to_end(
         crop_model=crop_model,
     )
     payload_result_path = payload_root / "result.json"
-    if payload_result.get("status") != "CONDITION_COMPLETE":
+    if payload_result.get("status") != "DOWNLINK_READY":
         summary = {
             "schema_version": INTEGRATION_SCHEMA_VERSION,
             "algorithm_version": INTEGRATION_ALGORITHM_VERSION,
@@ -86,6 +90,7 @@ def run_sentinel_end_to_end(
             "payload_status": payload_result.get("status"),
             "payload_result": _relative(payload_result_path, output),
             "condition_report": None,
+            "downlink_manifest": None,
             "summary": {"payload": payload_result.get("summary", {})},
             "runtime_seconds": time.perf_counter() - started,
         }
@@ -94,17 +99,19 @@ def run_sentinel_end_to_end(
 
     condition_report = payload_result["stage_metadata"]["condition"]
     condition_report_path = Path(payload_result["artifacts"]["condition"]["report"])
+    downlink_manifest_path = Path(payload_result["artifacts"]["downlink"]["metadata"])
     summary = {
         "schema_version": INTEGRATION_SCHEMA_VERSION,
         "algorithm_version": INTEGRATION_ALGORITHM_VERSION,
         "scene_id": payload_result["scene_id"],
         "sensor": "sentinel-2",
         "status": "COMPLETE",
-        "completed_stages": ["payload"],
+        "completed_stages": ["payload", "downlink"],
         "payload_status": payload_result["status"],
         "condition_status": condition_report["status"],
         "payload_result": _relative(payload_result_path, output),
         "condition_report": _relative(condition_report_path, output),
+        "downlink_manifest": _relative(downlink_manifest_path, output),
         "summary": {
             "cloud": payload_result["summary"]["cloud"],
             "crop": payload_result["summary"]["crop"],
@@ -116,6 +123,7 @@ def run_sentinel_end_to_end(
                 ],
                 "analysis_percentage": condition_report["quality"]["analysis_percentage"],
             },
+            "downlink": payload_result["summary"]["downlink"],
         },
         "runtime_seconds": time.perf_counter() - started,
     }
@@ -135,6 +143,8 @@ def main() -> None:
     parser.add_argument("--reflectance-scale", type=float)
     parser.add_argument("--max-crop-cloud-percentage", type=float, default=60.0)
     parser.add_argument("--condition-tile-size", type=int, default=512)
+    parser.add_argument("--downlink-max-image-dimension", type=int, default=1600)
+    parser.add_argument("--downlink-grid-size", type=int, default=16)
     parser.add_argument("--cloud-config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
@@ -147,6 +157,8 @@ def main() -> None:
         reflectance_scale=args.reflectance_scale,
         max_crop_cloud_percentage=args.max_crop_cloud_percentage,
         condition_tile_size=args.condition_tile_size,
+        downlink_max_image_dimension=args.downlink_max_image_dimension,
+        downlink_grid_size=args.downlink_grid_size,
         cloud_config_path=args.cloud_config,
         overwrite=args.overwrite,
     )

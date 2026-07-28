@@ -1,4 +1,4 @@
-# Health analysis contract
+# Shared crop-condition analysis contract
 
 This stage measures crop condition after cloud masking and crop
 classification. It does not train a model and does not diagnose disease,
@@ -32,8 +32,8 @@ The deployed crop raster is binary and has the following exact semantics:
 ```
 
 The operational unusable raster uses `0 = usable` and `1 = unusable`. The
-shared mask builder used by the payload validates these values and rejects incompatible or corrupt
-masks instead of treating arbitrary non-zero values as crop.
+shared mask builder used by the payload validates these values and rejects
+incompatible or corrupt masks instead of treating arbitrary non-zero values as crop.
 
 The base model does not identify crop type, so fallow fields cannot yet be
 excluded automatically. Temporal baselines must therefore prevent expected
@@ -102,20 +102,20 @@ Formula basis:
 
 ## Outputs
 
-Per-pixel layers will later be written as Cloud-Optimized GeoTIFFs. Compact
-JSON observations contain:
+The payload writes compressed, tiled GeoTIFF intermediates while processing.
+Routine downlink contains an aligned WebP scene, a lossless PNG condition/quality
+overlay and compact JSON containing:
 
 - scene, region, sensor and acquisition time;
 - algorithm and schema versions;
 - usable-analysis pixel counts and percentage;
 - mean, median, standard deviation and 10th/90th percentiles;
-- references to raster assets.
+- relative image references, checksums and an adaptive interaction grid.
 
 The processing statuses remain `MEASURED` and `INSUFFICIENT_DATA`. A measured
 scene also receives a cautious spectral screening label. The label is not a
 disease diagnosis; crop-, region- and growth-stage-aware temporal baselines
 remain necessary for trend and early-warning claims.
 
-The calculations operate on one image window at a time, allowing the eventual
-GeoTIFF pipeline to stream large scenes without loading a complete image into
-memory.
+The calculations operate on one image window at a time, so the payload streams
+large scenes without loading a complete image into memory.

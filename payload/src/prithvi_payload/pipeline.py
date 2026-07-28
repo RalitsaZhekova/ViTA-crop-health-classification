@@ -18,6 +18,7 @@ from prithvi_payload.crop_stage import (
     DEFAULT_MAX_CLOUD_PERCENTAGE,
     build_crop_stage_plan,
 )
+from prithvi_payload.downlink import DEFAULT_GRID_SIZE, DEFAULT_MAX_IMAGE_DIMENSION
 from prithvi_payload.scene_intake import SUPPORTED_SENSORS, inspect_scene
 
 
@@ -45,6 +46,8 @@ def run_scene(
     max_crop_cloud_percentage: float = DEFAULT_MAX_CLOUD_PERCENTAGE,
     region_id: str | None = None,
     condition_tile_size: int = 512,
+    downlink_max_image_dimension: int = DEFAULT_MAX_IMAGE_DIMENSION,
+    downlink_grid_size: int = DEFAULT_GRID_SIZE,
     overwrite: bool = False,
     cloud_config_path: str | Path = DEFAULT_CONFIG,
     cloud_backend: CloudBackend | None = None,
@@ -52,10 +55,12 @@ def run_scene(
     crop_model: Any | None = None,
 ) -> dict[str, Any]:
     """Run only the explicitly selected stages for one preprocessed scene."""
-    if stop_after not in {"intake", "cloud", "crop", "condition"}:
-        raise ValueError("stop_after must be intake, cloud, crop or condition")
+    if stop_after not in {"intake", "cloud", "crop", "condition", "downlink"}:
+        raise ValueError("stop_after must be intake, cloud, crop, condition or downlink")
     if condition_tile_size <= 0:
         raise ValueError("condition_tile_size must be positive")
+    if downlink_max_image_dimension <= 0 or downlink_grid_size <= 0:
+        raise ValueError("Downlink image and grid dimensions must be positive")
     output_root = Path(output_root)
     intake = inspect_scene(
         input_path,
@@ -221,6 +226,47 @@ def run_scene(
         "runtime_seconds": condition_report["runtime"]["seconds"],
     }
     result["stage_metadata"]["condition"] = condition_report
+    if stop_after == "condition":
+        return _finish(output_root, result)
+
+    # The packager consumes the finalized condition result and emits the only
+    # three files intended for routine transmission to the ground application.
+    _finish(output_root, result)
+    from prithvi_payload.downlink import build_downlink_bundle
+
+    downlink_root = output_root / "downlink"
+    downlink = build_downlink_bundle(
+        output_root / "result.json",
+        output_root=downlink_root,
+        max_image_dimension=downlink_max_image_dimension,
+        grid_size=downlink_grid_size,
+        overwrite=overwrite,
+    )
+    downlink_files = {
+        "metadata": downlink_root / "scene.json",
+        "rgb_preview": downlink_root / downlink["assets"]["rgb_preview"]["href"],
+        "condition_overlay": downlink_root
+        / downlink["assets"]["condition_overlay"]["href"],
+    }
+    source_bytes = Path(intake["source_path"]).stat().st_size
+    package_bytes = int(downlink["package"]["total_bytes"])
+    result["completed_stages"].append("downlink")
+    result["status"] = "DOWNLINK_READY"
+    result["artifacts"]["downlink"] = {
+        name: str(path.resolve()) for name, path in downlink_files.items()
+    }
+    result["summary"]["downlink"] = {
+        "file_count": downlink["package"]["file_count"],
+        "total_bytes": package_bytes,
+        "source_scene_bytes": source_bytes,
+        "size_fraction_of_source": package_bytes / source_bytes if source_bytes else None,
+    }
+    result["stage_metadata"]["downlink"] = {
+        "schema_version": downlink["schema_version"],
+        "product_type": downlink["product_type"],
+        "algorithm_version": downlink["algorithm_version"],
+        "package": downlink["package"],
+    }
     return _finish(output_root, result)
 
 
@@ -236,7 +282,7 @@ def main() -> None:
     parser.add_argument("--reflectance-scale", type=float)
     parser.add_argument(
         "--stop-after",
-        choices=("intake", "cloud", "crop", "condition"),
+        choices=("intake", "cloud", "crop", "condition", "downlink"),
         default="cloud",
     )
     parser.add_argument(
@@ -246,6 +292,12 @@ def main() -> None:
     )
     parser.add_argument("--region-id")
     parser.add_argument("--condition-tile-size", type=int, default=512)
+    parser.add_argument(
+        "--downlink-max-image-dimension",
+        type=int,
+        default=DEFAULT_MAX_IMAGE_DIMENSION,
+    )
+    parser.add_argument("--downlink-grid-size", type=int, default=DEFAULT_GRID_SIZE)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--cloud-config", type=Path, default=DEFAULT_CONFIG)
     args = parser.parse_args()
@@ -261,6 +313,8 @@ def main() -> None:
         max_crop_cloud_percentage=args.max_crop_cloud_percentage,
         region_id=args.region_id,
         condition_tile_size=args.condition_tile_size,
+        downlink_max_image_dimension=args.downlink_max_image_dimension,
+        downlink_grid_size=args.downlink_grid_size,
         overwrite=args.overwrite,
         cloud_config_path=args.cloud_config,
     )
@@ -284,6 +338,7 @@ def main() -> None:
         "CLOUD_COMPLETE",
         "CROP_COMPLETE",
         "CONDITION_COMPLETE",
+        "DOWNLINK_READY",
         "CROP_SKIPPED_CLOUD_GATE",
     }
     raise SystemExit(0 if result["status"] in successful_statuses else 2)

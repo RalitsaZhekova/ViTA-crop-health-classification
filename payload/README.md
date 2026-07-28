@@ -78,10 +78,27 @@ three web-ready files:
 - `condition.png`: a lossless aligned RGBA overlay containing the condition
   gradient plus distinct thick-cloud, thin-cloud, shadow, invalid and unusable-buffer colors;
 - `scene.json`: exact metrics, score explanations, evidence quality,
-  georeferencing, checksums and a 16-by-16 interaction grid.
+  georeferencing, checksums and an adaptive interaction grid of up to 16 by 16
+  cells, without creating cells smaller than 32 source pixels.
 
 The bundle is deliberately separate from payload GeoTIFF intermediates. The web
 application reads numbers from JSON and uses the images only for presentation.
+
+Produce the terminal routine downlink package:
+
+```powershell
+.\payload\scripts\run_scene.ps1 `
+  -InputPath path\to\preprocessed_scene.tif `
+  -Sensor sentinel-2 `
+  -AcquiredAt 2026-07-26T12:00:00Z `
+  -StopAfter downlink `
+  -ReflectanceScale 10000 `
+  -Output testing\runs\sentinel2_downlink_demo
+```
+
+A successful run ends with `DOWNLINK_READY` and records the three absolute local
+paths in payload `result.json`. The portable `scene.json` itself contains only
+relative image references and checksums.
 
 The crop route requires both Sentinel-2 `B08` for CloudSEN12 and `B8A` for the
 selected Prithvi model. It writes crop probability, binary crop and confidence

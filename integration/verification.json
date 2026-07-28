@@ -1,9 +1,9 @@
 {
-  "schema_version": 1,
-  "verified_at": "2026-07-27",
-  "algorithm_version": "sentinel-end-to-end-v1",
-  "scope": "Local execution and interface acceptance; not an accuracy benchmark or a physical downlink test.",
-  "command": ".\\integration\\scripts\\run_sentinel_end_to_end.ps1 -InputPath testing\\inputs\\sentinel2\\pastis_10425_20190924_5band.tif -AcquiredAt 2019-09-24T00:00:00Z -ReflectanceScale 10000 -Output testing\\runs\\pastis_10425_end_to_end -GroundTileSize 32 -Overwrite",
+  "schema_version": 2,
+  "verified_at": "2026-07-28",
+  "algorithm_version": "sentinel-end-to-end-v2",
+  "scope": "Local real-model execution and compact-package acceptance; not an accuracy benchmark or physical radio-downlink test.",
+  "command": ".\\integration\\scripts\\run_sentinel_end_to_end.ps1 -InputPath testing\\inputs\\sentinel2\\pastis_10425_20190924_5band.tif -AcquiredAt 2019-09-24T00:00:00Z -ReflectanceScale 10000 -ConditionTileSize 32 -DownlinkMaxImageDimension 1600 -DownlinkGridSize 16 -Output testing\\runs\\pastis_10425_compact_downlink",
   "input": {
     "scene_id": "pastis_10425_20190924_5band",
     "sensor": "sentinel-2",
@@ -23,17 +23,20 @@
   },
   "result": {
     "status": "COMPLETE",
-    "payload_status": "CROP_COMPLETE",
-    "ground_status": "MEASURED",
-    "runtime_seconds": 12.987710400018841,
+    "payload_status": "DOWNLINK_READY",
+    "condition_status": "MEASURED",
+    "runtime_seconds": 14.236708800017368,
     "cloud": {
+      "thick_cloud_percentage": 23.3642578125,
+      "thin_cloud_percentage": 0.0,
+      "cloud_shadow_percentage": 15.27099609375,
       "unusable_percentage": 43.048095703125,
       "decision": "PROCESS_CLEAR_AREAS"
     },
     "crop": {
       "crop_percentage_usable": 69.44593291179937,
       "mean_crop_probability_usable": 0.5994946396719117,
-      "runtime_seconds": 0.30950360000133514
+      "runtime_seconds": 0.31669299997156486
     },
     "condition": {
       "analysis_pixels": 3832,
@@ -42,38 +45,55 @@
       "label": "Moderate anomaly",
       "evidence_quality_label": "HIGH",
       "low_vigor_percentage": 40.3705636743215,
-      "relative_anomaly_percentage": 0.0,
-      "ground_runtime_seconds": 0.49758500000461936
+      "relative_anomaly_percentage": 0.0
+    },
+    "downlink": {
+      "file_count": 3,
+      "total_bytes": 27690,
+      "source_scene_bytes": 132580,
+      "size_fraction_of_source": 0.20885503092472468,
+      "adaptive_grid": [4, 4]
+    }
+  },
+  "downlink_assets": {
+    "scene.webp": {
+      "bytes": 1370,
+      "sha256": "a56d035bb48bf2c6bd754c7647f0070539abffe531eba4d08d528af74618e6da"
+    },
+    "condition.png": {
+      "bytes": 10598,
+      "sha256": "2d3df3d4f1a28af08c56f01ac1cffcd539d9d7605ec4e7e5e0506ed2a51c6ea0"
+    },
+    "scene.json": {
+      "bytes": 15722
     }
   },
   "artifact_validation": {
-    "ground_asset_references": 15,
+    "condition_asset_references": 15,
     "geotiffs_opened_and_grid_checked": 20,
-    "expected_grid": {
-      "width": 128,
-      "height": 128,
-      "crs": "EPSG:32630"
-    },
-    "all_files_present": true,
-    "all_geotiff_grids_equal_source": true,
-    "quicklook_visually_reviewed": true,
-    "visualization_update_verified_at": "2026-07-28",
-    "functional_geotiffs_hash_compared": 20,
-    "functional_geotiffs_unchanged_after_visualization_update": true
+    "all_intermediate_geotiff_grids_equal_source": true,
+    "downlink_file_count_exact": true,
+    "downlink_checksums_verified": true,
+    "downlink_references_are_relative": true,
+    "downlink_contains_no_absolute_paths": true,
+    "downlink_image_dimensions_equal": true,
+    "downlink_visualizations_reviewed": true,
+    "condition_and_metric_records_equal_payload_report": true
   },
   "automated_validation": {
-    "test_command": "python -m pytest ground/tests integration/tests -q",
-    "passed": 43,
+    "test_command": "python -m pytest shared/tests payload/tests integration/tests -q",
+    "passed": 46,
     "failed": 0,
     "ruff": "passed",
-    "byte_compilation": "passed"
+    "powershell_parse": "passed"
   },
   "limitations": [
     "The input is a training/replay scene and cannot support a held-out crop-accuracy claim.",
     "No expert cloud ground truth was used in this execution acceptance run.",
     "The single-scene condition label is a spectral screening priority, not a disease, cause, yield or agronomic diagnosis.",
-    "The command performs a local payload-to-ground handoff and does not test uplink, mission control, packaging or downlink transport.",
+    "The command constructs and verifies the package locally; it does not test radio transfer, scheduling, retry/resume or ground acknowledgement.",
     "The Sentinel development route uses B08 for cloud detection and B8A for crop inference; the Balkan single-NIR contract remains unresolved.",
-    "No Balkan-1 imagery or payload computer was used."
+    "No Balkan-1 imagery or payload computer was used.",
+    "Commercial use of the current CloudSEN12 checkpoint is blocked by its CC-BY-NC-4.0 weights license until separate permission or replacement."
   ]
 }

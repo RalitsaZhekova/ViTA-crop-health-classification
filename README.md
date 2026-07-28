@@ -14,12 +14,12 @@ crop and land-cover classes, but none of these learned models infer crop health:
 suitable supervised health targets and evaluation labels are not present in the
 training datasets.
 
-The separate rule-based condition stage calculates NDVI, EVI, GNDVI, SAVI,
+The payload-side rule-based condition stage calculates NDVI, EVI, GNDVI, SAVI,
 CVI and RGB diagnostics only on clear, confident crop pixels. It combines the
 most defensible normalized vigor components into an auditable screening score,
 then applies robust within-crop-region anomaly analysis. Its reflectance,
 masking, interpretation and JSON output rules are documented in
-[`ground/health_analysis_contract.md`](ground/health_analysis_contract.md).
+[`shared/health_analysis_contract.md`](shared/health_analysis_contract.md).
 
 ## Extracted components
 
@@ -28,11 +28,11 @@ runtime and the remaining system responsibilities are separated into:
 
 - [`training/`](training/README.md): dataset references and retained experiment
   summaries, with canonical training code and configs at the repository root;
-- [`payload/`](payload/README.md): weights-only model inference plus Balkan-1
-  reconstruction and cloud-mask boundaries;
-- [`ground/`](ground/README.md): condition measurements, storage, API and
+- [`payload/`](payload/README.md): cloud and crop inference, condition
+  calculations, compact downlink packaging and the Balkan-1 reconstruction boundary;
+- [`ground/`](ground/README.md): downlink validation, storage, history, API and
   visualization boundaries;
-- [`integration/`](integration/README.md): one-command Sentinel payload-to-ground
+- [`integration/`](integration/README.md): one-command Sentinel payload-to-downlink
   demonstration orchestration;
 - [`shared/`](shared/README.md): bands, normalization, classes, thresholds and
   exchange schemas.
@@ -43,7 +43,7 @@ locations.
 ## Complete Sentinel demonstration
 
 The current local end-to-end command runs intake, cloud/shadow masking, crop
-segmentation and streamed ground crop-condition analysis:
+segmentation, streamed payload crop-condition analysis and compact packaging:
 
 ```powershell
 .\integration\scripts\run_sentinel_end_to_end.ps1 `
@@ -59,9 +59,12 @@ responses. The final Balkan mission contract remains RGB plus one NIR; this
 five-band development adapter must not be mistaken for that unresolved sensor
 interface.
 
-The result directory contains separate payload and ground records plus a
-portable `end_to_end_result.json`. A condition label is a single-scene spectral
-screening priority—not a disease diagnosis. See
+The payload finishes with `DOWNLINK_READY`. Routine transmission consists of
+exactly `scene.webp`, `condition.png` and `scene.json`; full-resolution GeoTIFFs
+remain local processing intermediates. The JSON contains exact measurements,
+score explanations, evidence quality, georeferencing, asset checksums and an
+interactive query grid. A condition label is a single-scene spectral screening
+priority—not a disease diagnosis. See
 [`integration/verification.json`](integration/verification.json) for the exact
 accepted Sentinel/PASTIS execution evidence and its limitations.
 

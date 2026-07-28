@@ -72,7 +72,7 @@ def _write_sentinel_scene(path: Path) -> None:
             destination.set_band_description(index, description)
 
 
-def test_sentinel_end_to_end_completes_payload_condition_processing(tmp_path: Path) -> None:
+def test_sentinel_end_to_end_builds_verified_compact_downlink(tmp_path: Path) -> None:
     source = tmp_path / "sentinel.tif"
     _write_sentinel_scene(source)
     output = tmp_path / "run"
@@ -86,11 +86,13 @@ def test_sentinel_end_to_end_completes_payload_condition_processing(tmp_path: Pa
         cloud_config=load_config(DEFAULT_CONFIG),
         crop_model=FakeCropModel(),
         condition_tile_size=16,
+        downlink_max_image_dimension=64,
+        downlink_grid_size=4,
     )
 
     assert result["status"] == "COMPLETE"
-    assert result["completed_stages"] == ["payload"]
-    assert result["payload_status"] == "CONDITION_COMPLETE"
+    assert result["completed_stages"] == ["payload", "downlink"]
+    assert result["payload_status"] == "DOWNLINK_READY"
     assert result["condition_status"] == "MEASURED"
     assert result["summary"]["condition"]["label"] == "Watch"
     assert result["summary"]["crop"]["crop_percentage_usable"] == 100.0
@@ -98,12 +100,27 @@ def test_sentinel_end_to_end_completes_payload_condition_processing(tmp_path: Pa
     assert not Path(result["condition_report"]).is_absolute()
     assert (output / result["payload_result"]).is_file()
     assert (output / result["condition_report"]).is_file()
+    assert (output / result["downlink_manifest"]).is_file()
     saved = json.loads((output / "end_to_end_result.json").read_text())
     assert saved["summary"] == result["summary"]
 
     payload = json.loads((output / result["payload_result"]).read_text())
+    assert payload["completed_stages"] == [
+        "intake",
+        "cloud",
+        "crop",
+        "condition",
+        "downlink",
+    ]
+    assert set(payload["artifacts"]["downlink"]) == {
+        "metadata",
+        "rgb_preview",
+        "condition_overlay",
+    }
     condition_report_path = output / result["condition_report"]
     condition = json.loads(condition_report_path.read_text())
+    downlink_manifest_path = output / result["downlink_manifest"]
+    downlink = json.loads(downlink_manifest_path.read_text())
     with rasterio.open(source) as source_dataset:
         expected_grid = (
             source_dataset.width,
@@ -140,6 +157,19 @@ def test_sentinel_end_to_end_completes_payload_condition_processing(tmp_path: Pa
                     dataset.crs,
                     dataset.transform,
                 ) == expected_grid
+    downlink_root = downlink_manifest_path.parent
+    assert sorted(path.name for path in downlink_root.iterdir()) == [
+        "condition.png",
+        "scene.json",
+        "scene.webp",
+    ]
+    assert downlink["package"]["file_count"] == 3
+    assert downlink["package"]["total_bytes"] == sum(
+        path.stat().st_size for path in downlink_root.iterdir()
+    )
+    assert result["summary"]["downlink"]["total_bytes"] == downlink["package"][
+        "total_bytes"
+    ]
 
 
 def test_sentinel_end_to_end_records_cloud_gate_stop(tmp_path: Path) -> None:
@@ -159,7 +189,9 @@ def test_sentinel_end_to_end_records_cloud_gate_stop(tmp_path: Path) -> None:
     assert result["status"] == "PAYLOAD_STOPPED"
     assert result["payload_status"] == "CROP_SKIPPED_CLOUD_GATE"
     assert result["condition_report"] is None
+    assert result["downlink_manifest"] is None
     assert not (output / "payload" / "condition_analysis").exists()
+    assert not (output / "payload" / "downlink").exists()
 
 
 def test_sentinel_end_to_end_protects_existing_result(tmp_path: Path) -> None:

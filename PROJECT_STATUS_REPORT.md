@@ -1,630 +1,274 @@
-# ViTA Space Challenges 2026
+# ViTA crop-condition pipeline status
 
-## Cloud Detection, Crop Relevance, Downlink Prioritization and Crop-Condition Monitoring
+Status date: 2026-07-28
 
-**Project status report — 27 July 2026**
+## Executive status
 
-## 1. Purpose and status statement
-
-This report records what is demonstrably implemented in the current repository, where the payload pipeline stops today, and what remains before an accepted scene can be packaged and sent through the downlink. It also records the ground-side work that follows downlink.
-
-The current system has a working local prototype for:
+The repository now contains a working local Sentinel development pipeline from
+a georeferenced multispectral scene through a compact, web-ready downlink
+package:
 
 ```text
-preprocessed georeferenced scene
--> bounded-memory intake validation
--> Sentinel-2 cloud and shadow classification
--> operational unusable-pixel mask
--> cloud-stage recommendation
--> cloud-gated, windowed crop/non-crop segmentation
--> crop fraction over usable pixels
--> local masks, previews, metadata and result.json
--> validated payload-to-ground handoff
--> windowed vegetation-index and crop-condition processing
--> condition/anomaly rasters, quicklook and JSON report
--> end_to_end_result.json
+Sentinel development GeoTIFF
+-> intake and radiometric contract validation
+-> semantic cloud and shadow classification
+-> operational unusable mask
+-> crop probability and binary crop inference
+-> payload vegetation indices and RGB diagnostics
+-> payload condition score and spatial anomaly assessment
+-> scene.webp + condition.png + scene.json
+-> DOWNLINK_READY
 ```
 
-The code now demonstrates a **local Sentinel payload-to-Phase-2 path**, but it deliberately bypasses a real mission controller and physical downlink. The following critical elements are still absent: Balkan-1 raw reconstruction, the requested L1B-only onboard preprocessing path, Balkan radiometric and spectral adaptation, one centralized mission controller, crop-value-based downlink acceptance, an uplink command protocol, downlink packaging and transfer management, and qualification on the actual payload computer.
+The calculations have moved from the ground package into the payload execution
+path. Ground is now responsible for receiving and validating the bundle,
+historical storage, API delivery, trends and the client application.
 
-The ground component now consumes the payload result, enforces the binary crop/unusable/grid contract, streams complete scenes, calculates spectral indices and transparent condition scores, and writes georeferenced analysis layers plus a scientific JSON report and quicklook. Database-backed history, an API, an operational map and validated temporal warnings remain future work.
+This is a verified local software pipeline, not yet a flight-qualified mission
+system. Physical downlink transport, uplink commands, Balkan-1 reconstruction,
+payload-computer qualification and the production web application remain open.
 
-The most accurate overall description is:
+## Implemented components
 
-> A locally demonstrated, bounded-memory Sentinel cloud-to-crop-to-condition prototype, not yet a flight-qualified uplink/payload/downlink mission system.
+### Training and selected crop model
 
-## 2. Agreed mission scope
+- The selected payload model performs single-frame binary crop/non-crop
+  segmentation from Blue, Green, Red and narrow NIR.
+- Its weights-only artifact and SHA-256 identity are pinned under
+  `payload/models/`.
+- Training used the US IBM-NASA HLS base corpus plus optical European PASTIS
+  replay data from folds 1-4. PASTIS fold 5 remains reserved.
+- Current selected-model metrics are not held-out European or Balkan accuracy
+  evidence.
+- Training data and experiment checkpoints are excluded from the payload
+  deployment package.
 
-### 2.1 Sensors and bands
+### Scene intake
 
-The operational algorithms are restricted to:
+The payload intake validates:
 
-- Blue;
-- Green;
-- Red;
-- one Near Infrared band.
+- GeoTIFF structure and positive dimensions;
+- CRS, affine transform, bounds and resolution;
+- declared band descriptions and logical roles;
+- RGB and NIR availability;
+- nodata and sampled numeric ranges;
+- acquisition time and scene identifier;
+- explicit or inferred reflectance scale.
 
-Balkan-1 will additionally deliver a panchromatic band. PAN is useful as a spatial reference during reconstruction and potentially for display products, but it is not an input to either current AI model. It should not be introduced as an unvalidated fifth model channel.
+The current Sentinel development adapter uses B08 for CloudSEN12 and B8A for the
+selected crop model. This five-band development interface is not the final
+single-NIR Balkan mission contract.
 
-No SWIR, thermal infrared, far infrared or dedicated cirrus band is available. This limits cloud/snow discrimination and prevents direct measurement of thermal stress or plant water content.
+### Cloud and unusable mask
 
-### 2.2 Payload and ground split
+The payload streams the scene through bounded cloud-model tiles and produces:
 
-The intended operational split is:
+- semantic classes: clear, thick cloud, thin cloud and cloud shadow;
+- invalid-input mask;
+- final unusable mask including cloud, shadow, invalid pixels and configured
+  safety post-processing;
+- clear, cloud, shadow, invalid, usable and unusable statistics;
+- the configurable `PROCESS`, `PROCESS_CLEAR_AREAS` or `REJECT`
+  recommendation;
+- georeferenced intermediate masks and detailed visualizations.
+
+Downstream crop and condition stages use the operational unusable mask rather
+than cloud percentage alone.
+
+### Crop inference
+
+The crop stage:
+
+- runs only after the cloud gate passes;
+- processes large rasters through bounded overlapping windows;
+- preserves geospatial alignment;
+- produces crop probability, confidence and binary crop intermediates;
+- excludes all unusable pixels from valid outputs;
+- calculates crop fraction over usable pixels;
+- records the selected-model artifact, checksum and threshold.
+
+The current crop model is binary and must not be described as exact field
+boundary or crop-health classification.
+
+### Payload crop-condition analysis
+
+The payload now calculates condition products before downlink. The analysis mask
+is:
 
 ```text
-UPLINK
-command, target, timing, priority and processing profile
-                         |
-                         v
-PAYLOAD
-scene intake
--> raw Balkan reconstruction and correction, stopping at L1B
--> band registration and radiometric preparation
--> cloud/shadow/invalid detection
--> unusable mask
--> crop relevance
--> centralized mission decision
--> downlink package and queue
-                         |
-                         v
-DOWNLINK
-accepted bands, masks, statistics, provenance and metadata
-                         |
-                         v
-GROUND
-ingestion and reflectance preparation
--> valid crop analysis mask
--> vegetation and RGB indices
--> spatial and optional temporal anomaly analysis
--> cautious crop-condition result
--> storage, API, map and reports
+binary crop
+AND crop probability >= 0.645
+AND usable
+AND finite source data
+AND calibrated reflectance range
 ```
 
-The requested raw Balkan processing ceiling is now **Level 1B**. The onboard branch must not add an L1C product-generation stage. Existing Sentinel-2 products may still be used as development and demonstration inputs, but that must not be confused with the required Balkan raw-to-L1B payload path.
-
-### 2.3 Scientific claim
-
-With RGB+NIR, the defensible claim is that the system detects reduced vegetation vigor or an unusual crop-region spectral response. It does not confirm disease, pests, nutrient deficiency, drought cause, thermal stress, exact water content or yield loss.
-
-Ground labels are `Nominal`, `Watch`, `Moderate anomaly`, `High anomaly` and `Insufficient data`. They are explicitly screening priorities derived from documented prototype ranges and spatial evidence, not calibrated diagnoses or probabilities. The report separately exposes a processing status (`MEASURED` or `INSUFFICIENT_DATA`) and an evidence-quality coverage indicator.
-
-### 2.4 Responsibility split
-
-The cloud/health workstream owns cloud and shadow detection, construction and statistics of the final unusable mask, and the ground crop-condition analysis. The crop-model workstream owns crop-model training, validation and crop probability/binary output. The health stage consumes that output and must not silently replace crop detection with an index threshold. Input/output contracts, thresholds, payload deployment, end-to-end testing and the final demonstration remain shared responsibilities.
-
-## 3. Repository and deployment separation completed
-
-The repository has been separated into five responsibilities:
-
-| Component | Current responsibility | Current state |
-| --- | --- | --- |
-| `training/`, `src/`, `configs/` | Data preparation, training, calibration and retained experiment evidence | Implemented |
-| `payload/` | Inference-only weights, scene intake, cloud detection and crop inference | Prototype implemented for preprocessed Sentinel-compatible data |
-| `ground/` | Crop-condition measurements and future storage/API/map boundaries | Streamed scene analysis and payload-result integration implemented |
-| `integration/` | Ground-side demonstration orchestration | One-command Sentinel payload-to-ground prototype implemented |
-| `shared/` | Band, normalization, calibration and JSON contracts | Partly implemented; canonical payload schema is not yet used by `result.json` |
-
-Training chips and experiment outputs are not required on the satellite. The current `payload/` tree is approximately **424.2 MB**, of which almost all is the two model artifacts:
-
-- crop weights: 382,645,915 bytes;
-- CloudSEN12 weights: 41,267,324 bytes.
-
-This is already radically smaller than the training workspace and confirms that the 30–49 GB datasets do not need to be deployed. The final installed environment or container may be larger because PyTorch, TerraTorch, raster libraries and their native dependencies have not yet been size-optimized or bundled.
-
-## 4. Crop-model work completed
-
-### 4.1 Selected model
-
-The selected payload crop model is now a **pixel-wise, single-image, binary crop/non-crop segmentation model**. This supersedes older planning notes that described the current model as only a chip-level classifier.
-
-Its contract is:
-
-- architecture: frozen Prithvi-EO-2.0 100M backbone with a UPerNet decoder/head;
-- input: `[batch, 4, 1, height, width]`;
-- band order: `BLUE, GREEN, RED, NIR_NARROW`;
-- output: crop probability, binary crop mask and winning-class confidence;
-- ordinary crop threshold: 0.49;
-- conservative health-analysis threshold: 0.645;
-- selected weights checksum: `c948977bffdaeb89ecf4f4d069db13c7ed81d4f3403eec9e257c45c235b1484e`.
-
-The weights-only artifact removes approximately 77.2 MB of optimizer and training state. A direct comparison on one real internal-validation chip recorded zero probability difference and identical binary decisions between the source checkpoint and the deployment weights.
-
-### 4.2 European data and training status
-
-The selected binary configuration includes a 20% PASTIS replay contribution from European folds 1–4. The local PASTIS inventory contains 2,433 metadata-linked patches; fold 5, containing 496 patches, is reserved. The selected single-frame binary training run is marked complete.
-
-A separate three-frame, 13-class European replay model is preserved, but it is not the deployed payload model. Its automation status is marked failed because a preflight run could not find the expected exhaustive validation report at that moment, even though a checkpoint and later metrics exist. This does not invalidate the selected binary deployment artifact, but the replay workflow is not presently a clean, reproducible green run.
-
-### 4.3 Recorded model metrics
-
-The selected binary checkpoint was calibrated on internal validation data. The repository records:
-
-| Metric | Result |
-| --- | ---: |
-| Binary accuracy at threshold 0.49 | 0.794961 |
-| Balanced accuracy | 0.793647 |
-| Crop F1 | 0.778128 |
-| False-crop rate at threshold 0.49 | 0.188319 |
-| Health-mask precision at threshold 0.645 | 0.846481 |
-| Health-mask recall at threshold 0.645 | 0.632780 |
-| False-crop rate at threshold 0.645 | 0.099173 |
-
-The evaluation represents 308 source validation chips expanded to 924 single-date examples. The final held-out test has not been consumed. These figures are internal validation evidence, not a guarantee for every Sentinel-2 scene and not evidence for Balkan-1.
-
-The reported 0.8179 crop F1 on PASTIS scene 10425 is a selected training/replay demonstration. It is useful execution evidence, but it must not be advertised as general or held-out accuracy.
-
-## 5. Payload work completed through crop classification
-
-### 5.1 Bounded-memory scene intake
-
-The intake stage inspects a GeoTIFF without loading the complete scene. It checks:
-
-- file format, dimensions, CRS, transform, finite bounds and nodata declaration;
-- band descriptions and logical roles;
-- approximate sampled radiometry;
-- acquisition timestamp format;
-- the spectral routes needed by the cloud and crop models.
-
-It recognizes Sentinel-2 and Balkan-1 as sensor names. A preprocessed Balkan scene is expected to contain exactly RGB, NIR and PAN, but it is deliberately marked as needing Balkan cloud and spectral adapters. This is contract scaffolding, not Balkan inference support.
-
-### 5.2 Cloud and cloud-shadow detection
-
-The integrated cloud stage uses CloudSEN12 `dtacs4bands`, version 1.0.2, with checksum-pinned weights. The present model contract is Sentinel-2 L1C top-of-atmosphere data in this order:
-
-```text
-B08, B04, B03, B02
-NIR broad, Red, Green, Blue
-```
-
-It performs windowed inference using 512-pixel tiles, 64-pixel overlap and reflected padding. It produces four semantic classes:
-
-- 0 — clear;
-- 1 — thick cloud;
-- 2 — thin cloud;
-- 3 — cloud shadow.
-
-Post-processing currently:
-
-- includes thick cloud, thin cloud and shadow as unusable;
-- removes detected regions smaller than 16 pixels;
-- dilates remaining detections by two pixels;
-- adds invalid and nodata pixels to the unusable mask.
-
-The integrated `scene-run` path writes:
-
-- semantic mask GeoTIFF;
-- unusable mask GeoTIFF;
-- invalid-input mask GeoTIFF;
-- cloud preview PNG;
-- cloud metadata JSON.
-
-Although the standalone cloud configuration declares class-score saving, the integrated windowed `scene-run` outputs do not currently contain class-score GeoTIFFs. They must not be described as canonical current outputs until connected and verified.
-
-The cloud-stage recommendation is calculated from total unusable area:
-
-| Unusable area | Recommendation |
-| --- | --- |
-| `<= 30%` | `PROCESS` |
-| `> 30%` and `< 80%` | `PROCESS_CLEAR_AREAS` |
-| `>= 80%` | `REJECT` |
-
-This is a module recommendation, not yet the one official mission/downlink decision.
-
-### 5.3 Crop inference
-
-When the crop stage is explicitly requested and its current cloud gate passes, the pipeline loads the selected crop model and processes the scene in bounded windows:
-
-- core tile: 224 pixels;
-- halo: 16 pixels;
-- batch size: 4;
-- full-scene materialization: prohibited;
-- current crop threshold: 0.49.
-
-The crop executor validates that the source and unusable mask have identical width, height, CRS and affine transform. It excludes every unusable pixel from the reported crop products and encodes those pixels as nodata:
-
-- probability: `-9999` on unusable pixels;
-- binary crop: `255` on unusable pixels;
-- confidence: `-9999` on unusable pixels.
-
-It writes georeferenced probability, binary and confidence GeoTIFFs, crop metadata and a combined quicklook. It correctly calculates crop fraction using usable pixels as the denominator and returns `null` rather than dividing by zero if no usable pixels exist.
-
-### 5.4 Canonical local run record
-
-Every payload run writes `testing/runs/<run>/result.json`, with references to detailed intake, cloud and crop artifacts. A complete demonstration instead writes `<run>/end_to_end_result.json`, with separate `<run>/payload/result.json` and `<run>/ground/crop_condition_report.json` records.
-
-The one-command entry point is `integration/scripts/run_sentinel_end_to_end.ps1`. Its top-level payload and ground references and the ground raster-asset references are portable relative paths. The underlying payload result still uses absolute workstation artifact paths and schema `0.1-draft`; it is not yet a downlink manifest and does not conform to the separate shared `1.0` inference schema.
-
-## 6. Demonstrated integration evidence
-
-The repository records the following useful demonstrations:
-
-| Evidence | Recorded result | Limitation |
-| --- | --- | --- |
-| Real Sentinel-compatible cloud execution | 1,153 x 2,275 pixels, 24 tiles, 5.31 s, geospatial metadata preserved | Execution only; no cloud ground truth |
-| Full cloud-to-crop run on PASTIS 40011 | crop stage completed on CUDA; 77.68% crop over usable pixels | Training/replay example, not held-out accuracy |
-| Masked crop integration on PASTIS 10422 | 15.01% unusable; 2,459 masked output pixels correctly encoded as nodata | Contract test, not accuracy evidence |
-| Cloud gate skip | 88.48% cloud; crop model was not loaded | Uses current 60% cloud gate, not final mission controller |
-| Label comparison on PASTIS 10425 | crop precision 0.8882, recall 0.7579, F1 0.8179 | Selected training/replay scene |
-| Full Sentinel payload-to-ground run on PASTIS 10425 | `COMPLETE`; 20 aligned GeoTIFF outputs; condition 36.28/100, `Moderate anomaly`; 12.99 s total | Training/replay scene and single-date screening result; not held-out accuracy or disease evidence |
-| Deployment crop smoke | finite 224 x 224 probability and mask; 399.81 MiB peak GPU allocation | Laptop RTX 3060, not payload hardware |
-| Cloud synthetic GPU smoke | 0.569 s and 98.92 MiB peak GPU allocation | Synthetic input; no accuracy conclusion |
-
-The current repository contains a runnable ground/integration suite. The final development run passed 41 tests, including numerical index and mask behavior, condition labels, insufficient-data handling, tile-size invariance, geospatial outputs, complete integration, cloud-gated stopping and overwrite protection. The real acceptance checker also opened 20 output GeoTIFFs and verified that each retained the source width, height, CRS and affine transform.
-
-Historical verification records of earlier cloud and repository suites remain in `payload/verification.json`. They are distinct from the currently runnable 41-test suite. Repository-wide Ruff and byte-compilation checks are green at this report revision.
-
-## 7. Exact status at the downlink boundary
-
-| Mission function | Status | What this means |
-| --- | --- | --- |
-| Receive an uplink processing command | **Not implemented** | Runs are started manually by local PowerShell/CLI commands |
-| Validate a preprocessed Sentinel scene | **Implemented** | Works for georeferenced inputs with documented band descriptions |
-| Reconstruct raw Balkan bands | **Not implemented** | Only a design contract exists |
-| Produce the required Balkan L1B result | **Not implemented** | Current cloud path instead assumes a preprocessed L1C-like Sentinel contract |
-| Detect Sentinel clouds/shadows | **Prototype implemented** | Execution is validated; broad accuracy is not |
-| Detect Balkan clouds/shadows | **Not implemented/validated** | Intake intentionally blocks this route |
-| Construct operational unusable mask | **Implemented** | Includes cloud, shadow, invalid/nodata and configured post-processing |
-| Run crop segmentation | **Prototype implemented** | Demonstrated on Sentinel-compatible/PASTIS inputs |
-| Calculate crop fraction over usable pixels | **Implemented** | Correct denominator and zero-usable handling |
-| Run local Phase 2 condition analysis | **Prototype implemented** | Payload result, masks and source are grid-validated; analysis is streamed and auditable |
-| Make one final crop-aware mission decision | **Not implemented** | Only a cloud recommendation and separate cloud gate exist |
-| Create a portable downlink manifest/package | **Not implemented** | Current `result.json` is a local run summary |
-| Queue, prioritize, chunk and transmit accepted data | **Not implemented** | No downlink transport integration exists |
-| Enforce payload runtime/resource budgets | **Not implemented** | Tiling limits memory, but flight budgets are undefined |
-| Execute on EnduroSat payload hardware | **Not verified** | Current performance evidence is from a laptop GPU |
-
-The payload executable still ends with `status = CROP_COMPLETE`; it never produces a final action such as `DOWNLINK_TO_GROUND`, `DISCARD_LOW_CROP` or `INSUFFICIENT_DATA`, and it does not assemble or transmit an accepted scene package. The development-only integration command then hands that local result directly to Phase 2 and can finish with `status = COMPLETE`. This proves software interoperability but must not be described as a tested downlink.
-
-## 8. Integration conflicts that must be resolved
-
-### 8.1 L1B mission ceiling versus L1C-trained cloud model
-
-The current cloud detector is explicitly configured and validated for Sentinel-2 L1C top-of-atmosphere reflectance. The new Balkan requirement is to reconstruct only through L1B and not generate L1C onboard.
-
-The target solution must therefore either:
-
-1. produce model-compatible, calibrated RGBNIR tensors from the L1B sensor-geometry product without claiming or generating an L1C product, and validate the domain shift; or
-2. replace the cloud method with one demonstrably valid on the delivered Balkan L1B representation.
-
-Simply relabeling the existing L1C configuration as L1B would be scientifically and operationally invalid.
-
-### 8.2 One NIR mission contract versus two Sentinel NIR routes
-
-The current Sentinel cloud model requires broad NIR B08, while the crop model requires narrow NIR B8A. Consequently, the current full Sentinel route expects B02, B03, B04, B08 and B8A, even though each individual model uses only four inputs.
-
-The mission contract allows only one RGB+NIR set. A single official NIR mapping and harmonization strategy must be selected. Options include validating broad NIR for the crop model, adapting the cloud input to the delivered Balkan NIR response, or using sensor-specific transformations. Until this is resolved, the five-band Sentinel prototype is not the same interface as the four-band Balkan mission input.
-
-### 8.3 Multiple decision rules
-
-The cloud module recommends from **unusable percentage** using 30% and 80%. The crop-stage loader independently gates on **cloud percentage** below 60%. There is no minimum crop fraction in the final route.
-
-These rules can disagree and must be replaced by one mission controller that considers at least:
-
-- unusable fraction;
-- absolute usable-pixel count;
-- crop fraction over usable pixels;
-- crop confidence/coverage;
-- processing completion and data integrity;
-- runtime deadline and expected package size;
-- mission priority supplied by uplink.
-
-### 8.4 Payload-result schema mismatch
-
-The canonical run record uses schema `0.1-draft`, while `shared/schemas/inference_result.schema.json` requires schema `1.0` with top-level acquisition time, model checksum and raster assets. The current run record does not satisfy that schema. One versioned, portable schema must replace both.
-
-### 8.5 Ground binary-mask contract — resolved
-
-The ground analysis now directly consumes the selected payload contract: crop values `0/1` with `255` nodata and unusable values `0/1`. It rejects unexpected categories, mismatched shapes and non-boolean mask semantics rather than silently producing an empty analysis.
-
-### 8.6 Commercial license blocker
-
-The CloudSEN12 weights are recorded as CC BY-NC 4.0. The deployment manifest correctly marks commercial release as blocked. A B2B product cannot rely on these weights without an appropriate commercial license or a commercially compatible replacement.
-
-## 9. Work remaining before downlink
-
-### 9.1 Freeze the common sensor and metadata contract
-
-Define one versioned input contract containing:
-
-- satellite and sensor version;
-- scene ID and UTC acquisition time;
-- RGB and the one NIR band mapping;
-- PAN role;
-- raw/L1B/processed product level;
-- dtype, bit depth, scale, offset, units, nodata and saturation;
-- dimensions, CRS/geometry information and source coordinates;
-- spacecraft position/attitude and camera calibration when available;
-- band-registration quality;
-- model and threshold profile IDs.
-
-Balkan-1 and any later Balkan-2 work must remain separate until real metadata proves compatibility.
-
-### 9.2 Implement Balkan-1 raw reconstruction to L1B
-
-For each raw capture:
-
-1. decode each separate RGB, NIR and PAN band;
-2. identify invalid, missing and saturated samples;
-3. apply sensor calibration and distortion correction available at L1B;
-4. choose PAN or a stable multispectral band as the spatial registration reference;
-5. estimate translation, rotation, scale and, where justified, affine or local distortion from data and metadata;
-6. co-register the multispectral bands in sensor geometry;
-7. retain coordinates and all transform provenance;
-8. calculate per-band residual registration error and quality flags;
-9. output a calibrated, co-registered L1B scene plus invalid mask;
-10. stop without generating an L1C cartographic product onboard.
-
-Unknown altitude, attitude, rotation and offsets must be estimated or marked insufficient; they must not be replaced by hard-coded assumptions. Vendor-processed imagery should be used as comparison evidence, not automatically treated as ground truth.
-
-### 9.3 Build and validate the Balkan sensor adapters
-
-The adapter must handle:
-
-- exact band mapping and NIR response;
-- 12-bit DN interpretation;
-- scale, offset, radiance/reflectance conversion and saturation;
-- single-NIR harmonization for both models;
-- sensor-resolution alignment;
-- downsampling from approximately 1.5 m toward the model's validated scale;
-- nodata and invalid masks;
-- co-registration tolerances;
-- sensor and processing-level provenance.
-
-At minimum, compare native-resolution, downsampled and downsampled-plus-harmonized inference. PAN should remain excluded from model tensors. Under the current no-more-training policy, this work is calibration, adaptation and validation—not model retraining. If accuracy is unacceptable after those steps, the limitation must be escalated rather than hidden behind a confident output.
-
-### 9.4 Implement the one official mission controller
-
-A deterministic initial controller should follow this sequence:
-
-```text
-invalid input or no usable pixels
--> INSUFFICIENT_DATA
-
-unusable fraction >= 0.80
--> DISCARD_TOO_CLOUDY
-
-0.30 < unusable fraction < 0.80
--> PROCESS_CLEAR_AREAS
-
-unusable fraction <= 0.30
--> PROCESS
-
-after crop inference:
-crop fraction over usable pixels below configured mission threshold
--> DISCARD_LOW_CROP
-
-sufficient usable crop coverage and valid outputs
--> DOWNLINK_TO_GROUND
-```
-
-The initial crop threshold may be 0.30, but it must remain a mission profile value rather than a scientific constant. A later tile-aware override can preserve valuable clear agricultural subregions inside an otherwise cloudy scene.
-
-The controller must be the only component allowed to emit a final mission action. Cloud and crop modules should emit measurements and recommendations only.
-
-### 9.5 Define and implement uplink commands
-
-The satellite must not depend on a person launching a PowerShell command. A compact versioned command envelope is required. At minimum it should support:
-
-- command ID and schema version;
-- target scene/region or capture request;
-- earliest/latest execution time and expiry;
-- priority;
-- sensor and processing profile;
-- requested stopping point (`intake`, `cloud`, `crop`, or `decide`);
-- approved threshold profile rather than arbitrary unsafe numbers;
-- maximum runtime and output-size budget;
-- downlink content policy;
-- status query and cancellation where the flight system permits them.
-
-The handler needs authentication/signature verification, replay protection, idempotent command IDs, range validation, queueing, ACK/NACK responses, execution-state telemetry and an immutable audit record. Invalid or expired commands must fail closed without starting a model.
-
-### 9.6 Apply hard runtime and resource constraints
-
-Windowing is implemented, but the actual constraints are unknown. The payload team/EnduroSat must provide acceptance limits for:
-
-- maximum wall-clock time per scene and per tile;
-- CPU architecture, core/thread allowance and whether a supported accelerator exists;
-- maximum RAM and accelerator memory;
-- maximum temporary storage and final output size;
-- power/energy budget and allowed duty cycle;
-- maximum input dimensions and concurrent jobs;
-- watchdog interval, command deadline and thermal constraints;
-- downlink bandwidth and contact-window capacity.
-
-The runtime must measure wall time, CPU time, peak resident RAM, accelerator memory, I/O time, tile counts, skipped tiles, temporary bytes and output bytes. It must enforce budgets rather than merely report them after completion.
-
-Graceful failure states should include `DEADLINE_EXCEEDED`, `RESOURCE_LIMIT`, `MODEL_FAILURE`, `INCOMPLETE_OUTPUT` and `INSUFFICIENT_DATA`. A partial result must never be labeled complete. Temporary tiles must be cleaned only after a recoverable manifest is safely committed.
-
-Current laptop timings are useful only as engineering baselines. The 5.31-second cloud run on 2.62 million pixels and sub-second 128 x 128 crop examples cannot be extrapolated to a huge 1.5 m Balkan scene or to unknown payload hardware.
-
-### 9.7 Create the downlink package
-
-For the first prototype, an accepted package should contain or reference:
-
-- Blue, Green, Red and NIR data needed by the ground stage;
-- unusable mask;
-- crop binary and probability/confidence products;
-- semantic cloud mask when useful;
-- scene footprint/coordinates and acquisition time;
-- usable, unusable, cloud, shadow, invalid and crop statistics;
-- model checksums and versions;
-- sensor, product level and radiometric scale/offset/units;
-- thresholds and final decision reason;
-- reconstruction and registration quality;
-- runtime/resource measurements;
-- checksums, byte sizes and relative asset names.
-
-The package needs a portable manifest, atomic finalization, compression, chunking, checksums, priority, retry/resume behavior and transfer acknowledgement. Absolute workstation paths must not appear. Full accepted bands and masks are appropriate for the first end-to-end prototype; tile-only downlink can be evaluated later after bandwidth measurements.
-
-## 10. Work remaining after downlink
-
-### 10.1 Replace the local handoff with downlink ingestion
-
-The current ground reader consumes a local payload `result.json`, checks completion status and verifies the source, unusable mask, crop binary mask and crop probability raster against one exact geographic grid. The final reader must instead consume the versioned downlink manifest, verify checksums, and reject incomplete packages. Any categorical resampling must use nearest-neighbor; continuous reflectance resampling must use an appropriate continuous method and record the change.
-
-Because the onboard raw path stops at L1B, the Balkan ground stage must explicitly produce comparable calibrated reflectance before EVI, SAVI, CVI or temporal analysis. The exact radiometric/atmospheric process must be sensor-specific and recorded in provenance.
-
-### 10.2 Crop-condition calculations and scene products — implemented
-
-The following calculations are implemented for co-registered floating-point reflectance:
+Calculated measurements include:
 
 - NDVI;
-- EVI;
 - GNDVI;
-- SAVI with configurable soil-adjustment constant;
-- CVI, defined in this project as `(NIR x Red) / Green^2`;
-- VARI;
-- excess green;
-- RGB brightness.
+- EVI;
+- SAVI;
+- CVI as a diagnostic only;
+- VARI, RGB brightness and excess green.
 
-Complete scenes are processed in bounded windows. The analysis mask is `confident binary crop AND usable AND finite AND radiometrically valid`, using the conservative 0.645 crop-probability threshold by default. The processor writes compressed, tiled, georeferenced index and mask GeoTIFFs, a quicklook, and strict JSON with relative asset references. It returns `Insufficient data` when configurable coverage or pixel-count requirements are not met.
+The headline spectral-vigor score combines normalized NDVI, GNDVI, EVI and SAVI
+components with default weights of 40%, 25%, 20% and 15%. The region result uses
+70% median and 30% lower-quartile absolute score, then applies a bounded penalty
+for robust within-crop-region anomalies.
 
-The 0–100 absolute score combines normalized NDVI, GNDVI, EVI and SAVI components with exposed weights. CVI and RGB diagnostics are reported but excluded from the primary score because their magnitude is particularly sensor-, illumination- and canopy-dependent. Prototype index reference ranges are configuration, not universal agronomic truths.
+The result records coverage, component scores, evidence quality, explanations,
+limitations and one of:
 
-### 10.3 Spatial condition and anomaly assessment — implemented for crop regions
+- `Nominal`;
+- `Watch`;
+- `Moderate anomaly`;
+- `High anomaly`;
+- `Insufficient data`.
 
-The scene processor uses a robust whole-crop-region median and median absolute deviation to identify material local score deficits, then exposes the absolute-vigor component, spatial penalty, low-vigor fraction, relative-anomaly fraction, final label, coverage-derived evidence quality, explanations and limitations.
+The value is not percentage healthy, disease probability, crop survival or a
+confirmed agronomic diagnosis.
 
-It deliberately calls this **within-crop-region** analysis. Field-level claims still require parcel polygons or a field-ID raster so unrelated crops, fields and growth stages are not compared against one shared median.
+## Compact downlink package
 
-### 10.4 Add temporal warnings only with valid repeat data
+A successful payload run ends with `DOWNLINK_READY` and produces exactly three
+routine transmission files:
 
-Temporal decline requires matching area, grid, registration, radiometry, sensor compatibility, product level, acquisition dates and usable pixels in both observations. NDVI/GNDVI decline can indicate harvest, senescence, rotation, acquisition differences or residual atmosphere as well as stress.
+| File | Purpose |
+| --- | --- |
+| `scene.webp` | Lossy RGB overview for the base map |
+| `condition.png` | Lossless aligned RGBA overlay with the condition gradient and separate thick-cloud, thin-cloud, shadow, invalid and unusable-buffer categories |
+| `scene.json` | Authoritative measurements, condition explanation, georeferencing, model versions, legend, checksums and interaction grid |
 
-The first forecast should therefore be a trend-based warning, not a prediction of a disease or causal problem. Stronger future prediction would require longer time series, weather, crop stage/type and labeled outcomes.
+The interaction grid is capped at 16 by 16 but adapts to small scenes so it does
+not create cells smaller than 32 source pixels. This keeps the JSON compact while
+allowing map click and hover cards to return exact stored values rather than
+reverse-engineering displayed colors.
 
-### 10.5 Implement history storage, API and operational visualization
+The two image references inside `scene.json` are relative. Each image record
+contains its byte size, media type, dimensions and SHA-256 checksum. The package
+contains no workstation-absolute paths.
 
-The current scene processor supplies georeferenced raster layers, JSON summaries and a static PNG quicklook. Remaining implementation includes:
+Full-resolution GeoTIFFs remain payload processing intermediates and are not in
+the routine bundle. A later mission policy may preserve or transmit selected
+evidence chips, periodic calibration scenes or critical complete scenes.
 
-- optional Cloud-Optimized GeoTIFF conversion and object storage;
-- GeoJSON or stable region geometry for summaries;
-- SQLite plus disk assets for the demonstration;
-- later PostGIS/object storage for production;
-- API endpoints for scene ingestion, latest region condition, history and layers;
-- authentication, authorization, tenancy and audit controls for B2B operation;
-- a Leaflet or MapLibre interface with RGB, unusable, crop probability, indices, anomaly, coverage and history layers.
+## Verified Sentinel execution
 
-JSON should contain compact metrics and asset references, never complete pixel arrays.
+The real retained CloudSEN12 and Prithvi models were executed on the georeferenced
+PASTIS/Sentinel development scene `pastis_10425_20190924_5band.tif`.
 
-## 11. Validation and release work remaining
+| Measurement | Verified result |
+| --- | --- |
+| Pipeline status | `COMPLETE` |
+| Payload status | `DOWNLINK_READY` |
+| Runtime | 14.24 seconds on the development GPU workstation |
+| Unusable area | 43.05% |
+| Crop over usable area | 69.45% |
+| Condition | `Moderate anomaly`, 36.28/100 |
+| Analyzed coverage | 23.39% |
+| Downlink files | 3 |
+| Downlink size | 27,690 bytes |
+| Source TIFF size | 132,580 bytes |
+| Package/source fraction | 20.89% |
+| Adaptive query grid | 4 by 4 |
 
-### 11.1 Sentinel validation
+The RGB WebP and transparent condition overlay were visually inspected. All
+three file sizes, both image checksums, image dimensions, relative references,
+condition values and metric records were independently verified against the
+payload intermediates. Exact evidence is stored in
+`integration/verification.json`.
 
-- Run all planned validation scenes, not selected examples only.
-- Produce the cloud-results table for snow, water, coast, urban areas, bright soil, haze, invalid pixels and borders.
-- Obtain or create cloud/shadow reference labels for quantitative false-positive and false-negative evaluation.
-- Validate the selected one-NIR contract.
-- Use calibrated reflectance appropriate to each ground health calculation.
-- Restore a runnable automated test suite and CI gate.
+This scene belongs to training/replay data. It proves execution and interfaces,
+not held-out crop accuracy, broad cloud accuracy or agronomic validity.
 
-### 11.2 Balkan-1 validation
+## What remains before a flight downlink claim
 
-- Inspect every raw and processed file independently.
-- Verify sensor, product level, band identities, units, bit depth, ranges, saturation, timestamps, coordinates and metadata.
-- Compare raw reconstruction with processed deliveries.
-- Measure band-registration residuals.
-- Manually label representative Balkan cloud, shadow and crop regions.
-- Test native and downsampled variants.
-- Never claim Balkan accuracy from Sentinel or PASTIS evidence.
+### Mission control and uplink
 
-### 11.3 Payload qualification
+- define and validate the uplink command schema;
+- centralize the single official mission decision controller;
+- combine unusable coverage, usable crop coverage, priority and runtime budget;
+- add explicit discard, insufficient-data and downlink-queue actions;
+- enforce watchdog, timeout, memory, power and storage limits.
 
-- Build a reproducible payload bundle/container without training dependencies.
-- Verify the bundle checksum and cold-start behavior.
-- Test on the real payload CPU/accelerator with representative huge images.
-- Measure latency, RAM, storage, output size, power and failure recovery.
-- Verify uplink commands, watchdog behavior and downlink resume.
-- Obtain a commercially usable cloud-model license or replacement.
+### Balkan-1 L1B and raw reconstruction
 
-## 12. Recommended progression and exit criteria
+- inspect real Balkan-1 and Balkan-2 files separately;
+- confirm delivered band centers, radiometry, metadata and product levels;
+- reconstruct and co-register raw RGB, NIR and PAN captures;
+- orthorectify using the available position, attitude, timing and camera data;
+- calibrate 12-bit DN values to comparable reflectance;
+- choose and validate the one-NIR mapping;
+- compare native-resolution and approximately 10 m downsampled baselines;
+- validate cloud, crop and condition behavior against real labelled regions.
 
-### Priority 0 — resolve contracts
+The Sentinel cloud model was trained for L1C-style imagery while the mission
+ceiling is L1B. A sensor-specific L1B-to-analysis preprocessing path is therefore
+mandatory before onboard results can be trusted.
 
-1. Confirm that the L1B ceiling applies to the Balkan onboard raw branch and document the exact L1B deliverable.
-2. Select one NIR contract for both models.
-3. Replace the 60% cloud gate and separate recommendations with one decision specification.
-4. Make one payload/downlink JSON schema canonical.
-5. Obtain payload runtime and downlink budgets.
+### Physical downlink transport
 
-**Exit criterion:** no conflicting band, product-level, decision or schema definitions remain.
+The software constructs a portable package locally, but does not yet implement:
 
-### Priority 1 — complete the pre-downlink control plane
+- queueing and scene priority;
+- radio/contact-window scheduling;
+- chunking and transmission framing;
+- retry, resume and acknowledgement;
+- incomplete-transfer cleanup;
+- checksum verification by an independent ground receiver.
 
-1. Add the centralized mission controller.
-2. Add the uplink command envelope, validation and state machine.
-3. Add a portable downlink manifest and package builder.
-4. Add enforced time, memory, storage and output limits.
+### Runtime qualification
 
-**Exit criterion:** a command can deterministically produce discard, insufficient-data or downlink-ready status without manual threshold decisions.
+The current run time is workstation evidence, not payload-computer evidence.
+The complete chain must be measured on the EnduroSat target for wall time, CPU,
+accelerator availability, peak RAM, storage, energy use and thermal behavior.
 
-### Priority 2 — complete Balkan-1 processing
+### Commercial licensing
 
-1. Implement raw-to-L1B reconstruction.
-2. Implement calibration and the single-NIR adapter.
-3. Validate reconstruction, clouds and crops on real Balkan data.
+The current CloudSEN12 `dtacs4bands` weights are recorded as CC-BY-NC-4.0.
+Commercial B2B deployment is blocked until commercial permission is obtained or
+the checkpoint is replaced with a commercially compatible cloud detector.
 
-**Exit criterion:** raw and vendor-processed Balkan captures produce traceable, comparable results within defined registration and runtime tolerances.
+## Ground and business application work remaining
 
-### Priority 3 — qualify the payload and downlink
+The three-file package is sufficient to start the professional web MVP. Ground
+work should proceed in this order:
 
-1. Deploy the minimal bundle to representative/actual payload hardware.
-2. Benchmark huge scenes under hard budgets.
-3. Validate uplink, failure recovery, packaging and downlink transfer.
-4. Resolve the cloud-weights commercial license.
+1. Implement checksum-verified `scene.json` ingestion.
+2. Store immutable scene records and image objects.
+3. Index scene footprint, region and acquisition time.
+4. Expose scene, latest-region and region-history API endpoints.
+5. Display the WebP base image and aligned PNG overlay in Leaflet or MapLibre.
+6. Populate click/hover cards from JSON grid cells.
+7. Add cloud, crop, condition, confidence and evidence-quality legends.
+8. Add time-series comparisons only between compatible, co-registered
+   observations of the same region.
+9. Add alert rules and client tenancy/authentication.
 
-**Exit criterion:** an accepted scene is actually transferred and independently verified on the ground.
+Temporal warnings must account for crop type, season, phenology, harvest,
+registration and sensor calibration. They should be presented as trend-based
+early warning, not disease prediction, until validated outcome data exist.
 
-### Priority 4 — complete the ground MVP
+## Current scientific claim
 
-Completed for the local Sentinel demonstration:
+The defensible statement is:
 
-1. Payload-result ingestion with strict grid and binary-mask validation.
-2. Streamed index, condition, anomaly and quicklook products.
-3. Transparent scores, cautious labels and insufficient-data handling.
+> Reduced vegetation vigor or an anomalous crop-region spectral response was
+> detected in the available Blue, Green, Red and NIR observations under the
+> recorded masks, thresholds and calibration assumptions.
 
-Remaining for an operational ground MVP:
+The system cannot currently identify a specific disease, pest, nutrient
+deficiency, drought cause, plant-water content, thermal stress or yield loss.
 
-1. Replace the local handoff with checksum-verified downlink-manifest ingestion.
-2. Add Balkan-specific reflectance preparation.
-3. Add SQLite, a lightweight API and interactive map.
-4. Add temporal warnings only after compatible repeated observations exist.
+## Canonical implementation map
 
-**Exit criterion:** a downlinked scene appears in the map with auditable crop coverage, measurements, condition explanation, quality/confidence and downloadable artifacts.
-
-## 13. Challenge-level assessment
-
-The repository now demonstrates a working local end-to-end software prototype from a preprocessed Sentinel scene through cloud masking, crop segmentation and Phase 2 crop-condition outputs. It does not demonstrate the full mission because the official decision controller, uplink/downlink transfer, Balkan raw path and operational map are absent.
-
-- **60%:** the software-prototype intent is locally demonstrated on Sentinel data; formal challenge acceptance still depends on the required demo criteria and integration context.
-- **75%:** not yet demonstrated; the code has not been qualified on the EnduroSat payload computer.
-- **90%:** not yet demonstrated; real EnduroSat/Balkan imagery has not been validated.
-- **100%:** not yet demonstrated; raw Balkan reconstruction through the agreed L1B ceiling is not implemented.
-
-## 14. Conclusion
-
-The architecture remains sound: cloud and crop relevance belong on the payload; richer crop-condition analysis, history, storage and visualization belong on the ground. The project has moved beyond isolated models and now has a real, bounded-memory Sentinel cloud-to-crop-to-condition execution path with pinned artifacts and auditable outputs.
-
-The payload endpoint, however, remains `CROP_COMPLETE`, not downlink; the integration component performs a local development handoff to reach `COMPLETE`. The next milestone is not another model-training cycle. It is to close the mission-control gap: finalize the L1B and one-NIR contracts, reconstruct and adapt Balkan-1 data, centralize the decision, accept uplink commands, enforce runtime limits, and build a portable downlink package. Only after that package is transferred and verified on the ground should the project claim an end-to-end onboard-to-ground mission demonstration.
-
-## Appendix A — primary repository evidence
-
-- [`README.md`](README.md) — selected model and training/data context.
-- [`COMPONENTS.md`](COMPONENTS.md) — component ownership and storage policy.
-- [`payload/README.md`](payload/README.md) — payload entry point and stated limits.
-- [`payload/src/prithvi_payload/pipeline.py`](payload/src/prithvi_payload/pipeline.py) — current executable stage boundary.
-- [`payload/src/prithvi_payload/scene_intake.py`](payload/src/prithvi_payload/scene_intake.py) — current sensor and band intake contract.
-- [`payload/src/prithvi_payload/cloud_executor.py`](payload/src/prithvi_payload/cloud_executor.py) — streamed cloud outputs and unusable-area recommendation.
-- [`payload/src/prithvi_payload/crop_stage.py`](payload/src/prithvi_payload/crop_stage.py) — current independent 60% cloud gate.
-- [`payload/src/prithvi_payload/crop_executor.py`](payload/src/prithvi_payload/crop_executor.py) — windowed crop outputs and usable-pixel fraction.
-- [`payload/verification.json`](payload/verification.json) — retained execution and integration evidence.
-- [`payload/DEPLOYMENT_MANIFEST.yaml`](payload/DEPLOYMENT_MANIFEST.yaml) — package contents, missing components and license block.
-- [`configs/selected_model.yaml`](configs/selected_model.yaml) — selected checkpoint and calibration evidence.
-- [`ground/src/prithvi_ground/health.py`](ground/src/prithvi_ground/health.py) — currently implemented health measurements.
-- [`ground/src/prithvi_ground/condition.py`](ground/src/prithvi_ground/condition.py) — transparent condition score and spatial-anomaly assessment.
-- [`ground/src/prithvi_ground/scene.py`](ground/src/prithvi_ground/scene.py) — bounded-memory ground scene processor and outputs.
-- [`ground/health_analysis_contract.md`](ground/health_analysis_contract.md) — scientific and radiometric contract.
-- [`integration/src/vita_integration/pipeline.py`](integration/src/vita_integration/pipeline.py) — development-only payload-to-ground orchestrator.
-- [`integration/verification.json`](integration/verification.json) — reproducible Sentinel acceptance evidence and limitations.
-- [`shared/schemas/inference_result.schema.json`](shared/schemas/inference_result.schema.json) — intended payload schema, not yet used by canonical runs.
+- `payload/src/prithvi_payload/pipeline.py` — stage-gated payload orchestration.
+- `payload/src/prithvi_payload/condition_stage.py` — windowed payload condition processing.
+- `payload/src/prithvi_payload/downlink.py` — compact three-file package builder.
+- `shared/src/prithvi_shared/health.py` — vegetation indices and RGB diagnostics.
+- `shared/src/prithvi_shared/condition.py` — transparent condition and anomaly scoring.
+- `shared/schemas/downlink_bundle.schema.json` — active downlink contract.
+- `integration/src/vita_integration/pipeline.py` — Sentinel development orchestration.
+- `integration/verification.json` — accepted real-model execution evidence.
+- `ground/` — receiving, storage, history, API and client boundaries.

@@ -9,10 +9,12 @@ param(
     [string]$AcquiredAt,
     [string]$SceneId,
     [string]$Output,
-    [ValidateSet("intake", "cloud", "crop", "condition")]
+    [ValidateSet("intake", "cloud", "crop", "condition", "downlink")]
     [string]$StopAfter = "cloud",
     [string]$RegionId,
     [int]$ConditionTileSize = 512,
+    [int]$DownlinkMaxImageDimension = 1600,
+    [int]$DownlinkGridSize = 16,
     [switch]$Overwrite,
     [Nullable[double]]$ReflectanceScale,
     [double]$MaxCropCloudPercentage = 60.0
@@ -40,7 +42,9 @@ $pipelineArguments = @(
     "--max-crop-cloud-percentage", $MaxCropCloudPercentage.ToString(
         [System.Globalization.CultureInfo]::InvariantCulture
     ),
-    "--condition-tile-size", $ConditionTileSize.ToString()
+    "--condition-tile-size", $ConditionTileSize.ToString(),
+    "--downlink-max-image-dimension", $DownlinkMaxImageDimension.ToString(),
+    "--downlink-grid-size", $DownlinkGridSize.ToString()
 )
 if ($AcquiredAt) {
     $pipelineArguments += @("--acquired-at", $AcquiredAt)

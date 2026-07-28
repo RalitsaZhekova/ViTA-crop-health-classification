@@ -11,6 +11,8 @@ param(
     [Nullable[double]]$ReflectanceScale,
     [double]$MaxCropCloudPercentage = 60.0,
     [int]$ConditionTileSize = 512,
+    [int]$DownlinkMaxImageDimension = 1600,
+    [int]$DownlinkGridSize = 16,
     [switch]$Overwrite
 )
 
@@ -36,7 +38,9 @@ $arguments = @(
     "--max-crop-cloud-percentage", $MaxCropCloudPercentage.ToString(
         [System.Globalization.CultureInfo]::InvariantCulture
     ),
-    "--condition-tile-size", $ConditionTileSize.ToString()
+    "--condition-tile-size", $ConditionTileSize.ToString(),
+    "--downlink-max-image-dimension", $DownlinkMaxImageDimension.ToString(),
+    "--downlink-grid-size", $DownlinkGridSize.ToString()
 )
 if ($SceneId) {
     $arguments += @("--scene-id", $SceneId)

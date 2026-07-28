@@ -347,9 +347,9 @@ def test_downlink_bundle_is_three_small_web_ready_files(tmp_path: Path) -> None:
     assert manifest["package"]["total_bytes"] == sum(
         path.stat().st_size for path in output.iterdir()
     )
-    assert manifest["interaction_grid"]["rows"] == 4
-    assert manifest["interaction_grid"]["columns"] == 4
-    assert len(manifest["interaction_grid"]["cells"]) == 16
+    assert manifest["interaction_grid"]["rows"] == 1
+    assert manifest["interaction_grid"]["columns"] == 1
+    assert len(manifest["interaction_grid"]["cells"]) == 1
     assert all(not Path(asset["href"]).is_absolute() for asset in manifest["assets"].values())
 
     repository_root = Path(__file__).parents[2]
