@@ -173,6 +173,15 @@ def _resolve_asset(value: Any, result_root: Path, *, name: str) -> Path:
     return path.resolve()
 
 
+def _resolve_optional_asset(value: Any, result_root: Path) -> Path | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    path = Path(value)
+    if not path.is_absolute():
+        path = result_root / path
+    return path.resolve() if path.is_file() else None
+
+
 def _load_payload_result(path: Path) -> dict[str, Any]:
     if not path.is_file():
         raise FileNotFoundError(path)
@@ -290,6 +299,35 @@ def _preview_rgb(values: np.ndarray) -> np.ndarray:
     return output
 
 
+def _semantic_overlay(semantic: np.ndarray) -> np.ndarray:
+    """Create a display-only cloud-class overlay without altering mask values."""
+    values = np.asarray(semantic)
+    overlay = np.zeros((*values.shape, 4), dtype=np.float32)
+    known = np.zeros(values.shape, dtype=bool)
+    specifications = (
+        (0, (0.0, 0.0, 0.0, 0.0)),
+        (1, (1.0, 0.302, 0.31, 0.62)),
+        (2, (0.0, 0.722, 0.851, 0.62)),
+        (3, (0.494, 0.341, 0.761, 0.62)),
+    )
+    for class_value, color in specifications:
+        mask = values == class_value
+        known |= mask
+        overlay[mask] = color
+    overlay[~known] = (1.0, 0.757, 0.027, 0.78)
+    return overlay
+
+
+def _probability_overlay(probability: np.ndarray) -> np.ndarray:
+    """Create a display-only green overlay for continuous crop probability."""
+    values = np.asarray(probability, dtype=np.float32)
+    valid = np.isfinite(values) & (values >= 0.0) & (values <= 1.0)
+    overlay = np.zeros((*values.shape, 4), dtype=np.float32)
+    overlay[..., :3] = (0.0, 0.784, 0.325)
+    overlay[..., 3] = np.where(valid, 0.08 + 0.62 * np.clip(values, 0.0, 1.0), 0.0)
+    return overlay
+
+
 def _save_quicklook(
     path: Path,
     *,
@@ -297,7 +335,9 @@ def _save_quicklook(
     rgb_indices: list[int],
     reflectance_scale: float,
     condition_path: Path,
+    semantic_mask_path: Path | None,
     unusable_mask_path: Path,
+    crop_probability_path: Path,
     valid_mask_path: Path,
     label: str,
     score: float | None,
@@ -306,8 +346,8 @@ def _save_quicklook(
     cache_root.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("MPLCONFIGDIR", str(cache_root))
     from matplotlib.backends.backend_agg import FigureCanvasAgg
-    from matplotlib.colors import ListedColormap
     from matplotlib.figure import Figure
+    from matplotlib.patches import Patch
 
     with rasterio.open(source_path) as source:
         scale = min(1.0, 1200.0 / max(source.width, source.height))
@@ -322,6 +362,7 @@ def _save_quicklook(
     with (
         rasterio.open(condition_path) as condition_source,
         rasterio.open(unusable_mask_path) as unusable_source,
+        rasterio.open(crop_probability_path) as probability_source,
         rasterio.open(valid_mask_path) as valid_source,
     ):
         condition = condition_source.read(
@@ -335,21 +376,54 @@ def _save_quicklook(
             out_shape=(height, width),
             resampling=Resampling.nearest,
         )
+        probability = probability_source.read(
+            1,
+            out_shape=(height, width),
+            masked=True,
+            resampling=Resampling.bilinear,
+        ).filled(np.nan)
         valid = valid_source.read(
             1,
             out_shape=(height, width),
             resampling=Resampling.nearest,
         )
+    semantic = None
+    if semantic_mask_path is not None:
+        with rasterio.open(semantic_mask_path) as semantic_source:
+            semantic = semantic_source.read(
+                1,
+                out_shape=(height, width),
+                resampling=Resampling.nearest,
+            )
 
-    figure = Figure(figsize=(16, 5.25), constrained_layout=True)
+    figure = Figure(figsize=(17, 6), constrained_layout=True)
     FigureCanvasAgg(figure)
     axes = figure.subplots(1, 4)
     axes[0].imshow(_preview_rgb(rgb))
     axes[0].set_title("RGB")
-    axes[1].imshow(unusable, cmap=ListedColormap(["black", "white"]), vmin=0, vmax=1)
-    axes[1].set_title("Unusable pixels\ncloud + shadow + invalid")
-    axes[2].imshow(valid, cmap=ListedColormap(["black", "#32cd32"]), vmin=0, vmax=1)
-    axes[2].set_title("Valid crop pixels\nclear + confident")
+    preview_rgb = _preview_rgb(rgb)
+    axes[1].imshow(preview_rgb)
+    if semantic is not None:
+        axes[1].imshow(_semantic_overlay(semantic), interpolation="bilinear")
+        axes[1].set_title("Cloud classes on RGB\nred thick · cyan thin · purple shadow")
+        cloud_handles = [
+            Patch(facecolor="#ff4d4f", label="Thick cloud"),
+            Patch(facecolor="#00b8d9", label="Thin cloud"),
+            Patch(facecolor="#7e57c2", label="Cloud shadow"),
+            Patch(facecolor="#ffc107", label="Invalid / nodata"),
+        ]
+    else:
+        fallback = np.zeros((*unusable.shape, 4), dtype=np.float32)
+        fallback[unusable == 1] = (1.0, 1.0, 1.0, 0.65)
+        axes[1].imshow(fallback, interpolation="bilinear")
+        axes[1].set_title("Unusable pixels on RGB\ncloud + shadow + invalid")
+        cloud_handles = [Patch(facecolor="white", edgecolor="#777777", label="Unusable")]
+    axes[2].imshow(preview_rgb)
+    axes[2].imshow(_probability_overlay(probability), interpolation="bilinear")
+    accepted = valid == 1
+    if np.any(accepted) and np.any(~accepted):
+        axes[2].contour(accepted.astype(np.uint8), levels=[0.5], colors="#00e676", linewidths=0.8)
+    axes[2].set_title("Crop probability on RGB\ngreen edge = valid confident crop")
     rendered_score = "n/a" if score is None else f"{score:.1f}/100"
     condition_image = axes[3].imshow(condition, cmap="RdYlGn", vmin=0, vmax=100)
     axes[3].set_title(f"Spectral-vigor screening score\n{label}: {rendered_score}")
@@ -357,8 +431,15 @@ def _save_quicklook(
     colorbar.set_label("0 = lower vigor\n100 = stronger vigor")
     figure.suptitle(
         "Score combines NDVI, GNDVI, EVI and SAVI on clear, confident crop pixels. "
-        "It is not a disease diagnosis.",
+        "It is not a disease diagnosis.\nCloud/crop overlay feathering is display-only; "
+        "GeoTIFF masks are unchanged.",
         fontsize=11,
+    )
+    figure.legend(
+        handles=cloud_handles,
+        loc="outside lower center",
+        ncol=4,
+        frameon=False,
     )
     for axis in axes:
         axis.axis("off")
@@ -404,6 +485,7 @@ def run_ground_scene(
     unusable_path = _resolve_asset(
         cloud_artifacts.get("unusable_mask"), result_root, name="unusable mask"
     )
+    semantic_path = _resolve_optional_asset(cloud_artifacts.get("semantic_mask"), result_root)
     crop_binary_path = _resolve_asset(
         crop_artifacts.get("crop_binary"), result_root, name="crop binary mask"
     )
@@ -647,7 +729,9 @@ def run_ground_scene(
         rgb_indices=band_indices[:3],
         reflectance_scale=reflectance_scale,
         condition_path=condition_score_path,
+        semantic_mask_path=semantic_path,
         unusable_mask_path=unusable_path,
+        crop_probability_path=crop_probability_path,
         valid_mask_path=valid_mask_path,
         label=assessment.label,
         score=assessment.condition_score,

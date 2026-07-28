@@ -58,6 +58,14 @@ selected Prithvi model. It writes crop probability, binary crop and confidence
 GeoTIFFs, crop metadata and a combined PNG. A scene at or above the configured
 cloud percentage is stopped before the crop model is loaded.
 
+Cloud previews show RGB, the exact semantic classes, a display-feathered RGB
+overlay, and the exact operational unusable mask. Thick cloud, thin cloud,
+cloud shadow and invalid/nodata use distinct colors and report their pixel
+fractions. Crop previews show RGB, continuous probability, a display-feathered
+probability overlay with the accepted-crop edge, and the exact binary mask.
+Feathering applies only to PNG presentation; all GeoTIFF masks, probabilities,
+thresholds and statistics remain unchanged.
+
 Each run writes one canonical `result.json` containing the summarized metadata
 for every completed stage and links to detailed stage JSON, GeoTIFF masks and
 PNG visualizations. API and database work should read `result.json`; the stage

@@ -56,11 +56,14 @@
     },
     "all_files_present": true,
     "all_geotiff_grids_equal_source": true,
-    "quicklook_visually_reviewed": true
+    "quicklook_visually_reviewed": true,
+    "visualization_update_verified_at": "2026-07-28",
+    "functional_geotiffs_hash_compared": 20,
+    "functional_geotiffs_unchanged_after_visualization_update": true
   },
   "automated_validation": {
     "test_command": "python -m pytest ground/tests integration/tests -q",
-    "passed": 41,
+    "passed": 43,
     "failed": 0,
     "ruff": "passed",
     "byte_compilation": "passed"

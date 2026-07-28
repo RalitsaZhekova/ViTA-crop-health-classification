@@ -66,6 +66,8 @@ Outputs include compressed tiled GeoTIFFs, a portable JSON report with relative
 asset paths, and a PNG quicklook. Means and standard deviations use every valid
 analysis pixel. Percentiles use a deterministic priority-reservoir sample of at
 most 50,000 spatially identified pixels, so results do not depend on tile size.
-The quicklook is ordered as RGB, unusable pixels, valid confident crop pixels
-and the spectral-vigor score. Detailed alert and anomaly masks remain available
-as GeoTIFF assets instead of occupying a summary panel.
+The quicklook is ordered as RGB, a detailed cloud-class overlay, a continuous
+crop-probability overlay with the valid confident crop edge, and the
+spectral-vigor score. Overlay edges are feathered only for presentation; exact
+semantic, unusable, crop, alert and anomaly masks remain available as GeoTIFF
+assets.

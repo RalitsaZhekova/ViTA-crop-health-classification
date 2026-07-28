@@ -12,9 +12,10 @@ import numpy as np
 import rasterio
 import torch
 from matplotlib.backends.backend_agg import FigureCanvasAgg
-from matplotlib.colors import ListedColormap
+from matplotlib.colors import ListedColormap, to_rgba
 from matplotlib.figure import Figure
-from prithvi_shared import NORMALIZATION_MEANS
+from matplotlib.patches import Patch
+from prithvi_shared import CROP_CLASSIFICATION_THRESHOLD, NORMALIZATION_MEANS
 from rasterio.enums import Resampling
 from rasterio.warp import transform as transform_coordinates
 from rasterio.windows import Window as RasterWindow
@@ -109,6 +110,43 @@ def _preview_rgb(values: np.ndarray) -> np.ndarray:
     return np.clip((rgb - low) / max(float(high - low), 1e-6), 0, 1)
 
 
+def _crop_probability_overlay(probability: np.ndarray) -> np.ndarray:
+    """Create a display-only smooth green overlay from crop probability."""
+    values = np.asarray(probability, dtype=np.float32)
+    valid = np.isfinite(values) & (values >= 0.0) & (values <= 1.0)
+    clipped = np.clip(values, 0.0, 1.0)
+    overlay = np.zeros((*values.shape, 4), dtype=np.float32)
+    overlay[..., :3] = to_rgba("#00c853")[:3]
+    overlay[..., 3] = np.where(valid, 0.08 + 0.62 * clipped, 0.0)
+    return overlay
+
+
+def _crop_display(binary: np.ndarray) -> np.ndarray:
+    """Map exact binary/nodata values to consecutive display categories."""
+    values = np.asarray(binary)
+    display = np.full(values.shape, 2, dtype=np.uint8)
+    display[values == 0] = 0
+    display[values == 1] = 1
+    return display
+
+
+def _crop_legend(binary: np.ndarray) -> list[Patch]:
+    values = np.asarray(binary)
+    usable = np.isin(values, (0, 1))
+    usable_count = int(np.count_nonzero(usable))
+    crop_count = int(np.count_nonzero(values == 1))
+    total = max(values.size, 1)
+    crop_percentage = 100.0 * crop_count / usable_count if usable_count else 0.0
+    excluded_percentage = 100.0 * np.count_nonzero(~usable) / total
+    return [
+        Patch(facecolor="#30343b", label="Non-crop"),
+        Patch(facecolor="#43a047", label=f"Crop: {crop_percentage:.1f}% of usable"),
+        Patch(
+            facecolor="#f4f6f8", edgecolor="#777777", label=f"Excluded: {excluded_percentage:.1f}%"
+        ),
+    ]
+
+
 def _save_preview(
     path: Path,
     rgb: np.ndarray,
@@ -116,23 +154,52 @@ def _save_preview(
     probability: np.ndarray,
     binary: np.ndarray,
 ) -> None:
-    figure = Figure(figsize=(19, 5.5), constrained_layout=True)
+    figure = Figure(figsize=(14, 11), constrained_layout=True)
     FigureCanvasAgg(figure)
-    axes = figure.subplots(1, 4)
+    axes = figure.subplots(2, 2).ravel()
     axes[0].imshow(rgb)
     axes[0].set_title("RGB composite")
-    axes[1].imshow(unusable, cmap="gray", vmin=0, vmax=1)
-    axes[1].set_title("Cloud/invalid exclusion mask")
-    probability_image = np.ma.masked_equal(probability, FLOAT_NODATA)
-    display = axes[2].imshow(probability_image, cmap="viridis", vmin=0, vmax=1)
-    axes[2].set_title("Crop probability")
-    figure.colorbar(display, ax=axes[2], fraction=0.046, pad=0.04)
-    binary_map = ListedColormap(["#3d3d3d", "#43a047"])
-    binary_image = np.ma.masked_equal(binary, BYTE_NODATA)
-    axes[3].imshow(binary_image, cmap=binary_map, vmin=0, vmax=1)
-    axes[3].set_title("Crop mask (green = crop)")
+    excluded = unusable == 1
+    display_probability = np.where(excluded, FLOAT_NODATA, probability)
+    display_binary = np.where(excluded, BYTE_NODATA, binary)
+    probability_image = np.ma.masked_equal(display_probability, FLOAT_NODATA)
+    display = axes[1].imshow(
+        probability_image,
+        cmap="viridis",
+        vmin=0,
+        vmax=1,
+        interpolation="bilinear",
+    )
+    axes[1].set_title("Continuous crop probability")
+    colorbar = figure.colorbar(display, ax=axes[1], fraction=0.046, pad=0.04)
+    colorbar.set_label("0 = low crop likelihood\n1 = high crop likelihood")
+    axes[2].imshow(rgb)
+    axes[2].imshow(_crop_probability_overlay(display_probability), interpolation="bilinear")
+    accepted = display_binary == 1
+    if np.any(accepted) and np.any(~accepted):
+        axes[2].contour(accepted.astype(np.uint8), levels=[0.5], colors="#00e676", linewidths=0.8)
+    axes[2].set_title("Crop-likelihood overlay\ngreen edge = accepted crop")
+    axes[3].imshow(
+        _crop_display(display_binary),
+        cmap=ListedColormap(["#30343b", "#43a047", "#f4f6f8"]),
+        vmin=-0.5,
+        vmax=2.5,
+        interpolation="nearest",
+    )
+    axes[3].set_title(f"Exact crop mask at p ≥ {CROP_CLASSIFICATION_THRESHOLD:.2f}")
     for axis in axes:
         axis.axis("off")
+    figure.legend(
+        handles=_crop_legend(display_binary),
+        loc="outside lower center",
+        ncol=3,
+        frameon=False,
+    )
+    figure.suptitle(
+        "Crop detail preview — exact mask uses nearest-neighbor display; "
+        "probability overlay smoothing is visual only",
+        fontsize=13,
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     figure.savefig(path, dpi=150)
 
