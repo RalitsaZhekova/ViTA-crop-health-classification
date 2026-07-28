@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
 import numpy as np
 import pytest
 import rasterio
+from PIL import Image
 from prithvi_payload.condition_stage import (
     FLOAT_NODATA,
     StreamingMetric,
     run_payload_condition,
 )
+from prithvi_payload.downlink import OVERLAY_CLASSES, build_downlink_bundle
 from rasterio.transform import from_origin
 
 
@@ -265,3 +268,127 @@ def test_streaming_metric_uses_all_values_for_moments_and_is_deterministic() -> 
     assert first_summary["minimum"] == 0
     assert first_summary["maximum"] == 999
     assert first_summary["percentile_sample_pixels"] == 100
+
+
+def _complete_payload_for_downlink(root: Path) -> Path:
+    result_path = _build_payload_fixture(root, crop_size=32 * 32)
+    condition_root = root / "condition"
+    report = run_payload_condition(result_path, output_root=condition_root, tile_size=8)
+
+    shape = (32, 32)
+    semantic = np.zeros(shape, dtype=np.uint8)
+    semantic[0, 0] = 1
+    semantic[0, 1] = 2
+    semantic[0, 2] = 3
+    invalid = np.zeros(shape, dtype=np.uint8)
+    invalid[0, 3] = 1
+    semantic_path = root / "semantic.tif"
+    invalid_path = root / "invalid.tif"
+    _write_raster(semantic_path, semantic, nodata=255)
+    _write_raster(invalid_path, invalid, nodata=255)
+
+    payload = json.loads(result_path.read_text(encoding="utf-8"))
+    payload["status"] = "CONDITION_COMPLETE"
+    payload["completed_stages"].append("condition")
+    payload["artifacts"]["cloud"].update(
+        {
+            "semantic_mask": str(semantic_path),
+            "invalid_mask": str(invalid_path),
+        }
+    )
+    payload["artifacts"]["condition"] = {
+        "report": str(condition_root / "crop_condition_report.json")
+    }
+    payload["stage_metadata"]["condition"] = report
+    payload["stage_metadata"]["crop"] = {
+        "model": {
+            "artifact": "test_weights.pt",
+            "sha256": "a" * 64,
+            "crop_probability_threshold": 0.49,
+            "output_classes": ["non_crop", "crop"],
+        }
+    }
+    payload["summary"] = {
+        "cloud": {
+            "thick_cloud_percentage": 0.1,
+            "thin_cloud_percentage": 0.1,
+            "cloud_shadow_percentage": 0.1,
+            "unusable_percentage": 0.0,
+        },
+        "crop": {"crop_percentage_usable": 100.0},
+        "condition": {
+            "label": report["condition"]["label"],
+            "score": report["condition"]["condition_score"],
+        },
+    }
+    result_path.write_text(json.dumps(payload), encoding="utf-8")
+    return result_path
+
+
+def test_downlink_bundle_is_three_small_web_ready_files(tmp_path: Path) -> None:
+    result_path = _complete_payload_for_downlink(tmp_path)
+    output = tmp_path / "downlink"
+
+    manifest = build_downlink_bundle(
+        result_path,
+        output_root=output,
+        max_image_dimension=32,
+        grid_size=4,
+    )
+
+    assert sorted(path.name for path in output.iterdir()) == [
+        "condition.png",
+        "scene.json",
+        "scene.webp",
+    ]
+    assert manifest["product_type"] == "vita.crop-condition.web-bundle"
+    assert manifest["package"]["file_count"] == 3
+    assert manifest["package"]["metadata_bytes"] == (output / "scene.json").stat().st_size
+    assert manifest["package"]["total_bytes"] == sum(
+        path.stat().st_size for path in output.iterdir()
+    )
+    assert manifest["interaction_grid"]["rows"] == 4
+    assert manifest["interaction_grid"]["columns"] == 4
+    assert len(manifest["interaction_grid"]["cells"]) == 16
+    assert all(not Path(asset["href"]).is_absolute() for asset in manifest["assets"].values())
+
+    repository_root = Path(__file__).parents[2]
+    schema = json.loads(
+        (repository_root / "shared/schemas/downlink_bundle.schema.json").read_text()
+    )
+    assert set(schema["required"]) == set(manifest)
+    for asset in manifest["assets"].values():
+        path = output / asset["href"]
+        assert asset["bytes"] == path.stat().st_size
+        assert asset["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+
+    with Image.open(output / "scene.webp") as rgb:
+        assert rgb.format == "WEBP"
+        assert rgb.mode == "RGB"
+        assert rgb.size == (32, 32)
+    with Image.open(output / "condition.png") as condition:
+        assert condition.format == "PNG"
+        assert condition.mode == "RGBA"
+        assert condition.size == (32, 32)
+        pixels = np.asarray(condition)
+    assert tuple(pixels[0, 0]) == OVERLAY_CLASSES["thick_cloud"]["rgba"]
+    assert tuple(pixels[0, 1]) == OVERLAY_CLASSES["thin_cloud"]["rgba"]
+    assert tuple(pixels[0, 2]) == OVERLAY_CLASSES["cloud_shadow"]["rgba"]
+    assert tuple(pixels[0, 3]) == OVERLAY_CLASSES["invalid"]["rgba"]
+    assert pixels[10, 10, 3] == 205
+
+
+def test_downlink_bundle_protects_existing_metadata(tmp_path: Path) -> None:
+    result_path = _complete_payload_for_downlink(tmp_path)
+    output = tmp_path / "downlink"
+    build_downlink_bundle(result_path, output_root=output)
+
+    with pytest.raises(FileExistsError, match="already exists"):
+        build_downlink_bundle(result_path, output_root=output)
+
+
+def test_downlink_bundle_requires_completed_condition_stage(tmp_path: Path) -> None:
+    result_path = _build_payload_fixture(tmp_path)
+
+    with pytest.raises(ValueError, match="CONDITION_COMPLETE"):
+        build_downlink_bundle(result_path, output_root=tmp_path / "downlink")

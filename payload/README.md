@@ -71,6 +71,18 @@ The condition stage uses bounded windows and deterministic scene-wide robust
 statistics. It records all index summaries, condition components, evidence
 quality, limitations and geospatial provenance under `condition_analysis/`.
 
+The compact downlink builder reduces a completed condition result to exactly
+three web-ready files:
+
+- `scene.webp`: an 82-quality RGB overview, at most 1600 pixels on its longest side;
+- `condition.png`: a lossless aligned RGBA overlay containing the condition
+  gradient plus distinct thick-cloud, thin-cloud, shadow, invalid and unusable-buffer colors;
+- `scene.json`: exact metrics, score explanations, evidence quality,
+  georeferencing, checksums and a 16-by-16 interaction grid.
+
+The bundle is deliberately separate from payload GeoTIFF intermediates. The web
+application reads numbers from JSON and uses the images only for presentation.
+
 The crop route requires both Sentinel-2 `B08` for CloudSEN12 and `B8A` for the
 selected Prithvi model. It writes crop probability, binary crop and confidence
 GeoTIFFs, crop metadata and a combined PNG. A scene at or above the configured

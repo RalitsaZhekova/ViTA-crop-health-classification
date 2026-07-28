@@ -2,11 +2,11 @@
 
 The operational map should display:
 
-- the source RGB scene;
-- cloud/unusable pixels;
-- fine crop type and crop/no-crop layers;
-- crop probability;
-- NDVI, EVI, GNDVI and CVI layers;
+- the compact RGB scene preview;
+- the aligned condition overlay with separate thick-cloud, thin-cloud,
+  cloud-shadow, invalid and unusable-buffer classes;
+- click/hover cards populated from the JSON interaction grid;
+- exact NDVI, EVI, GNDVI and SAVI summaries from JSON;
 - region history and data-quality indicators.
 
 Business-ready examples should be regenerated from the selected model and

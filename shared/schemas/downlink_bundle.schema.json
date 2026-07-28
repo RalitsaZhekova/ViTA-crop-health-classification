@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vita.example/schemas/downlink-bundle-v1.json",
+  "title": "Compact crop-condition downlink bundle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "product_type",
+    "algorithm_version",
+    "scene_id",
+    "region_id",
+    "sensor",
+    "acquired_at",
+    "status",
+    "claim",
+    "assets",
+    "geospatial",
+    "quality",
+    "metrics",
+    "condition",
+    "interaction_grid",
+    "legend",
+    "processing",
+    "limitations",
+    "warnings",
+    "package"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "product_type": {"const": "vita.crop-condition.web-bundle"},
+    "algorithm_version": {"type": "string", "minLength": 1},
+    "scene_id": {"type": "string", "minLength": 1},
+    "region_id": {"type": "string", "minLength": 1},
+    "sensor": {"enum": ["sentinel-2", "balkan-1"]},
+    "acquired_at": {"type": "string", "format": "date-time"},
+    "status": {"enum": ["MEASURED", "INSUFFICIENT_DATA"]},
+    "claim": {"type": "string", "minLength": 1},
+    "assets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rgb_preview", "condition_overlay"],
+      "properties": {
+        "rgb_preview": {"$ref": "#/$defs/imageAsset"},
+        "condition_overlay": {"$ref": "#/$defs/imageAsset"}
+      }
+    },
+    "geospatial": {"type": "object"},
+    "quality": {"type": "object"},
+    "metrics": {"type": "object"},
+    "condition": {"type": "object"},
+    "interaction_grid": {
+      "type": "object",
+      "required": ["rows", "columns", "cell_order", "cells"],
+      "properties": {
+        "rows": {"type": "integer", "minimum": 1},
+        "columns": {"type": "integer", "minimum": 1},
+        "cell_order": {"type": "string"},
+        "cells": {"type": "array", "items": {"type": "object"}}
+      }
+    },
+    "legend": {"type": "object"},
+    "processing": {"type": "object"},
+    "limitations": {"type": "array", "items": {"type": "string"}},
+    "warnings": {"type": "array", "items": {"type": "string"}},
+    "package": {
+      "type": "object",
+      "required": ["file_count", "metadata_file", "asset_bytes", "metadata_bytes", "total_bytes"],
+      "properties": {
+        "file_count": {"const": 3},
+        "metadata_file": {"const": "scene.json"},
+        "asset_bytes": {"type": "integer", "minimum": 1},
+        "metadata_bytes": {"type": "integer", "minimum": 1},
+        "total_bytes": {"type": "integer", "minimum": 1}
+      }
+    }
+  },
+  "$defs": {
+    "imageAsset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["href", "media_type", "width", "height", "bytes", "sha256"],
+      "properties": {
+        "href": {"type": "string", "minLength": 1},
+        "media_type": {"enum": ["image/webp", "image/png"]},
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1},
+        "bytes": {"type": "integer", "minimum": 1},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}

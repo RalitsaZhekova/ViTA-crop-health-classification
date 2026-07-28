@@ -9,10 +9,11 @@ It owns:
 - the exact training normalization values;
 - the preserved 13 fine classes and active crop/no-crop contract;
 - the selected checkpoint identity and calibrated thresholds;
+- sensor-neutral vegetation indices, RGB diagnostics and transparent condition scoring;
 - JSON schemas exchanged between payload and ground.
 
 It contains no model weights, satellite reconstruction, cloud detection,
-health interpretation, database code or UI code.
+scene orchestration, database code or UI code.
 
 The training normalization values apply to the numeric scale used by the
 IBM-NASA training chips. Balkan-1 12-bit raw digital numbers must first be
