@@ -7,7 +7,7 @@ while keeping one canonical copy of every implementation and configuration.
 training/  -> shared/
 payload/   -> shared/
 ground/    -> shared/ and compact downlink records
-integration/ -> payload/ and shared/ for development demonstrations only
+integration/ -> payload/, ground/ and shared/ for development demonstrations only
 shared/    -> no project-domain dependency
 ```
 
@@ -18,7 +18,7 @@ shared/    -> no project-domain dependency
 | `training/` | Development workstation | Dataset references, augmentation, training/evaluation code, configs and experiment logs | Flight runtime or customer API |
 | `payload/` | Balkan-1 payload computer | Pinned models, tiled cloud/crop inference, condition calculations, compact downlink packaging and raw-band reconstruction boundary | Training data, experiment logs, historical analytics or web UI |
 | `ground/` | Ground infrastructure | Downlink validation, observations, historical storage, API contract and visualization | Training loop, satellite reconstruction or alternate condition scoring |
-| `integration/` | Development workstation | One-command payload-to-downlink orchestration and final run summary | Flight transport or duplicated model/business logic |
+| `integration/` | Development workstation | One-command payload-to-ground orchestration and final run summary | Flight transport or duplicated model/business logic |
 | `shared/` | All components | Band order, normalization, class mapping, thresholds, scientific formulas and JSON schemas | Sensor processing, orchestration or UI logic |
 
 ## Storage policy
@@ -31,7 +31,7 @@ shared/    -> no project-domain dependency
   checksum-pinned, weights-only artifacts in `payload/models/`.
 - Reproducible previews, caches, raw logs, source snapshots, and test
   scaffolding are not retained in the working repository.
-- Missing reconstruction, Balkan-1 cloud masking, physical downlink transport,
-  storage, API and operational
-  visualization implementations are documented as explicit boundaries rather
-  than represented as finished code.
+- Missing Balkan-1 reconstruction and calibration, flight-specific cloud-model
+  validation, physical downlink transport, production authentication and
+  multi-tenant deployment are documented as explicit boundaries rather than
+  represented as finished code.

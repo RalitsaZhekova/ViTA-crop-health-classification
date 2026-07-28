@@ -4,15 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vita-space-integration"
-version = "0.2.0"
-description = "Ground demonstration orchestration for the ViTA payload and Phase 2 pipeline"
+version = "0.3.0"
+description = "Sentinel payload-to-ground MVP orchestration for ViTA crop intelligence"
 requires-python = ">=3.10,<3.14"
 dependencies = [
+  "prithvi-crop-ground==0.3.0",
   "prithvi-crop-payload==0.3.0",
 ]
 
 [project.scripts]
 vita-sentinel-run = "vita_integration.pipeline:main"
+vita-sentinel-mvp = "vita_integration.mvp:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -1,11 +1,12 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "verified_at": "2026-07-28",
-  "algorithm_version": "sentinel-end-to-end-v2",
-  "scope": "Local real-model execution and compact-package acceptance; not an accuracy benchmark or physical radio-downlink test.",
-  "command": ".\\integration\\scripts\\run_sentinel_end_to_end.ps1 -InputPath testing\\inputs\\sentinel2\\pastis_10425_20190924_5band.tif -AcquiredAt 2019-09-24T00:00:00Z -ReflectanceScale 10000 -ConditionTileSize 32 -DownlinkMaxImageDimension 1600 -DownlinkGridSize 16 -Output testing\\runs\\pastis_10425_compact_downlink",
+  "algorithm_version": "sentinel-ground-mvp-v1",
+  "scope": "Local real-model Sentinel payload-to-ground MVP acceptance; not an accuracy benchmark, agronomic diagnosis or physical radio-downlink test.",
+  "command": ".\\integration\\scripts\\run_sentinel_mvp.ps1 -InputPath testing\\inputs\\sentinel2\\pastis_10425_20190924_5band.tif -AcquiredAt 2019-09-24T00:00:00Z -SceneId pastis_10425_20190924 -RegionId pastis_demo_field_10425 -ReflectanceScale 10000 -ConditionTileSize 32 -DownlinkMaxImageDimension 1600 -DownlinkGridSize 16 -Output testing\\runs\\pastis_10425_ground_mvp_verified -GroundStore testing\\runs\\pastis_ground_catalog_verified -Serve",
   "input": {
-    "scene_id": "pastis_10425_20190924_5band",
+    "scene_id": "pastis_10425_20190924",
+    "region_id": "pastis_demo_field_10425",
     "sensor": "sentinel-2",
     "source_scope": "PASTIS training/replay scene; not held-out evaluation data",
     "bytes": 132580,
@@ -22,10 +23,16 @@
     "driver_version": "560.94"
   },
   "result": {
-    "status": "COMPLETE",
+    "status": "MVP_READY",
+    "completed_stages": [
+      "payload",
+      "downlink",
+      "ground_catalog",
+      "api_ready"
+    ],
     "payload_status": "DOWNLINK_READY",
     "condition_status": "MEASURED",
-    "runtime_seconds": 14.236708800017368,
+    "runtime_seconds": 24.43815000000177,
     "cloud": {
       "thick_cloud_percentage": 23.3642578125,
       "thin_cloud_percentage": 0.0,
@@ -36,7 +43,7 @@
     "crop": {
       "crop_percentage_usable": 69.44593291179937,
       "mean_crop_probability_usable": 0.5994946396719117,
-      "runtime_seconds": 0.31669299997156486
+      "runtime_seconds": 0.34389260003808886
     },
     "condition": {
       "analysis_pixels": 3832,
@@ -49,9 +56,9 @@
     },
     "downlink": {
       "file_count": 3,
-      "total_bytes": 27690,
+      "total_bytes": 27680,
       "source_scene_bytes": 132580,
-      "size_fraction_of_source": 0.20885503092472468,
+      "size_fraction_of_source": 0.20877960476693316,
       "adaptive_grid": [4, 4]
     }
   },
@@ -65,7 +72,8 @@
       "sha256": "2d3df3d4f1a28af08c56f01ac1cffcd539d9d7605ec4e7e5e0506ed2a51c6ea0"
     },
     "scene.json": {
-      "bytes": 15722
+      "bytes": 15712,
+      "sha256": "37cbbcb52bb051f8739c8d7be54db2741b712cc45bd732fb3063febe0150e031"
     }
   },
   "artifact_validation": {
@@ -77,23 +85,36 @@
     "downlink_references_are_relative": true,
     "downlink_contains_no_absolute_paths": true,
     "downlink_image_dimensions_equal": true,
-    "downlink_visualizations_reviewed": true,
-    "condition_and_metric_records_equal_payload_report": true
+    "condition_and_metric_records_equal_payload_report": true,
+    "ground_atomic_ingest_verified": true,
+    "ground_manifest_checksum_verified": true
+  },
+  "live_application_validation": {
+    "health_status": "ok",
+    "dashboard_http_status": 200,
+    "scene_endpoint_scene_id": "pastis_10425_20190924",
+    "region_history_count": 1,
+    "condition_overlay_media_type": "image/png",
+    "real_dashboard_rendered_and_reviewed": true,
+    "interactive_grid_default_cell": "r02c01"
   },
   "automated_validation": {
-    "test_command": "python -m pytest shared/tests payload/tests integration/tests -q",
-    "passed": 46,
+    "test_command": "python -m pytest shared/tests payload/tests ground/tests integration/tests -q",
+    "passed": 61,
     "failed": 0,
     "ruff": "passed",
-    "powershell_parse": "passed"
+    "javascript_syntax": "passed",
+    "powershell_parse": "passed",
+    "ground_wheel_assets": "passed"
   },
   "limitations": [
     "The input is a training/replay scene and cannot support a held-out crop-accuracy claim.",
     "No expert cloud ground truth was used in this execution acceptance run.",
     "The single-scene condition label is a spectral screening priority, not a disease, cause, yield or agronomic diagnosis.",
-    "The command constructs and verifies the package locally; it does not test radio transfer, scheduling, retry/resume or ground acknowledgement.",
+    "The demonstration constructs and verifies the package locally; it does not test radio transfer, scheduling, retry/resume or ground acknowledgement.",
     "The Sentinel development route uses B08 for cloud detection and B8A for crop inference; the Balkan single-NIR contract remains unresolved.",
     "No Balkan-1 imagery or payload computer was used.",
-    "Commercial use of the current CloudSEN12 checkpoint is blocked by its CC-BY-NC-4.0 weights license until separate permission or replacement."
+    "Commercial use of the current CloudSEN12 checkpoint is blocked by its CC-BY-NC-4.0 weights license until separate permission or replacement.",
+    "Production authentication, authorization, rate limiting and multi-tenant isolation are not part of this local MVP."
   ]
 }

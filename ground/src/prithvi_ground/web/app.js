@@ -292,6 +292,10 @@ function renderMetrics(metrics) {
     ["gndvi", "GNDVI", "Green chlorophyll response", "#b9dd74"],
     ["evi", "EVI", "Blue-corrected canopy vigor", "#42bfd1"],
     ["savi", "SAVI", "Soil-adjusted vegetation", "#f1bd62"],
+    ["cvi", "CVI", "Chlorophyll ratio · diagnostic", "#8e79d8"],
+    ["vari", "VARI", "Visible greenness · diagnostic", "#52b788"],
+    ["excess_green", "EXG", "RGB excess green · diagnostic", "#95d5b2"],
+    ["rgb_brightness", "RGB", "Visible brightness · diagnostic", "#a7b6af"],
   ];
   elements["metric-grid"].replaceChildren();
   definitions.forEach(([key, label, description, color]) => {

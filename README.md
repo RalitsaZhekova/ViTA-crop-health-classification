@@ -32,26 +32,35 @@ runtime and the remaining system responsibilities are separated into:
   calculations, compact downlink packaging and the Balkan-1 reconstruction boundary;
 - [`ground/`](ground/README.md): downlink validation, storage, history, API and
   visualization boundaries;
-- [`integration/`](integration/README.md): one-command Sentinel payload-to-downlink
-  demonstration orchestration;
+- [`integration/`](integration/README.md): one-command Sentinel payload-to-ground
+  MVP orchestration;
 - [`shared/`](shared/README.md): bands, normalization, classes, thresholds and
   exchange schemas.
 
 [`COMPONENTS.md`](COMPONENTS.md) defines ownership and canonical storage
 locations.
 
-## Complete Sentinel demonstration
+## Complete Sentinel MVP
 
-The current local end-to-end command runs intake, cloud/shadow masking, crop
-segmentation, streamed payload crop-condition analysis and compact packaging:
+The complete local command runs intake, cloud/shadow masking, crop segmentation,
+streamed payload crop-condition analysis, compact packaging, checksum-verified
+ground ingestion, the API and the interactive client:
 
 ```powershell
-.\integration\scripts\run_sentinel_end_to_end.ps1 `
+.\integration\scripts\run_sentinel_mvp.ps1 `
   -InputPath testing\inputs\sentinel2\your_five_band_scene.tif `
   -AcquiredAt 2026-07-27T12:00:00Z `
+  -SceneId field_42_20260727 `
+  -RegionId field_42 `
   -ReflectanceScale 10000 `
-  -Output testing\runs\your_end_to_end_run
+  -Output testing\runs\your_mvp_run `
+  -GroundStore testing\runs\ground_mvp `
+  -Serve
 ```
+
+Open `http://127.0.0.1:8000` for the client and
+`http://127.0.0.1:8000/docs` for the OpenAPI interface. Omit `-Serve` when a
+batch run should stop after verified ground ingestion.
 
 The Sentinel development route currently requires described B02, B03, B04,
 B08 and B8A bands because the retained cloud and crop models use different NIR
@@ -59,7 +68,8 @@ responses. The final Balkan mission contract remains RGB plus one NIR; this
 five-band development adapter must not be mistaken for that unresolved sensor
 interface.
 
-The payload finishes with `DOWNLINK_READY`. Routine transmission consists of
+The payload reaches `DOWNLINK_READY`; the complete receiver flow finishes with
+`MVP_READY`. Routine transmission consists of
 exactly `scene.webp`, `condition.png` and `scene.json`; full-resolution GeoTIFFs
 remain local processing intermediates. The JSON contains exact measurements,
 score explanations, evidence quality, georeferencing, asset checksums and an
@@ -126,6 +136,10 @@ py -3.11 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
+python -m pip install -e .\shared
+python -m pip install -e .\payload
+python -m pip install -e .\ground
+python -m pip install -e .\integration
 ```
 
 On Linux/macOS:
@@ -135,6 +149,10 @@ python3.11 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
+python -m pip install -e ./shared
+python -m pip install -e ./payload
+python -m pip install -e ./ground
+python -m pip install -e ./integration
 ```
 
 Do not replace PyTorch without checking the installed build, driver, and CUDA

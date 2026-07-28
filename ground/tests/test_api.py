@@ -57,6 +57,8 @@ def test_professional_web_client_is_served_without_external_dependencies(tmp_pat
         assert "/cells/" in script.text
         assert "pointermove" in script.text
         assert "renderHistory" in script.text
+        assert '"cvi", "CVI"' in script.text
+        assert '"rgb_brightness", "RGB"' in script.text
 
 
 def test_upload_and_complete_scene_api(tmp_path: Path) -> None:
