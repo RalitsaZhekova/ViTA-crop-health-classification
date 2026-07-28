@@ -346,13 +346,7 @@ function renderQuality(quality) {
   });
 }
 
-function safeRgba(value) {
-  if (!Array.isArray(value) || value.length !== 4 || value.some((item) => !isNumber(item))) return "rgba(97,119,109,.8)";
-  const [red, green, blue, alpha] = value.map((item) => Math.max(0, Math.min(255, item)));
-  return `rgba(${red}, ${green}, ${blue}, ${(alpha / 255).toFixed(3)})`;
-}
-
-function renderLegend(legend) {
+function renderLegend(_legend) {
   elements.legend.replaceChildren();
   const gradient = document.createElement("span");
   gradient.className = "legend-item";
@@ -360,24 +354,10 @@ function renderLegend(legend) {
   gradientSwatch.className = "legend-gradient";
   gradient.append(gradientSwatch, document.createTextNode("Condition 0 → 100"));
   elements.legend.append(gradient);
-
-  const labels = {
-    thick_cloud: "Thick cloud",
-    thin_cloud: "Thin cloud",
-    cloud_shadow: "Cloud shadow",
-    invalid: "Invalid",
-    unusable_buffer: "Safety buffer",
-  };
-  Object.entries(labels).forEach(([key, label]) => {
-    if (!legend.classes?.[key]) return;
-    const item = document.createElement("span");
-    item.className = "legend-item";
-    const swatch = document.createElement("i");
-    swatch.className = "legend-swatch";
-    swatch.style.background = safeRgba(legend.classes[key].rgba);
-    item.append(swatch, document.createTextNode(label));
-    elements.legend.append(item);
-  });
+  const transparent = document.createElement("span");
+  transparent.className = "legend-item";
+  transparent.textContent = "Transparent = outside clear crop analysis";
+  elements.legend.append(transparent);
 }
 
 function renderExplanations(manifest) {

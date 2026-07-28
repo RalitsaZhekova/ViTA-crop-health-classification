@@ -32,7 +32,8 @@ limited to 25 MiB by default, accepts exactly `scene.json`, `scene.webp` and
 Scene responses follow `shared/schemas/downlink_bundle.schema.json`. Exact
 client measurements come from the JSON record and its interaction grid; WebP
 and PNG assets are presentation layers and are never decoded as scientific
-values. Immutable asset responses include checksums as ETags.
+values. The PNG contains only the crop-condition heat map; cloud and quality
+facts remain in JSON. Immutable asset responses include checksums as ETags.
 
 Optional API-key protection is appropriate for the single-operator MVP. Full
 authentication, authorization, rate limiting and multi-tenant isolation remain

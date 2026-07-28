@@ -44,6 +44,10 @@ def test_professional_web_client_is_served_without_external_dependencies(tmp_pat
         assert 'id="scene-viewer"' in page.text
         assert 'id="condition-score"' in page.text
         assert 'id="cloud-bar"' in page.text
+        assert "Crop health heat map" in page.text
+        assert "Condition + cloud overlay" not in page.text
+        assert 'class="grid-overlay off"' in page.text
+        assert 'id="grid-toggle" type="checkbox"' in page.text
         assert "http://" not in page.text
         assert "https://" not in page.text
 

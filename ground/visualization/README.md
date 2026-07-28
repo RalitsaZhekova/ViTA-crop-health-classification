@@ -3,8 +3,8 @@
 The implemented web client displays:
 
 - the compact RGB scene preview;
-- the aligned condition overlay with separate thick-cloud, thin-cloud,
-  cloud-shadow, invalid and unusable-buffer classes;
+- the aligned crop-condition heat map, with all pixels outside valid clear crop
+  analysis left transparent;
 - selectable cells populated from the JSON interaction grid;
 - exact NDVI, EVI, GNDVI and SAVI summaries from JSON;
 - region history and data-quality indicators.

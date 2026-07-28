@@ -7,7 +7,7 @@ The implemented local catalog stores:
 - model and algorithm versions;
 - cloud/analysis pixel counts;
 - NDVI, EVI, GNDVI, CVI and RGB summary statistics;
-- the compact RGB preview and condition/quality overlay locations and checksums;
+- the compact RGB preview and crop-condition heat-map locations and checksums;
 - the queryable interaction-grid measurements delivered in scene JSON.
 
 Each received three-file bundle is checksum-verified, decoded to validate its

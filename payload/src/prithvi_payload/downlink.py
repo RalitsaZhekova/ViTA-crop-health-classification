@@ -21,7 +21,7 @@ from prithvi_payload.cloud_classifier import CLOUD_MODEL_NAME, CLOUD_MODEL_SHA25
 
 DOWNLINK_SCHEMA_VERSION = "1.0"
 DOWNLINK_PRODUCT_TYPE = "vita.crop-condition.web-bundle"
-DOWNLINK_ALGORITHM_VERSION = "compact-downlink-v1"
+DOWNLINK_ALGORITHM_VERSION = "compact-downlink-v2"
 DEFAULT_MAX_IMAGE_DIMENSION = 1600
 DEFAULT_GRID_SIZE = 16
 MINIMUM_GRID_CELL_PIXELS = 32
@@ -34,15 +34,6 @@ CONDITION_COLOR_STOPS = (
     (75.0, (145, 207, 96)),
     (100.0, (26, 152, 80)),
 )
-OVERLAY_CLASSES = {
-    "thick_cloud": {"rgba": (245, 247, 250, 235), "semantic_value": 1},
-    "thin_cloud": {"rgba": (0, 184, 217, 205), "semantic_value": 2},
-    "cloud_shadow": {"rgba": (126, 87, 194, 220), "semantic_value": 3},
-    "invalid": {"rgba": (255, 193, 7, 225)},
-    "unusable_buffer": {"rgba": (117, 117, 117, 180)},
-}
-
-
 def _read_json(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -113,24 +104,14 @@ def _condition_colors(values: np.ndarray) -> np.ndarray:
 def _build_overlay(
     condition: np.ndarray,
     valid_crop: np.ndarray,
-    semantic: np.ndarray,
-    unusable: np.ndarray,
-    invalid: np.ndarray,
 ) -> np.ndarray:
     shape = condition.shape
-    if any(array.shape != shape for array in (valid_crop, semantic, unusable, invalid)):
+    if valid_crop.shape != shape:
         raise ValueError("Preview arrays must have identical shapes")
     overlay = np.zeros((*shape, 4), dtype=np.uint8)
     measured = (valid_crop == 1) & np.isfinite(condition)
     overlay[measured, :3] = _condition_colors(condition)[measured]
     overlay[measured, 3] = 205
-
-    safety_buffer = (unusable == 1) & np.isin(semantic, (0,)) & (invalid == 0)
-    overlay[safety_buffer] = OVERLAY_CLASSES["unusable_buffer"]["rgba"]
-    overlay[invalid == 1] = OVERLAY_CLASSES["invalid"]["rgba"]
-    for name in ("cloud_shadow", "thin_cloud", "thick_cloud"):
-        specification = OVERLAY_CLASSES[name]
-        overlay[semantic == specification["semantic_value"]] = specification["rgba"]
     return overlay
 
 
@@ -398,20 +379,14 @@ def build_downlink_bundle(
             masked=True,
             resampling=Resampling.bilinear,
         ).filled(np.nan)
-        preview_arrays = {
-            name: rasters[name].read(
-                1,
-                out_shape=(preview_height, preview_width),
-                resampling=Resampling.nearest,
-            )
-            for name in ("valid_crop_mask", "semantic_mask", "unusable_mask", "invalid_mask")
-        }
+        valid_crop = rasters["valid_crop_mask"].read(
+            1,
+            out_shape=(preview_height, preview_width),
+            resampling=Resampling.nearest,
+        )
         overlay = _build_overlay(
             condition,
-            preview_arrays["valid_crop_mask"],
-            preview_arrays["semantic_mask"],
-            preview_arrays["unusable_mask"],
-            preview_arrays["invalid_mask"],
+            valid_crop,
         )
         Image.fromarray(overlay).save(
             overlay_path,
@@ -476,18 +451,10 @@ def build_downlink_bundle(
             "condition_gradient": [
                 {"score": score, "rgb": list(color)} for score, color in CONDITION_COLOR_STOPS
             ],
-            "classes": {
-                name: {"rgba": list(specification["rgba"])}
-                for name, specification in OVERLAY_CLASSES.items()
+            "overlay_semantics": {
+                "colored": "valid clear crop pixels with a condition score",
+                "transparent": "non-crop, cloud, shadow, invalid, buffered or unmeasured pixels",
             },
-            "priority": [
-                "condition",
-                "unusable_buffer",
-                "invalid",
-                "cloud_shadow",
-                "thin_cloud",
-                "thick_cloud",
-            ],
         },
         "processing": {
             "cloud_model": {"name": CLOUD_MODEL_NAME, "sha256": CLOUD_MODEL_SHA256},

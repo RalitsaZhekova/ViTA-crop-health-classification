@@ -103,8 +103,11 @@ Formula basis:
 ## Outputs
 
 The payload writes compressed, tiled GeoTIFF intermediates while processing.
-Routine downlink contains an aligned WebP scene, a lossless PNG condition/quality
-overlay and compact JSON containing:
+Routine downlink contains an aligned WebP scene and a lossless PNG
+crop-condition heat map. The heat map colors only valid clear crop pixels; all
+other pixels are transparent. Cloud classes remain factual JSON quality
+measurements and separate payload diagnostics, not part of this client image.
+The compact JSON contains:
 
 - scene, region, sensor and acquisition time;
 - algorithm and schema versions;

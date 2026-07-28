@@ -75,8 +75,9 @@ The compact downlink builder reduces a completed condition result to exactly
 three web-ready files:
 
 - `scene.webp`: an 82-quality RGB overview, at most 1600 pixels on its longest side;
-- `condition.png`: a lossless aligned RGBA overlay containing the condition
-  gradient plus distinct thick-cloud, thin-cloud, shadow, invalid and unusable-buffer colors;
+- `condition.png`: a lossless aligned RGBA crop-condition heat map; only valid,
+  clear crop pixels are colored and every cloud, shadow, invalid, buffered,
+  non-crop or unmeasured pixel is transparent;
 - `scene.json`: exact metrics, score explanations, evidence quality,
   georeferencing, checksums and an adaptive interaction grid of up to 16 by 16
   cells, without creating cells smaller than 32 source pixels.

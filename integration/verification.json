@@ -3,9 +3,9 @@
   "verified_at": "2026-07-28",
   "algorithm_version": "sentinel-ground-mvp-v1",
   "scope": "Local real-model Sentinel payload-to-ground MVP acceptance; not an accuracy benchmark, agronomic diagnosis or physical radio-downlink test.",
-  "command": ".\\integration\\scripts\\run_sentinel_mvp.ps1 -InputPath testing\\inputs\\sentinel2\\pastis_10425_20190924_5band.tif -AcquiredAt 2019-09-24T00:00:00Z -SceneId pastis_10425_20190924 -RegionId pastis_demo_field_10425 -ReflectanceScale 10000 -ConditionTileSize 32 -DownlinkMaxImageDimension 1600 -DownlinkGridSize 16 -Output testing\\runs\\pastis_10425_ground_mvp_verified -GroundStore testing\\runs\\pastis_ground_catalog_verified -Serve",
+  "command": ".\\integration\\scripts\\run_sentinel_mvp.ps1 -InputPath testing\\inputs\\sentinel2\\pastis_10425_20190924_5band.tif -AcquiredAt 2019-09-24T00:00:00Z -SceneId pastis_10425_20190924_heatmap -RegionId pastis_demo_field_10425 -ReflectanceScale 10000 -ConditionTileSize 32 -DownlinkMaxImageDimension 1600 -DownlinkGridSize 16 -Output testing\\runs\\pastis_10425_health_heatmap_mvp -GroundStore testing\\runs\\pastis_health_heatmap_store",
   "input": {
-    "scene_id": "pastis_10425_20190924",
+    "scene_id": "pastis_10425_20190924_heatmap",
     "region_id": "pastis_demo_field_10425",
     "sensor": "sentinel-2",
     "source_scope": "PASTIS training/replay scene; not held-out evaluation data",
@@ -32,7 +32,7 @@
     ],
     "payload_status": "DOWNLINK_READY",
     "condition_status": "MEASURED",
-    "runtime_seconds": 24.43815000000177,
+    "runtime_seconds": 16.47532470000442,
     "cloud": {
       "thick_cloud_percentage": 23.3642578125,
       "thin_cloud_percentage": 0.0,
@@ -43,7 +43,7 @@
     "crop": {
       "crop_percentage_usable": 69.44593291179937,
       "mean_crop_probability_usable": 0.5994946396719117,
-      "runtime_seconds": 0.34389260003808886
+      "runtime_seconds": 0.32412659999681637
     },
     "condition": {
       "analysis_pixels": 3832,
@@ -56,9 +56,10 @@
     },
     "downlink": {
       "file_count": 3,
-      "total_bytes": 27680,
+      "algorithm_version": "compact-downlink-v2",
+      "total_bytes": 26708,
       "source_scene_bytes": 132580,
-      "size_fraction_of_source": 0.20877960476693316,
+      "size_fraction_of_source": 0.20144818222959723,
       "adaptive_grid": [4, 4]
     }
   },
@@ -68,12 +69,12 @@
       "sha256": "a56d035bb48bf2c6bd754c7647f0070539abffe531eba4d08d528af74618e6da"
     },
     "condition.png": {
-      "bytes": 10598,
-      "sha256": "2d3df3d4f1a28af08c56f01ac1cffcd539d9d7605ec4e7e5e0506ed2a51c6ea0"
+      "bytes": 9765,
+      "sha256": "5e4d143a3a807bca1927f3ad8422254400abdc27fccf601516a1a04aca4507a8"
     },
     "scene.json": {
-      "bytes": 15712,
-      "sha256": "37cbbcb52bb051f8739c8d7be54db2741b712cc45bd732fb3063febe0150e031"
+      "bytes": 15573,
+      "sha256": "667ab1519c4a61fcddf560c804587808f07d03710d51212be2495fe36e61ec6d"
     }
   },
   "artifact_validation": {
@@ -85,6 +86,11 @@
     "downlink_references_are_relative": true,
     "downlink_contains_no_absolute_paths": true,
     "downlink_image_dimensions_equal": true,
+    "condition_heatmap_colored_pixels": 3832,
+    "condition_heatmap_transparent_pixels": 12552,
+    "condition_heatmap_colored_pixels_equal_analysis_pixels": true,
+    "condition_heatmap_alpha_values": [0, 205],
+    "condition_heatmap_cloud_classes_rendered": false,
     "condition_and_metric_records_equal_payload_report": true,
     "ground_atomic_ingest_verified": true,
     "ground_manifest_checksum_verified": true
@@ -92,11 +98,13 @@
   "live_application_validation": {
     "health_status": "ok",
     "dashboard_http_status": 200,
-    "scene_endpoint_scene_id": "pastis_10425_20190924",
+    "scene_endpoint_scene_id": "pastis_10425_20190924_heatmap",
     "region_history_count": 1,
     "condition_overlay_media_type": "image/png",
     "real_dashboard_rendered_and_reviewed": true,
-    "interactive_grid_default_cell": "r02c01"
+    "interactive_grid_default_cell": "r02c01",
+    "interactive_grid_visible_by_default": false,
+    "health_only_dashboard_rendered_and_reviewed": true
   },
   "automated_validation": {
     "test_command": "python -m pytest shared/tests payload/tests ground/tests integration/tests -q",

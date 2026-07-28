@@ -111,7 +111,7 @@
               <header class="panel-header">
                 <div>
                   <span class="section-kicker">Geospatial evidence</span>
-                  <h2>Scene and condition overlay</h2>
+                  <h2>Crop health heat map</h2>
                 </div>
                 <div class="viewer-actions" aria-label="Map controls">
                   <button id="zoom-out" class="icon-button" type="button" title="Zoom out" aria-label="Zoom out">−</button>
@@ -123,17 +123,17 @@
               <div id="scene-viewer" class="scene-viewer" tabindex="0" aria-label="Interactive satellite scene. Drag to pan and use the mouse wheel to zoom.">
                 <div id="viewer-transform" class="viewer-transform">
                   <img id="scene-image" alt="RGB satellite preview" draggable="false">
-                  <img id="condition-overlay" class="condition-overlay" alt="Condition and cloud-class overlay" draggable="false">
-                  <div id="grid-overlay" class="grid-overlay" aria-label="Queryable analysis grid"></div>
+                  <img id="condition-overlay" class="condition-overlay" alt="Crop-condition heat map on clear crop pixels" draggable="false">
+                  <div id="grid-overlay" class="grid-overlay off" aria-label="Queryable analysis grid"></div>
                 </div>
-                <div class="viewer-hint">Drag to pan · scroll to zoom · select a grid cell</div>
+                <div class="viewer-hint">Drag to pan · scroll to zoom · enable the grid for cell selection</div>
                 <output id="cursor-coordinate" class="cursor-coordinate">—</output>
               </div>
 
               <div class="layer-controls">
-                <label class="switch-label"><input id="overlay-toggle" type="checkbox" checked><span></span>Condition + cloud overlay</label>
+                <label class="switch-label"><input id="overlay-toggle" type="checkbox" checked><span></span>Crop health heat map</label>
                 <label class="opacity-control" for="overlay-opacity">Opacity <input id="overlay-opacity" type="range" min="0" max="100" value="78"><output id="opacity-value">78%</output></label>
-                <label class="switch-label"><input id="grid-toggle" type="checkbox" checked><span></span>Analysis grid</label>
+                <label class="switch-label"><input id="grid-toggle" type="checkbox"><span></span>Analysis grid</label>
               </div>
 
               <div id="legend" class="legend" aria-label="Overlay legend"></div>

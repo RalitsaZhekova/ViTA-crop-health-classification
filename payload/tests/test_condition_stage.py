@@ -13,7 +13,7 @@ from prithvi_payload.condition_stage import (
     StreamingMetric,
     run_payload_condition,
 )
-from prithvi_payload.downlink import OVERLAY_CLASSES, build_downlink_bundle
+from prithvi_payload.downlink import build_downlink_bundle
 from rasterio.transform import from_origin
 
 
@@ -272,6 +272,12 @@ def test_streaming_metric_uses_all_values_for_moments_and_is_deterministic() -> 
 
 def _complete_payload_for_downlink(root: Path) -> Path:
     result_path = _build_payload_fixture(root, crop_size=32 * 32)
+    initial_payload = json.loads(result_path.read_text(encoding="utf-8"))
+    unusable_path = Path(initial_payload["artifacts"]["cloud"]["unusable_mask"])
+    with rasterio.open(unusable_path, "r+") as unusable_dataset:
+        unusable = unusable_dataset.read(1)
+        unusable[0, :4] = 1
+        unusable_dataset.write(unusable, 1)
     condition_root = root / "condition"
     report = run_payload_condition(result_path, output_root=condition_root, tile_size=8)
 
@@ -313,7 +319,7 @@ def _complete_payload_for_downlink(root: Path) -> Path:
             "thick_cloud_percentage": 0.1,
             "thin_cloud_percentage": 0.1,
             "cloud_shadow_percentage": 0.1,
-            "unusable_percentage": 0.0,
+            "unusable_percentage": 100.0 * 4 / (32 * 32),
         },
         "crop": {"crop_percentage_usable": 100.0},
         "condition": {
@@ -371,11 +377,13 @@ def test_downlink_bundle_is_three_small_web_ready_files(tmp_path: Path) -> None:
         assert condition.mode == "RGBA"
         assert condition.size == (32, 32)
         pixels = np.asarray(condition)
-    assert tuple(pixels[0, 0]) == OVERLAY_CLASSES["thick_cloud"]["rgba"]
-    assert tuple(pixels[0, 1]) == OVERLAY_CLASSES["thin_cloud"]["rgba"]
-    assert tuple(pixels[0, 2]) == OVERLAY_CLASSES["cloud_shadow"]["rgba"]
-    assert tuple(pixels[0, 3]) == OVERLAY_CLASSES["invalid"]["rgba"]
+    assert np.all(pixels[0, :4] == 0)
     assert pixels[10, 10, 3] == 205
+    assert np.count_nonzero(pixels[..., 3]) == manifest["condition"]["analysis_pixels"]
+    assert np.unique(pixels[..., 3]).tolist() == [0, 205]
+    assert manifest["algorithm_version"] == "compact-downlink-v2"
+    assert "classes" not in manifest["legend"]
+    assert "transparent" in manifest["legend"]["overlay_semantics"]
 
 
 def test_downlink_bundle_protects_existing_metadata(tmp_path: Path) -> None:

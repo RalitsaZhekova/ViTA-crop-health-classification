@@ -13,7 +13,7 @@ processing must not silently recalculate a different headline score.
 
 - validate the downlink manifest and asset checksums;
 - index scenes by region, footprint and acquisition time;
-- serve the RGB preview and condition/quality overlay;
+- serve the RGB preview and crop-condition heat map;
 - expose exact measurements, explanations and evidence quality from JSON;
 - compare compatible observations through time;
 - produce alerts and client-facing history without claiming disease diagnosis.
@@ -52,8 +52,8 @@ list.
 The same server exposes an offline-first dashboard at `/`. It provides:
 
 - searchable scene and region navigation;
-- a zoomable/pannable RGB scene with adjustable condition/cloud overlay;
-- separate thick-cloud, thin-cloud, shadow, invalid and safety-buffer legends;
+- a zoomable/pannable RGB scene with an adjustable crop-health heat map;
+- transparent masking outside valid clear crop pixels;
 - queryable grid cells backed by exact JSON measurements;
 - transparent score components, index summaries and evidence coverage;
 - cloud-quality composition and chronological condition history;

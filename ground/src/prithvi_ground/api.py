@@ -178,7 +178,7 @@ def create_app(
         scene_json: Annotated[UploadFile, File(description="Verified scene.json manifest")],
         scene_webp: Annotated[UploadFile, File(description="RGB scene.webp preview")],
         condition_png: Annotated[
-            UploadFile, File(description="RGBA condition.png visualization overlay")
+            UploadFile, File(description="RGBA condition.png crop-health heat map")
         ],
         x_api_key: Annotated[str | None, Header()] = None,
     ) -> dict[str, Any]:
