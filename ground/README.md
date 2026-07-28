@@ -47,4 +47,18 @@ chronological history. Its OpenAPI documentation is available at `/docs` while
 the service is running. See `api/README.md` for commands and the complete route
 list.
 
-The interactive client is the next layer built on this API.
+## Interactive client
+
+The same server exposes an offline-first dashboard at `/`. It provides:
+
+- searchable scene and region navigation;
+- a zoomable/pannable RGB scene with adjustable condition/cloud overlay;
+- separate thick-cloud, thin-cloud, shadow, invalid and safety-buffer legends;
+- queryable grid cells backed by exact JSON measurements;
+- transparent score components, index summaries and evidence coverage;
+- cloud-quality composition and chronological condition history;
+- responsive layouts without an external map or JavaScript CDN.
+
+The dashboard deliberately describes crop condition as spectral screening. It
+does not convert display colors back into measurements or claim to diagnose a
+disease.

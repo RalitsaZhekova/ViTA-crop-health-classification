@@ -12,6 +12,7 @@ from typing import Annotated, Any
 import uvicorn
 from fastapi import FastAPI, File, Header, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from .catalog import BundleValidationError, SceneCatalog, SceneConflictError
 
@@ -130,6 +131,8 @@ def create_app(
     )
     app.state.catalog = catalog
     app.state.store_root = resolved_store
+    web_root = Path(__file__).with_name("web")
+    app.mount("/static", StaticFiles(directory=web_root), name="static")
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
@@ -137,6 +140,11 @@ def create_app(
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+            "script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'",
+        )
         return response
 
     @app.exception_handler(BundleValidationError)
@@ -155,6 +163,14 @@ def create_app(
             "api_version": API_VERSION,
             "catalog_schema_version": 1,
         }
+
+    @app.get("/", include_in_schema=False)
+    def web_application() -> FileResponse:
+        return FileResponse(
+            web_root / "index.html",
+            media_type="text/html",
+            headers={"Cache-Control": "no-cache"},
+        )
 
     @app.post("/api/v1/scenes", tags=["scenes"], status_code=201)
     def ingest_scene(

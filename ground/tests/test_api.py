@@ -35,6 +35,30 @@ def test_health_and_empty_collections(tmp_path: Path) -> None:
         assert client.get("/api/v1/regions").json()["items"] == []
 
 
+def test_professional_web_client_is_served_without_external_dependencies(tmp_path: Path) -> None:
+    with TestClient(create_app(tmp_path / "store")) as client:
+        page = client.get("/")
+        assert page.status_code == 200
+        assert page.headers["content-type"].startswith("text/html")
+        assert "default-src 'self'" in page.headers["content-security-policy"]
+        assert 'id="scene-viewer"' in page.text
+        assert 'id="condition-score"' in page.text
+        assert 'id="cloud-bar"' in page.text
+        assert "http://" not in page.text
+        assert "https://" not in page.text
+
+        stylesheet = client.get("/static/styles.css")
+        script = client.get("/static/app.js")
+        assert stylesheet.status_code == 200
+        assert stylesheet.headers["content-type"].startswith("text/css")
+        assert "@media (max-width: 620px)" in stylesheet.text
+        assert script.status_code == 200
+        assert "application/javascript" in script.headers["content-type"]
+        assert "/cells/" in script.text
+        assert "pointermove" in script.text
+        assert "renderHistory" in script.text
+
+
 def test_upload_and_complete_scene_api(tmp_path: Path) -> None:
     bundle = _build_bundle(tmp_path / "bundle")
     with TestClient(create_app(tmp_path / "store")) as client:

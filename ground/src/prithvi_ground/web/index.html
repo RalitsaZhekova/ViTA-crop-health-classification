@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="ViTA satellite crop-condition intelligence dashboard">
+    <title>ViTA Crop Intelligence</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to crop intelligence</a>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Observation browser">
+        <header class="brand">
+          <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span><strong>ViTA</strong><small>Crop Intelligence</small></span>
+        </header>
+
+        <div class="mission-status">
+          <span id="service-indicator" class="status-dot pending" aria-hidden="true"></span>
+          <span><strong id="service-label">Connecting</strong><small>Ground service</small></span>
+        </div>
+
+        <div class="scene-tools">
+          <label for="scene-search">Find an observation</label>
+          <div class="search-row">
+            <input id="scene-search" type="search" placeholder="Region, scene or sensor" autocomplete="off">
+            <button id="refresh-scenes" class="icon-button" type="button" title="Refresh observations" aria-label="Refresh observations">↻</button>
+          </div>
+        </div>
+
+        <nav id="scene-list" class="scene-list" aria-label="Available satellite observations"></nav>
+
+        <footer class="sidebar-footer">
+          <span>Payload-computed evidence</span>
+          <a href="/docs" target="_blank" rel="noreferrer">Open API</a>
+        </footer>
+      </aside>
+
+      <main id="main-content" class="workspace">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Satellite observation</p>
+            <h1 id="scene-title">Crop-condition overview</h1>
+            <p id="scene-subtitle" class="scene-subtitle">Select a verified scene to begin.</p>
+          </div>
+          <div class="topbar-actions">
+            <span id="sensor-badge" class="badge">No scene</span>
+            <a id="manifest-link" class="secondary-button disabled" href="#" target="_blank" rel="noreferrer">JSON facts</a>
+          </div>
+        </header>
+
+        <section id="empty-state" class="empty-state" aria-live="polite">
+          <div class="empty-orbit" aria-hidden="true"><span></span></div>
+          <h2>Waiting for a verified observation</h2>
+          <p>Ingest a compact payload bundle through the API, then refresh this view.</p>
+          <a href="/docs">Open ingestion documentation</a>
+        </section>
+
+        <div id="dashboard" class="dashboard hidden" aria-live="polite">
+          <section class="summary-grid" aria-label="Observation summary">
+            <article class="score-card panel">
+              <div id="score-ring" class="score-ring" role="img" aria-label="Condition score unavailable">
+                <div><strong id="condition-score">—</strong><span>/ 100</span></div>
+              </div>
+              <div class="score-copy">
+                <span id="condition-label" class="condition-pill">Insufficient data</span>
+                <h2>Crop condition score</h2>
+                <p id="score-explanation">A relative spectral screening score, not a diagnosis.</p>
+                <button id="score-details-toggle" class="text-button" type="button" aria-expanded="false" aria-controls="score-methodology">How this score is built</button>
+              </div>
+            </article>
+
+            <article class="kpi-card panel">
+              <span class="kpi-label">Evidence quality</span>
+              <strong id="evidence-score">—</strong>
+              <span id="evidence-label" class="kpi-caption">Coverage indicator</span>
+              <div class="progress"><i id="evidence-progress"></i></div>
+            </article>
+            <article class="kpi-card panel">
+              <span class="kpi-label">Analyzed crop area</span>
+              <strong id="analysis-coverage">—</strong>
+              <span id="analysis-pixels" class="kpi-caption">Clear crop pixels</span>
+              <div class="progress"><i id="analysis-progress"></i></div>
+            </article>
+            <article class="kpi-card panel">
+              <span class="kpi-label">Usable scene area</span>
+              <strong id="usable-coverage">—</strong>
+              <span id="unusable-caption" class="kpi-caption">After cloud and invalid masking</span>
+              <div class="progress"><i id="usable-progress"></i></div>
+            </article>
+          </section>
+
+          <section id="score-methodology" class="methodology panel hidden" aria-label="Condition score methodology">
+            <div>
+              <span class="section-kicker">Transparent methodology</span>
+              <h2>What the condition score shows</h2>
+            </div>
+            <p>The 0–100 score summarizes spectral crop vigor only on clear, crop-relevant pixels. Higher values indicate stronger agreement with the configured prototype vigor ranges. It does not confirm health, disease, yield, water stress, pests or nutrient status.</p>
+            <div class="method-grid">
+              <div><strong id="absolute-vigor">—</strong><span>Absolute vigor component</span></div>
+              <div><strong id="spatial-penalty">—</strong><span>Spatial anomaly penalty</span></div>
+              <div><strong id="low-vigor-share">—</strong><span>Low-vigor analyzed pixels</span></div>
+              <div><strong id="relative-anomaly-share">—</strong><span>Relative anomaly pixels</span></div>
+            </div>
+            <p id="weight-description" class="method-note"></p>
+          </section>
+
+          <section class="analysis-layout">
+            <article class="viewer-panel panel">
+              <header class="panel-header">
+                <div>
+                  <span class="section-kicker">Geospatial evidence</span>
+                  <h2>Scene and condition overlay</h2>
+                </div>
+                <div class="viewer-actions" aria-label="Map controls">
+                  <button id="zoom-out" class="icon-button" type="button" title="Zoom out" aria-label="Zoom out">−</button>
+                  <button id="reset-view" class="icon-button wide" type="button" title="Fit scene">Fit</button>
+                  <button id="zoom-in" class="icon-button" type="button" title="Zoom in" aria-label="Zoom in">+</button>
+                </div>
+              </header>
+
+              <div id="scene-viewer" class="scene-viewer" tabindex="0" aria-label="Interactive satellite scene. Drag to pan and use the mouse wheel to zoom.">
+                <div id="viewer-transform" class="viewer-transform">
+                  <img id="scene-image" alt="RGB satellite preview" draggable="false">
+                  <img id="condition-overlay" class="condition-overlay" alt="Condition and cloud-class overlay" draggable="false">
+                  <div id="grid-overlay" class="grid-overlay" aria-label="Queryable analysis grid"></div>
+                </div>
+                <div class="viewer-hint">Drag to pan · scroll to zoom · select a grid cell</div>
+                <output id="cursor-coordinate" class="cursor-coordinate">—</output>
+              </div>
+
+              <div class="layer-controls">
+                <label class="switch-label"><input id="overlay-toggle" type="checkbox" checked><span></span>Condition + cloud overlay</label>
+                <label class="opacity-control" for="overlay-opacity">Opacity <input id="overlay-opacity" type="range" min="0" max="100" value="78"><output id="opacity-value">78%</output></label>
+                <label class="switch-label"><input id="grid-toggle" type="checkbox" checked><span></span>Analysis grid</label>
+              </div>
+
+              <div id="legend" class="legend" aria-label="Overlay legend"></div>
+            </article>
+
+            <aside class="inspector panel" aria-label="Selected grid cell details">
+              <header class="panel-header">
+                <div><span class="section-kicker">Local evidence</span><h2 id="cell-title">Select a cell</h2></div>
+                <span id="cell-score-badge" class="mini-score">—</span>
+              </header>
+              <p id="cell-bounds" class="cell-bounds">Click an outlined area on the scene for localized measurements.</p>
+              <div class="cell-metrics">
+                <div><span>NDVI</span><strong id="cell-ndvi">—</strong></div>
+                <div><span>GNDVI</span><strong id="cell-gndvi">—</strong></div>
+                <div><span>EVI</span><strong id="cell-evi">—</strong></div>
+                <div><span>SAVI</span><strong id="cell-savi">—</strong></div>
+              </div>
+              <dl class="cell-quality">
+                <div><dt>Analyzed</dt><dd id="cell-analysis">—</dd></div>
+                <div><dt>Alert share</dt><dd id="cell-alert">—</dd></div>
+                <div><dt>Unusable</dt><dd id="cell-unusable">—</dd></div>
+                <div><dt>Crop candidate</dt><dd id="cell-crop">—</dd></div>
+              </dl>
+              <p class="inspector-note">Cell measurements come from scene JSON, never from sampling display colors.</p>
+            </aside>
+          </section>
+
+          <section class="details-grid">
+            <article class="panel metric-panel">
+              <header class="panel-header"><div><span class="section-kicker">Spectral indicators</span><h2>Scene crop metrics</h2></div><span class="unit-note">Median reflectance index</span></header>
+              <div id="metric-grid" class="metric-grid"></div>
+            </article>
+
+            <article class="panel quality-panel">
+              <header class="panel-header"><div><span class="section-kicker">Mask quality</span><h2>Cloud and usable area</h2></div></header>
+              <div id="cloud-bar" class="cloud-bar" aria-label="Cloud class distribution"></div>
+              <div id="quality-list" class="quality-list"></div>
+            </article>
+          </section>
+
+          <section class="details-grid bottom-grid">
+            <article class="panel history-panel">
+              <header class="panel-header"><div><span class="section-kicker">Temporal foundation</span><h2>Condition history</h2></div><span id="history-count" class="unit-note">0 observations</span></header>
+              <div id="history-chart" class="history-chart"></div>
+              <p class="panel-footnote">Trend warnings become meaningful only after comparable, co-registered observations exist across time.</p>
+            </article>
+
+            <article class="panel interpretation-panel">
+              <header class="panel-header"><div><span class="section-kicker">Scientific interpretation</span><h2>Why this scene was classified</h2></div></header>
+              <ul id="explanation-list" class="explanation-list"></ul>
+              <div class="claim-box"><strong>Decision boundary</strong><span id="scientific-claim">Relative crop-condition screening; not an agronomic diagnosis.</span></div>
+            </article>
+          </section>
+        </div>
+
+        <div id="toast" class="toast" role="status" aria-live="polite"></div>
+      </main>
+    </div>
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>
