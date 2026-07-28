@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -232,3 +233,15 @@ def test_catalog_rejects_malformed_interaction_grid(tmp_path: Path) -> None:
 
     with pytest.raises(BundleValidationError, match="dimensions"):
         validate_bundle(bundle)
+
+
+def test_concurrent_identical_ingest_is_idempotent(tmp_path: Path) -> None:
+    bundle = _build_bundle(tmp_path / "bundle")
+    catalog = SceneCatalog(tmp_path / "store")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _: catalog.ingest(bundle), range(2)))
+
+    assert sorted(created for _record, created in results) == [False, True]
+    assert results[0][0] == results[1][0]
+    assert len(catalog.list_scenes()) == 1

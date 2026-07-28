@@ -39,4 +39,12 @@ The catalog supports scene, region, latest-observation and chronological-history
 queries. Exact scientific values remain in the verified JSON record; image
 assets are never treated as measurement sources.
 
-The HTTP API and interactive client build on this catalog in the next layers.
+## HTTP API
+
+The implemented FastAPI service supports verified uploads, scene and region
+queries, exact manifests and grid cells, immutable preview/overlay delivery and
+chronological history. Its OpenAPI documentation is available at `/docs` while
+the service is running. See `api/README.md` for commands and the complete route
+list.
+
+The interactive client is the next layer built on this API.

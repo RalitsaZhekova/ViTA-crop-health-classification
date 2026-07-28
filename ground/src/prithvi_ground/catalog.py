@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import sqlite3
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -363,6 +364,7 @@ class SceneCatalog:
         """Atomically ingest a valid bundle; identical repeats are idempotent."""
         bundle = validate_bundle(bundle_root)
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute(
                 "SELECT * FROM scenes WHERE scene_id = ?", (bundle.scene_id,)
             ).fetchone()
@@ -372,54 +374,54 @@ class SceneCatalog:
                         f"Scene {bundle.scene_id} already exists with different content"
                     )
                 return self._summary(existing), False
-
-        destination = self.assets_root / bundle.scene_id
-        staging = self.assets_root / f".{bundle.scene_id}.{bundle.manifest_sha256[:12]}.staging"
-        if staging.exists():
-            shutil.rmtree(staging)
-        staging.mkdir()
-        try:
-            for filename in sorted(EXPECTED_FILES):
-                shutil.copy2(bundle.root / filename, staging / filename)
-            validate_bundle(staging)
-            if destination.exists():
-                raise SceneConflictError(f"Scene directory already exists: {bundle.scene_id}")
-            os.replace(staging, destination)
-            now = datetime.now(timezone.utc).isoformat()
-            relative = destination.relative_to(self.root).as_posix()
+            destination = self.assets_root / bundle.scene_id
+            staging = self.assets_root / (
+                f".{bundle.scene_id}.{bundle.manifest_sha256[:12]}.{uuid.uuid4().hex}.staging"
+            )
+            installed = False
             try:
-                with self._connect() as connection:
-                    connection.execute(
-                        """
-                        INSERT INTO scenes(
-                            scene_id, region_id, sensor, acquired_at, status,
-                            condition_label, condition_score, evidence_quality_score,
-                            analysis_percentage, west, south, east, north,
-                            manifest_sha256, relative_bundle_path, ingested_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            bundle.scene_id,
-                            bundle.region_id,
-                            bundle.sensor,
-                            bundle.acquired_at,
-                            bundle.status,
-                            bundle.label,
-                            bundle.score,
-                            bundle.evidence_quality_score,
-                            bundle.analysis_percentage,
-                            *bundle.bounds_wgs84,
-                            bundle.manifest_sha256,
-                            relative,
-                            now,
-                        ),
-                    )
+                staging.mkdir()
+                for filename in sorted(EXPECTED_FILES):
+                    shutil.copy2(bundle.root / filename, staging / filename)
+                validate_bundle(staging)
+                if destination.exists():
+                    raise SceneConflictError(f"Scene directory already exists: {bundle.scene_id}")
+                os.replace(staging, destination)
+                installed = True
+                now = datetime.now(timezone.utc).isoformat()
+                relative = destination.relative_to(self.root).as_posix()
+                connection.execute(
+                    """
+                    INSERT INTO scenes(
+                        scene_id, region_id, sensor, acquired_at, status,
+                        condition_label, condition_score, evidence_quality_score,
+                        analysis_percentage, west, south, east, north,
+                        manifest_sha256, relative_bundle_path, ingested_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        bundle.scene_id,
+                        bundle.region_id,
+                        bundle.sensor,
+                        bundle.acquired_at,
+                        bundle.status,
+                        bundle.label,
+                        bundle.score,
+                        bundle.evidence_quality_score,
+                        bundle.analysis_percentage,
+                        *bundle.bounds_wgs84,
+                        bundle.manifest_sha256,
+                        relative,
+                        now,
+                    ),
+                )
             except Exception:
-                shutil.rmtree(destination)
+                if installed and destination.exists():
+                    shutil.rmtree(destination)
                 raise
-        finally:
-            if staging.exists():
-                shutil.rmtree(staging)
+            finally:
+                if staging.exists():
+                    shutil.rmtree(staging)
         record = self.get_scene(bundle.scene_id)
         if record is None:
             raise RuntimeError("Ingested scene could not be read back")
