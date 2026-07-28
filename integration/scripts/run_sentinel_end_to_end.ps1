@@ -10,7 +10,7 @@ param(
     [string]$Output,
     [Nullable[double]]$ReflectanceScale,
     [double]$MaxCropCloudPercentage = 60.0,
-    [int]$GroundTileSize = 512,
+    [int]$ConditionTileSize = 512,
     [switch]$Overwrite
 )
 
@@ -23,9 +23,8 @@ if (-not $Output) {
 }
 $integrationSource = Join-Path $workspace "integration\src"
 $payloadSource = Join-Path $workspace "payload\src"
-$groundSource = Join-Path $workspace "ground\src"
 $sharedSource = Join-Path $workspace "shared\src"
-$env:PYTHONPATH = "$integrationSource;$payloadSource;$groundSource;$sharedSource"
+$env:PYTHONPATH = "$integrationSource;$payloadSource;$sharedSource"
 $env:NO_ALBUMENTATIONS_UPDATE = "1"
 $env:MPLCONFIGDIR = Join-Path $workspace "outputs\cache\matplotlib"
 
@@ -37,7 +36,7 @@ $arguments = @(
     "--max-crop-cloud-percentage", $MaxCropCloudPercentage.ToString(
         [System.Globalization.CultureInfo]::InvariantCulture
     ),
-    "--ground-tile-size", $GroundTileSize.ToString()
+    "--condition-tile-size", $ConditionTileSize.ToString()
 )
 if ($SceneId) {
     $arguments += @("--scene-id", $SceneId)

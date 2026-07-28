@@ -9,8 +9,11 @@ param(
     [string]$AcquiredAt,
     [string]$SceneId,
     [string]$Output,
-    [ValidateSet("intake", "cloud", "crop")]
+    [ValidateSet("intake", "cloud", "crop", "condition")]
     [string]$StopAfter = "cloud",
+    [string]$RegionId,
+    [int]$ConditionTileSize = 512,
+    [switch]$Overwrite,
     [Nullable[double]]$ReflectanceScale,
     [double]$MaxCropCloudPercentage = 60.0
 )
@@ -36,7 +39,8 @@ $pipelineArguments = @(
     "--stop-after", $StopAfter,
     "--max-crop-cloud-percentage", $MaxCropCloudPercentage.ToString(
         [System.Globalization.CultureInfo]::InvariantCulture
-    )
+    ),
+    "--condition-tile-size", $ConditionTileSize.ToString()
 )
 if ($AcquiredAt) {
     $pipelineArguments += @("--acquired-at", $AcquiredAt)
@@ -44,8 +48,14 @@ if ($AcquiredAt) {
 if ($SceneId) {
     $pipelineArguments += @("--scene-id", $SceneId)
 }
+if ($RegionId) {
+    $pipelineArguments += @("--region-id", $RegionId)
+}
 if ($null -ne $ReflectanceScale) {
     $pipelineArguments += @("--reflectance-scale", $ReflectanceScale.ToString())
+}
+if ($Overwrite) {
+    $pipelineArguments += "--overwrite"
 }
 
 Set-Location -LiteralPath $workspace

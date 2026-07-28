@@ -1,4 +1,4 @@
-"""One-command Sentinel payload-to-ground demonstration pipeline."""
+"""One-command Sentinel payload-to-downlink demonstration pipeline."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ from typing import Any
 
 from cloud_detection.backend import CloudBackend
 from cloud_detection.cli import DEFAULT_CONFIG
-from prithvi_ground.scene import run_ground_scene
 from prithvi_payload.pipeline import run_scene
 
 INTEGRATION_SCHEMA_VERSION = "1.0"
@@ -39,14 +38,14 @@ def run_sentinel_end_to_end(
     region_id: str | None = None,
     reflectance_scale: float | None = None,
     max_crop_cloud_percentage: float = 60.0,
-    ground_tile_size: int = 512,
+    condition_tile_size: int = 512,
     cloud_config_path: str | Path = DEFAULT_CONFIG,
     cloud_backend: CloudBackend | None = None,
     cloud_config: dict[str, Any] | None = None,
     crop_model: Any | None = None,
     overwrite: bool = False,
 ) -> dict[str, Any]:
-    """Run Sentinel intake, cloud, crop and ground stages into one run directory."""
+    """Run Sentinel intake, cloud, crop and payload condition stages."""
     started = time.perf_counter()
     source = Path(input_path).resolve()
     if not source.is_file():
@@ -58,7 +57,6 @@ def run_sentinel_end_to_end(
         raise FileExistsError(f"End-to-end result already exists: {summary_path}")
 
     payload_root = output / "payload"
-    ground_root = output / "ground"
     payload_result = run_scene(
         source,
         sensor="sentinel-2",
@@ -66,15 +64,18 @@ def run_sentinel_end_to_end(
         acquired_at=acquired_at,
         scene_id=scene_id,
         reflectance_scale=reflectance_scale,
-        stop_after="crop",
+        stop_after="condition",
         max_crop_cloud_percentage=max_crop_cloud_percentage,
+        region_id=region_id,
+        condition_tile_size=condition_tile_size,
+        overwrite=overwrite,
         cloud_config_path=cloud_config_path,
         cloud_backend=cloud_backend,
         cloud_config=cloud_config,
         crop_model=crop_model,
     )
     payload_result_path = payload_root / "result.json"
-    if payload_result.get("status") != "CROP_COMPLETE":
+    if payload_result.get("status") != "CONDITION_COMPLETE":
         summary = {
             "schema_version": INTEGRATION_SCHEMA_VERSION,
             "algorithm_version": INTEGRATION_ALGORITHM_VERSION,
@@ -84,40 +85,36 @@ def run_sentinel_end_to_end(
             "completed_stages": ["payload"],
             "payload_status": payload_result.get("status"),
             "payload_result": _relative(payload_result_path, output),
-            "ground_report": None,
+            "condition_report": None,
             "summary": {"payload": payload_result.get("summary", {})},
             "runtime_seconds": time.perf_counter() - started,
         }
         _write_json_atomic(summary_path, summary)
         return summary
 
-    ground_report = run_ground_scene(
-        payload_result_path,
-        output_root=ground_root,
-        region_id=region_id,
-        tile_size=ground_tile_size,
-        overwrite=overwrite,
-    )
-    ground_report_path = ground_root / "crop_condition_report.json"
+    condition_report = payload_result["stage_metadata"]["condition"]
+    condition_report_path = Path(payload_result["artifacts"]["condition"]["report"])
     summary = {
         "schema_version": INTEGRATION_SCHEMA_VERSION,
         "algorithm_version": INTEGRATION_ALGORITHM_VERSION,
         "scene_id": payload_result["scene_id"],
         "sensor": "sentinel-2",
         "status": "COMPLETE",
-        "completed_stages": ["payload", "ground"],
+        "completed_stages": ["payload"],
         "payload_status": payload_result["status"],
-        "ground_status": ground_report["status"],
+        "condition_status": condition_report["status"],
         "payload_result": _relative(payload_result_path, output),
-        "ground_report": _relative(ground_report_path, output),
+        "condition_report": _relative(condition_report_path, output),
         "summary": {
             "cloud": payload_result["summary"]["cloud"],
             "crop": payload_result["summary"]["crop"],
             "condition": {
-                "label": ground_report["condition"]["label"],
-                "score": ground_report["condition"]["condition_score"],
-                "evidence_quality_label": ground_report["condition"]["evidence_quality_label"],
-                "analysis_percentage": ground_report["quality"]["analysis_percentage"],
+                "label": condition_report["condition"]["label"],
+                "score": condition_report["condition"]["condition_score"],
+                "evidence_quality_label": condition_report["condition"][
+                    "evidence_quality_label"
+                ],
+                "analysis_percentage": condition_report["quality"]["analysis_percentage"],
             },
         },
         "runtime_seconds": time.perf_counter() - started,
@@ -137,7 +134,7 @@ def main() -> None:
     parser.add_argument("--region-id")
     parser.add_argument("--reflectance-scale", type=float)
     parser.add_argument("--max-crop-cloud-percentage", type=float, default=60.0)
-    parser.add_argument("--ground-tile-size", type=int, default=512)
+    parser.add_argument("--condition-tile-size", type=int, default=512)
     parser.add_argument("--cloud-config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
@@ -149,7 +146,7 @@ def main() -> None:
         region_id=args.region_id,
         reflectance_scale=args.reflectance_scale,
         max_crop_cloud_percentage=args.max_crop_cloud_percentage,
-        ground_tile_size=args.ground_tile_size,
+        condition_tile_size=args.condition_tile_size,
         cloud_config_path=args.cloud_config,
         overwrite=args.overwrite,
     )

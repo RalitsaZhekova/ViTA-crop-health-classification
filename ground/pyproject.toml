@@ -4,18 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "prithvi-crop-ground"
-version = "0.1.0"
-description = "Ground-side crop-condition measurements and records"
+version = "0.2.0"
+description = "Ground-side storage, history, API and client application boundary"
 requires-python = ">=3.10,<3.14"
 dependencies = [
   "prithvi-crop-shared==0.1.0",
-  "numpy>=1.26,<3",
-  "rasterio>=1.3.10,<2",
-  "matplotlib>=3.7,<4",
 ]
-
-[project.scripts]
-ground-run = "prithvi_ground.scene:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

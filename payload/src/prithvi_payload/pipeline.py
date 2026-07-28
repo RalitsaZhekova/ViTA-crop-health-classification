@@ -43,14 +43,19 @@ def run_scene(
     reflectance_scale: float | None = None,
     stop_after: str = "cloud",
     max_crop_cloud_percentage: float = DEFAULT_MAX_CLOUD_PERCENTAGE,
+    region_id: str | None = None,
+    condition_tile_size: int = 512,
+    overwrite: bool = False,
     cloud_config_path: str | Path = DEFAULT_CONFIG,
     cloud_backend: CloudBackend | None = None,
     cloud_config: dict[str, Any] | None = None,
     crop_model: Any | None = None,
 ) -> dict[str, Any]:
     """Run only the explicitly selected stages for one preprocessed scene."""
-    if stop_after not in {"intake", "cloud", "crop"}:
-        raise ValueError("stop_after must be intake, cloud or crop")
+    if stop_after not in {"intake", "cloud", "crop", "condition"}:
+        raise ValueError("stop_after must be intake, cloud, crop or condition")
+    if condition_tile_size <= 0:
+        raise ValueError("condition_tile_size must be positive")
     output_root = Path(output_root)
     intake = inspect_scene(
         input_path,
@@ -183,6 +188,39 @@ def run_scene(
         "device": crop_metadata["runtime"]["device"],
     }
     result["stage_metadata"]["crop"] = crop_metadata
+    if stop_after == "crop":
+        return _finish(output_root, result)
+
+    # Write the completed crop result before the condition stage validates and
+    # consumes the canonical payload contract.
+    _finish(output_root, result)
+    from prithvi_payload.condition_stage import run_payload_condition
+
+    condition_root = output_root / "condition_analysis"
+    condition_report = run_payload_condition(
+        output_root / "result.json",
+        output_root=condition_root,
+        region_id=region_id,
+        tile_size=condition_tile_size,
+        overwrite=overwrite,
+    )
+    condition_report_path = condition_root / "crop_condition_report.json"
+    result["completed_stages"].append("condition")
+    result["status"] = "CONDITION_COMPLETE"
+    result["artifacts"]["condition"] = {
+        "report": str(condition_report_path.resolve()),
+    }
+    result["summary"]["condition"] = {
+        "status": condition_report["status"],
+        "label": condition_report["condition"]["label"],
+        "score": condition_report["condition"]["condition_score"],
+        "evidence_quality_label": condition_report["condition"][
+            "evidence_quality_label"
+        ],
+        "analysis_percentage": condition_report["quality"]["analysis_percentage"],
+        "runtime_seconds": condition_report["runtime"]["seconds"],
+    }
+    result["stage_metadata"]["condition"] = condition_report
     return _finish(output_root, result)
 
 
@@ -198,7 +236,7 @@ def main() -> None:
     parser.add_argument("--reflectance-scale", type=float)
     parser.add_argument(
         "--stop-after",
-        choices=("intake", "cloud", "crop"),
+        choices=("intake", "cloud", "crop", "condition"),
         default="cloud",
     )
     parser.add_argument(
@@ -206,6 +244,9 @@ def main() -> None:
         type=float,
         default=DEFAULT_MAX_CLOUD_PERCENTAGE,
     )
+    parser.add_argument("--region-id")
+    parser.add_argument("--condition-tile-size", type=int, default=512)
+    parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--cloud-config", type=Path, default=DEFAULT_CONFIG)
     args = parser.parse_args()
 
@@ -218,6 +259,9 @@ def main() -> None:
         reflectance_scale=args.reflectance_scale,
         stop_after=args.stop_after,
         max_crop_cloud_percentage=args.max_crop_cloud_percentage,
+        region_id=args.region_id,
+        condition_tile_size=args.condition_tile_size,
+        overwrite=args.overwrite,
         cloud_config_path=args.cloud_config,
     )
     console_result = {
@@ -239,6 +283,7 @@ def main() -> None:
         "INTAKE_READY",
         "CLOUD_COMPLETE",
         "CROP_COMPLETE",
+        "CONDITION_COMPLETE",
         "CROP_SKIPPED_CLOUD_GATE",
     }
     raise SystemExit(0 if result["status"] in successful_statuses else 2)

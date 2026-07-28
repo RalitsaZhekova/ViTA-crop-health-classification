@@ -72,7 +72,7 @@ def _write_sentinel_scene(path: Path) -> None:
             destination.set_band_description(index, description)
 
 
-def test_sentinel_end_to_end_completes_payload_and_ground(tmp_path: Path) -> None:
+def test_sentinel_end_to_end_completes_payload_condition_processing(tmp_path: Path) -> None:
     source = tmp_path / "sentinel.tif"
     _write_sentinel_scene(source)
     output = tmp_path / "run"
@@ -85,25 +85,25 @@ def test_sentinel_end_to_end_completes_payload_and_ground(tmp_path: Path) -> Non
         cloud_backend=TestBackend(),
         cloud_config=load_config(DEFAULT_CONFIG),
         crop_model=FakeCropModel(),
-        ground_tile_size=16,
+        condition_tile_size=16,
     )
 
     assert result["status"] == "COMPLETE"
-    assert result["completed_stages"] == ["payload", "ground"]
-    assert result["payload_status"] == "CROP_COMPLETE"
-    assert result["ground_status"] == "MEASURED"
+    assert result["completed_stages"] == ["payload"]
+    assert result["payload_status"] == "CONDITION_COMPLETE"
+    assert result["condition_status"] == "MEASURED"
     assert result["summary"]["condition"]["label"] == "Watch"
     assert result["summary"]["crop"]["crop_percentage_usable"] == 100.0
     assert not Path(result["payload_result"]).is_absolute()
-    assert not Path(result["ground_report"]).is_absolute()
+    assert not Path(result["condition_report"]).is_absolute()
     assert (output / result["payload_result"]).is_file()
-    assert (output / result["ground_report"]).is_file()
+    assert (output / result["condition_report"]).is_file()
     saved = json.loads((output / "end_to_end_result.json").read_text())
     assert saved["summary"] == result["summary"]
 
     payload = json.loads((output / result["payload_result"]).read_text())
-    ground_report_path = output / result["ground_report"]
-    ground = json.loads(ground_report_path.read_text())
+    condition_report_path = output / result["condition_report"]
+    condition = json.loads(condition_report_path.read_text())
     with rasterio.open(source) as source_dataset:
         expected_grid = (
             source_dataset.width,
@@ -124,10 +124,12 @@ def test_sentinel_end_to_end_completes_payload_and_ground(tmp_path: Path) -> Non
             if Path(path).suffix == ".tif"
         ),
     ]
-    ground_assets = [ground_report_path.parent / path for path in ground["raster_assets"].values()]
+    condition_assets = [
+        condition_report_path.parent / path for path in condition["raster_assets"].values()
+    ]
     assert len(payload_rasters) == 6
-    assert len(ground_assets) == 15
-    for path in (*payload_rasters, *ground_assets):
+    assert len(condition_assets) == 15
+    for path in (*payload_rasters, *condition_assets):
         assert path.is_file()
         if path.suffix == ".tif":
             with rasterio.open(path) as dataset:
@@ -156,8 +158,8 @@ def test_sentinel_end_to_end_records_cloud_gate_stop(tmp_path: Path) -> None:
 
     assert result["status"] == "PAYLOAD_STOPPED"
     assert result["payload_status"] == "CROP_SKIPPED_CLOUD_GATE"
-    assert result["ground_report"] is None
-    assert not (output / "ground").exists()
+    assert result["condition_report"] is None
+    assert not (output / "payload" / "condition_analysis").exists()
 
 
 def test_sentinel_end_to_end_protects_existing_result(tmp_path: Path) -> None:

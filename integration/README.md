@@ -1,7 +1,10 @@
 # End-to-end demonstration
 
-This component orchestrates the payload and ground packages without adding the
-ground health engine to the flight bundle. A complete run has this layout:
+This component orchestrates the full Sentinel development flow. Cloud masking,
+crop inference and condition calculations now all execute inside the payload
+boundary; ground work starts from the compact downlink product.
+
+Current intermediate layout:
 
 ```text
 <run>/
@@ -10,12 +13,8 @@ ground health engine to the flight bundle. A complete run has this layout:
     result.json
     cloud_masks/
     crop_maps/
+    condition_analysis/
     metadata/
-    visualisations/
-  ground/
-    crop_condition_report.json
-    health_layers/
-    condition/
     visualisations/
 ```
 
@@ -30,15 +29,11 @@ Run a Sentinel-2 five-band development scene from PowerShell:
 ```
 
 The input currently needs B02, B03, B04, B08 and B8A descriptions because the
-Sentinel cloud and crop models use different NIR bands. This is a development
-interface, not the final single-NIR Balkan contract.
+Sentinel cloud and crop models use different NIR bands. This remains a Sentinel
+development interface, not the final single-NIR Balkan contract.
 
-`end_to_end_result.json` uses relative references to the payload and ground
-records. Ground raster references are also relative to the ground report. The
-orchestrator stops without starting Phase 2 when the payload cloud gate skips
-crop inference, and it protects an existing result unless `-Overwrite` is set.
-
-The accepted real-model execution evidence is recorded in
-[`verification.json`](verification.json). That scene is a PASTIS
-training/replay example, so it validates execution and interfaces—not held-out
-crop accuracy, broad cloud accuracy or agronomic diagnosis.
+The orchestrator stops before crop and condition processing when the payload
+cloud gate rejects the scene. Existing run summaries are protected unless
+`-Overwrite` is supplied. Accepted real-model execution evidence is recorded in
+[`verification.json`](verification.json); it validates execution and interfaces,
+not held-out crop accuracy, broad cloud accuracy or agronomic diagnosis.

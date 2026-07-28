@@ -24,6 +24,7 @@ cloud-detect = "cloud_detection.cli:main"
 scene-inspect = "prithvi_payload.scene_intake:main"
 scene-plan-cloud = "prithvi_payload.cloud_stage:main"
 scene-run = "prithvi_payload.pipeline:main"
+payload-condition = "prithvi_payload.condition_stage:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

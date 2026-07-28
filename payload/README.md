@@ -7,6 +7,7 @@ training datasets and experiment logs.
 
 - `models/`: one pinned checkpoint, its SHA-256 identity and architecture;
 - `src/prithvi_payload/`: training-free crop and cloud classifier loaders;
+- shared vegetation-index, RGB-diagnostic and transparent condition scoring;
 - `reconstruction/`: the Balkan-1 raw-band registration contract;
 - `src/cloud_detection/`: complete reviewed cloud-detection runtime;
 - `cloud_detection/`: its configs, operational scripts and documentation;
@@ -26,9 +27,10 @@ models remain ground-side under `outputs/` and are not part of the flight bundle
 `scene-run` inspects a preprocessed Sentinel-2 or Balkan-1 GeoTIFF, resolves its
 declared band order, and runs cloud detection through bounded 512-pixel windows.
 When explicitly requested, scenes below the 60% cloud gate continue through
-bounded crop segmentation. Every cloud-shadow, cloud and invalid pixel in the
-operational unusable mask is excluded from the crop outputs. The Balkan-1 route
-is provisional until real imagery is radiometrically and spectrally validated.
+bounded crop segmentation and windowed condition processing. Every cloud-shadow,
+cloud and invalid pixel in the operational unusable mask is excluded from crop
+and condition outputs. The Balkan-1 route is provisional until real imagery is
+radiometrically and spectrally validated.
 
 Run only from an explicit command:
 
@@ -52,6 +54,22 @@ Continue through crop classification:
   -MaxCropCloudPercentage 60 `
   -Output testing\runs\sentinel2_crop_demo
 ```
+
+Continue through payload condition processing:
+
+```powershell
+.\payload\scripts\run_scene.ps1 `
+  -InputPath path\to\preprocessed_scene.tif `
+  -Sensor sentinel-2 `
+  -AcquiredAt 2026-07-26T12:00:00Z `
+  -StopAfter condition `
+  -ReflectanceScale 10000 `
+  -Output testing\runs\sentinel2_condition_demo
+```
+
+The condition stage uses bounded windows and deterministic scene-wide robust
+statistics. It records all index summaries, condition components, evidence
+quality, limitations and geospatial provenance under `condition_analysis/`.
 
 The crop route requires both Sentinel-2 `B08` for CloudSEN12 and `B8A` for the
 selected Prithvi model. It writes crop probability, binary crop and confidence
@@ -77,7 +95,7 @@ files remain available for debugging and audit.
 - augmentation and training code;
 - checkpoints other than the selected model;
 - TensorBoard and training logs;
-- health calculations, databases, API and visualization.
+- databases, API and client application.
 
 ## Current limits
 

@@ -6,7 +6,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 import rasterio
-from prithvi_ground.scene import FLOAT_NODATA, StreamingMetric, run_ground_scene
+from prithvi_payload.condition_stage import (
+    FLOAT_NODATA,
+    StreamingMetric,
+    run_payload_condition,
+)
 from rasterio.transform import from_origin
 
 
@@ -119,11 +123,11 @@ def _build_payload_fixture(
     return result_path
 
 
-def test_run_ground_scene_writes_complete_geospatial_result(tmp_path: Path) -> None:
+def test_run_payload_condition_writes_complete_geospatial_result(tmp_path: Path) -> None:
     result_path = _build_payload_fixture(tmp_path, crop_size=32 * 32)
     output = tmp_path / "ground"
 
-    report = run_ground_scene(
+    report = run_payload_condition(
         result_path,
         output_root=output,
         region_id="test-region",
@@ -168,22 +172,22 @@ def test_run_ground_scene_writes_complete_geospatial_result(tmp_path: Path) -> N
         assert ndvi.nodata == FLOAT_NODATA
 
 
-def test_ground_scene_is_deterministic_across_tile_sizes(tmp_path: Path) -> None:
+def test_payload_condition_is_deterministic_across_tile_sizes(tmp_path: Path) -> None:
     result_path = _build_payload_fixture(tmp_path, crop_size=32 * 32)
 
-    first = run_ground_scene(result_path, output_root=tmp_path / "a", tile_size=7)
-    second = run_ground_scene(result_path, output_root=tmp_path / "b", tile_size=16)
+    first = run_payload_condition(result_path, output_root=tmp_path / "a", tile_size=7)
+    second = run_payload_condition(result_path, output_root=tmp_path / "b", tile_size=16)
 
     assert first["condition"] == second["condition"]
     assert first["metrics"] == second["metrics"]
     assert first["quality"] == second["quality"]
 
 
-def test_ground_scene_returns_insufficient_data_without_alerts(tmp_path: Path) -> None:
+def test_payload_condition_returns_insufficient_data_without_alerts(tmp_path: Path) -> None:
     result_path = _build_payload_fixture(tmp_path, crop_size=16)
     output = tmp_path / "ground"
 
-    report = run_ground_scene(result_path, output_root=output, tile_size=8)
+    report = run_payload_condition(result_path, output_root=output, tile_size=8)
 
     assert report["status"] == "INSUFFICIENT_DATA"
     assert report["condition"]["label"] == "Insufficient data"
@@ -192,7 +196,7 @@ def test_ground_scene_returns_insufficient_data_without_alerts(tmp_path: Path) -
         assert not np.any(alert.read(1) == 1)
 
 
-def test_ground_scene_rejects_misaligned_payload_mask(tmp_path: Path) -> None:
+def test_payload_condition_rejects_misaligned_payload_mask(tmp_path: Path) -> None:
     result_path = _build_payload_fixture(
         tmp_path,
         crop_size=32 * 32,
@@ -200,48 +204,48 @@ def test_ground_scene_rejects_misaligned_payload_mask(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="Crop binary mask.*grid"):
-        run_ground_scene(result_path, output_root=tmp_path / "ground")
+        run_payload_condition(result_path, output_root=tmp_path / "ground")
 
 
-def test_ground_scene_requires_completed_crop_stage(tmp_path: Path) -> None:
+def test_payload_condition_requires_completed_crop_stage(tmp_path: Path) -> None:
     result_path = _build_payload_fixture(tmp_path)
     value = json.loads(result_path.read_text())
     value["status"] = "CLOUD_COMPLETE"
     result_path.write_text(json.dumps(value), encoding="utf-8")
 
     with pytest.raises(ValueError, match="CROP_COMPLETE"):
-        run_ground_scene(result_path, output_root=tmp_path / "ground")
+        run_payload_condition(result_path, output_root=tmp_path / "ground")
 
 
-def test_ground_scene_requires_explicit_reflectance_scale(tmp_path: Path) -> None:
+def test_payload_condition_requires_explicit_reflectance_scale(tmp_path: Path) -> None:
     result_path = _build_payload_fixture(tmp_path)
     value = json.loads(result_path.read_text())
     del value["stage_metadata"]["cloud_plan"]["input"]["reflectance_scale"]
     result_path.write_text(json.dumps(value), encoding="utf-8")
 
     with pytest.raises(ValueError, match="reflectance scale"):
-        run_ground_scene(result_path, output_root=tmp_path / "ground")
+        run_payload_condition(result_path, output_root=tmp_path / "ground")
 
 
-def test_ground_scene_records_broad_nir_fallback(tmp_path: Path) -> None:
+def test_payload_condition_records_broad_nir_fallback(tmp_path: Path) -> None:
     result_path = _build_payload_fixture(tmp_path, crop_size=32 * 32)
     value = json.loads(result_path.read_text())
     del value["stage_metadata"]["intake"]["logical_band_mapping"]["NIR_NARROW"]
     result_path.write_text(json.dumps(value), encoding="utf-8")
 
-    report = run_ground_scene(result_path, output_root=tmp_path / "ground")
+    report = run_payload_condition(result_path, output_root=tmp_path / "ground")
 
     assert report["radiometry"]["nir_role"] == "NIR_BROAD"
     assert any("NIR_NARROW was unavailable" in item for item in report["warnings"])
 
 
-def test_ground_scene_protects_existing_result(tmp_path: Path) -> None:
+def test_payload_condition_protects_existing_result(tmp_path: Path) -> None:
     result_path = _build_payload_fixture(tmp_path, crop_size=32 * 32)
     output = tmp_path / "ground"
-    run_ground_scene(result_path, output_root=output)
+    run_payload_condition(result_path, output_root=output)
 
     with pytest.raises(FileExistsError, match="already exists"):
-        run_ground_scene(result_path, output_root=output)
+        run_payload_condition(result_path, output_root=output)
 
 
 def test_streaming_metric_uses_all_values_for_moments_and_is_deterministic() -> None:

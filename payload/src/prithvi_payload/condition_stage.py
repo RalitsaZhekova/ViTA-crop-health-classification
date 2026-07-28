@@ -1,4 +1,4 @@
-"""Windowed Phase 2 processing for one completed payload result."""
+"""Windowed payload crop-condition processing for one completed crop result."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ from prithvi_shared.health import build_analysis_mask, calculate_health_layers
 from rasterio.enums import Resampling
 from rasterio.windows import Window
 
-GROUND_SCENE_ALGORITHM_VERSION = "ground-scene-v1"
+PAYLOAD_CONDITION_ALGORITHM_VERSION = "payload-condition-v1"
 FLOAT_NODATA = -9999.0
 BYTE_NODATA = 255
 HEALTH_LAYER_NAMES = (
@@ -188,7 +188,7 @@ def _load_payload_result(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("Payload result must contain a JSON object")
     if value.get("status") != "CROP_COMPLETE":
-        raise ValueError("Ground processing requires payload status CROP_COMPLETE")
+        raise ValueError("Condition processing requires payload status CROP_COMPLETE")
     completed = value.get("completed_stages")
     if not isinstance(completed, list) or "crop" not in completed:
         raise ValueError("Payload result does not record a completed crop stage")
@@ -446,7 +446,7 @@ def _save_quicklook(
     figure.savefig(path, dpi=150)
 
 
-def run_ground_scene(
+def run_payload_condition(
     payload_result_path: str | Path,
     *,
     output_root: str | Path,
@@ -505,7 +505,7 @@ def run_ground_scene(
         )
     roles = ("BLUE", "GREEN", "RED", nir_role)
     if any(role not in band_mapping for role in roles):
-        raise ValueError(f"Source scene does not provide required ground roles: {roles}")
+        raise ValueError(f"Source scene does not provide required condition roles: {roles}")
     band_indices = [int(band_mapping[role]["index"]) for role in roles]
 
     cloud_input = cloud_plan.get("input")
@@ -513,7 +513,7 @@ def run_ground_scene(
         raise ValueError("Cloud plan is missing the radiometric input contract")
     reflectance_scale = cloud_input.get("reflectance_scale")
     if not isinstance(reflectance_scale, (int, float)) or not np.isfinite(reflectance_scale):
-        raise ValueError("A finite reflectance scale is required for ground analysis")
+        raise ValueError("A finite reflectance scale is required for condition analysis")
     reflectance_scale = float(reflectance_scale)
     if reflectance_scale <= 0:
         raise ValueError("Reflectance scale must be positive")
@@ -521,7 +521,7 @@ def run_ground_scene(
     output = Path(output_root).resolve()
     report_path = output / "crop_condition_report.json"
     if report_path.exists() and not overwrite:
-        raise FileExistsError(f"Ground result already exists: {report_path}")
+        raise FileExistsError(f"Payload condition result already exists: {report_path}")
     health_root = output / "health_layers"
     condition_root = output / "condition"
     visual_root = output / "visualisations"
@@ -560,7 +560,7 @@ def run_ground_scene(
         if source.crs is None:
             raise ValueError("Source scene has no CRS")
         if max(band_indices) > source.count:
-            raise ValueError("Ground band mapping references a missing source band")
+            raise ValueError("Condition band mapping references a missing source band")
 
         float_profile = _raster_profile(source, dtype="float32", nodata=FLOAT_NODATA)
         byte_profile = _raster_profile(source, dtype="uint8", nodata=BYTE_NODATA)
@@ -758,7 +758,7 @@ def run_ground_scene(
     )
     report = {
         "schema_version": "1.0",
-        "algorithm_version": GROUND_SCENE_ALGORITHM_VERSION,
+        "algorithm_version": PAYLOAD_CONDITION_ALGORITHM_VERSION,
         "index_algorithm_version": INDEX_ALGORITHM_VERSION,
         "condition_algorithm_version": CONDITION_ALGORITHM_VERSION,
         "scene_id": scene_id,
@@ -821,7 +821,7 @@ def main() -> None:
     parser.add_argument("--tile-size", type=int, default=512)
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
-    report = run_ground_scene(
+    report = run_payload_condition(
         args.payload_result,
         output_root=args.output,
         region_id=args.region_id,

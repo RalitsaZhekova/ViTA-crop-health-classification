@@ -1,9 +1,2 @@
-# Implemented health calculations
-numpy>=1.26,<3
-
-# Required when the scene-level GeoTIFF/COG writer is implemented.
-rasterio>=1.3.10,<2
-matplotlib>=3.7,<4
-
-# FastAPI, database drivers and a web framework are intentionally deferred
-# until their corresponding implementations exist.
+# The ground application consumes payload downlink products. API, database and
+# web dependencies will be added with their implementations.

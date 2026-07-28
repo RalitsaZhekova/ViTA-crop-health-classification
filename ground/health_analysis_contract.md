@@ -32,7 +32,7 @@ The deployed crop raster is binary and has the following exact semantics:
 ```
 
 The operational unusable raster uses `0 = usable` and `1 = unusable`. The
-ground mask builder validates these values and rejects incompatible or corrupt
+shared mask builder used by the payload validates these values and rejects incompatible or corrupt
 masks instead of treating arbitrary non-zero values as crop.
 
 The base model does not identify crop type, so fallow fields cannot yet be
