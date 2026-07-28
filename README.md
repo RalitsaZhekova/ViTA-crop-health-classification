@@ -8,11 +8,11 @@ are `BLUE`, `GREEN`, `RED`, and
 `NIR_NARROW`, in that order. No SWIR channel is passed to the model and no
 synthetic, copied, or imputed SWIR channel is created.
 
-The first checkpoint predicts 13 crop and land-cover classes. The same model
-pipeline is intended to gain crop-health responsibility later through a
-separately supervised health or multitask head. This crop-type checkpoint does
-not infer health: suitable health targets, definitions, and evaluation data are
-not present in this dataset.
+The selected binary checkpoint was trained with both the US IBM–NASA HLS corpus
+and optical European PASTIS replay data. Preserved 13-class checkpoints predict
+crop and land-cover classes, but none of these learned models infer crop health:
+suitable supervised health targets and evaluation labels are not present in the
+training datasets.
 
 The separate rule-based condition stage calculates NDVI, EVI, GNDVI, SAVI,
 CVI and RGB diagnostics only on clear, confident crop pixels. It combines the
@@ -65,7 +65,21 @@ screening priority—not a disease diagnosis. See
 [`integration/verification.json`](integration/verification.json) for the exact
 accepted Sentinel/PASTIS execution evidence and its limitations.
 
-## Data and model contract
+## Training datasets and model contract
+
+The selected payload checkpoint is based on a controlled two-source training
+mixture:
+
+| Source | Coverage | Role in the selected model |
+| --- | --- | --- |
+| IBM–NASA multi-temporal crop classification | 3,854 HLS S30 chips from the contiguous United States in 2022 | Base training corpus, internal validation and untouched held-out test |
+| Optical PASTIS | European Sentinel-2 patches | Training replay only; eligible folds 1–4 are sampled so PASTIS contributes 20% of combined training examples |
+
+PASTIS fold 5, containing 496 patches, remains reserved and is not included in
+the reported selected-model metrics. The current internal-validation results
+therefore should not be presented as a held-out European performance estimate.
+
+### IBM–NASA HLS base corpus
 
 The official IBM-NASA dataset is hosted at
 <https://huggingface.co/datasets/ibm-nasa-geospatial/multi-temporal-crop-classification>
@@ -88,7 +102,8 @@ The data are 30 m HLS S30 observations in EPSG:5070. Masks contain no-data
 class 0 plus 13 target classes 1-13. The loader reduces labels by one, so the
 training ignore index is `-1` and target classes are 0-12.
 
-To keep final evaluation independent of model selection, this repository uses:
+For the IBM–NASA HLS corpus, final evaluation is kept independent of model
+selection using:
 
 - train: deterministic 90% of the official training chips;
 - validation: the remaining deterministic 10% of official training chips;
@@ -195,14 +210,14 @@ Best and latest checkpoints are kept at the fixed, resume-safe path
 `outputs/prithvi_4band_head_only/checkpoints/`; TensorBoard event logs are
 versioned separately under `outputs/logs/`.
 
-### European replay refinement
+### European PASTIS replay refinement
 
 The European refinement reuses the best augmented checkpoint, keeps every
-original training sample, and adds a conservative 20% replay share from the
-optical PASTIS dataset. Only unambiguous PASTIS crop labels receive one of the
-existing fine-grained classes; all other supported agricultural labels provide
-crop/non-crop supervision. No output classes are added, and PASTIS fold 5
-remains reserved.
+original HLS training sample, and makes optical PASTIS data 20% of the combined
+training examples. The selected single-frame binary configuration uses this
+replay directly. Only unambiguous PASTIS crop labels receive one of the existing
+fine-grained classes; all other supported agricultural labels provide
+crop/non-crop supervision. No output classes are added.
 
 On Windows, the resumable background pipeline downloads the official archive,
 verifies its checksum, extracts only Sentinel-2 arrays, masks and metadata,
@@ -223,10 +238,13 @@ headers and semantic targets without loading the model:
 prithvi-validate-europe --root data/europe/pastis
 ```
 
-Extra image arrays without metadata are ignored. Training uses only the 2,433
-patch IDs that have metadata and matching semantic targets. The replay
-pipeline detects a valid extracted dataset and will not download the archive
-again.
+Extra image arrays without metadata are ignored. The validated inventory has
+2,433 metadata-linked patches: 1,937 in replay-eligible folds 1–4 and 496 in
+reserved fold 5. The loader deterministically samples only the number of
+eligible fold-1–4 examples needed to maintain the configured 20% replay share;
+it does not put all 2,433 patches into training. PASTIS is not added to the HLS
+internal-validation or held-out-test loaders. The replay pipeline detects a
+valid extracted dataset and will not download the archive again.
 
 ### Selected single-image payload model
 
@@ -302,8 +320,11 @@ It writes JSON metrics plus CSV and PNG confusion matrices under
 
 ## Scope and next model stage
 
-This dataset is US-only, 2022-only, HLS S30 at 30 m, and not a global or Balkan
-benchmark. A Balkan validation program needs local multi-season labels,
+The IBM–NASA base corpus is US-only, 2022-only HLS S30 at 30 m, while the
+selected model also has European Sentinel-2 exposure through PASTIS replay.
+That mixture is broader than US-only training, but it is still not a global,
+pan-European or Balkan benchmark. No held-out European result is currently
+reported. A Balkan validation program still needs local multi-season labels,
 geographic and temporal holdouts, sensor/radiometric harmonization, and checks
 for the exact narrow-NIR spectral response.
 

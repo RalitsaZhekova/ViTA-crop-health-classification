@@ -23,8 +23,10 @@ payload or ground packages.
 
 ## Model policy
 
-Training is frozen for now. The selected model is
-`epoch=02-macro_f1=0.5062.ckpt`; the full checkpoint remains under `outputs/`
-for provenance and its checksum-pinned weights-only export is deployed from
-`payload/models/`. Earlier stage checkpoints required by the documented
-training configs are retained for safe rollback.
+Training is frozen for now. The selected payload model is the single-frame
+binary checkpoint recorded in [`../configs/selected_model.yaml`](../configs/selected_model.yaml).
+It was initialized through the preserved single-frame crop-type checkpoint,
+which was itself adapted from the European-replay checkpoint
+`epoch=02-macro_f1=0.5062.ckpt`. The final selected weights-only binary export is
+deployed from `payload/models/`; the European replay and other earlier stage
+checkpoints remain under `outputs/` for provenance and safe rollback.
