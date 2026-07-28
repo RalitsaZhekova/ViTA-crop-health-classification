@@ -1,4 +1,4 @@
-"""Transparent spectral crop-condition scoring for one crop region."""
+"""Transparent spectral crop-condition scoring shared with payload processing."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from prithvi_ground.health import HealthLayers
+from prithvi_shared.health import HealthLayers
 
 FloatArray = NDArray[np.floating[Any]]
 BoolArray = NDArray[np.bool_]

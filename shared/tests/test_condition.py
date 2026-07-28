@@ -4,8 +4,8 @@ import json
 
 import numpy as np
 import pytest
-from prithvi_ground.condition import ConditionConfig, assess_crop_condition
-from prithvi_ground.health import HealthLayers, calculate_health_layers
+from prithvi_shared.condition import ConditionConfig, assess_crop_condition
+from prithvi_shared.health import HealthLayers, calculate_health_layers
 
 
 def _constant_layers(

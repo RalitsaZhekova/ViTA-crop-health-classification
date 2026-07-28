@@ -1,4 +1,4 @@
-"""Sensor-neutral crop-condition measurements for one calibrated image window."""
+"""Sensor-neutral crop-condition measurements shared with payload processing."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
+
 from prithvi_shared.calibration import HEALTH_ANALYSIS_CROP_THRESHOLD
 
 SUPPORTED_SENSORS = {"balkan-1", "sentinel-2"}

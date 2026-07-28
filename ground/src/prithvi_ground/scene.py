@@ -16,10 +16,7 @@ from typing import Any
 
 import numpy as np
 import rasterio
-from rasterio.enums import Resampling
-from rasterio.windows import Window
-
-from prithvi_ground.condition import (
+from prithvi_shared.condition import (
     CONDITION_ALGORITHM_VERSION,
     SCORED_INDEX_NAMES,
     ConditionConfig,
@@ -27,10 +24,12 @@ from prithvi_ground.condition import (
     calculate_condition_score_layers,
     calculate_spatial_condition_layers,
 )
-from prithvi_ground.health import (
+from prithvi_shared.health import (
     ALGORITHM_VERSION as INDEX_ALGORITHM_VERSION,
 )
-from prithvi_ground.health import build_analysis_mask, calculate_health_layers
+from prithvi_shared.health import build_analysis_mask, calculate_health_layers
+from rasterio.enums import Resampling
+from rasterio.windows import Window
 
 GROUND_SCENE_ALGORITHM_VERSION = "ground-scene-v1"
 FLOAT_NODATA = -9999.0

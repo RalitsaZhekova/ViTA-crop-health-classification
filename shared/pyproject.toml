@@ -7,6 +7,9 @@ name = "prithvi-crop-shared"
 version = "0.1.0"
 description = "Shared band, class, calibration and schema contracts"
 requires-python = ">=3.10,<3.14"
+dependencies = [
+  "numpy>=1.26,<3",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

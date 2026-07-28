@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from prithvi_ground.health import calculate_health_layers
+from prithvi_shared.health import calculate_health_layers
 
 
 def test_calculate_health_layers_matches_index_formulas() -> None:

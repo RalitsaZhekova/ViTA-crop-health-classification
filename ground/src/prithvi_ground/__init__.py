@@ -1,6 +1,6 @@
 """Ground-side crop-condition measurements and observations."""
 
-from prithvi_ground.condition import (
+from prithvi_shared.condition import (
     ConditionAssessment,
     ConditionConfig,
     ConditionLayers,
@@ -12,7 +12,7 @@ from prithvi_ground.condition import (
     calculate_condition_score_layers,
     calculate_spatial_condition_layers,
 )
-from prithvi_ground.health import (
+from prithvi_shared.health import (
     HealthLayers,
     HealthObservation,
     MetricSummary,

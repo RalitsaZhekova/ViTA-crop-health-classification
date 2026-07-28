@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from prithvi_ground.health import build_analysis_mask
+from prithvi_shared.health import build_analysis_mask
 
 
 def test_build_analysis_mask_combines_every_quality_gate() -> None:
