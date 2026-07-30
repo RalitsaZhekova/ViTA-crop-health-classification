@@ -12,6 +12,7 @@ from pathlib import Path
 from prithvi_ground.catalog import SceneCatalog
 from prithvi_shared import PayloadAcquisitionCommand
 
+from vita_integration.ground_client import GroundClient, GroundClientError
 from vita_integration.payload_client import PayloadClient, PayloadClientError
 
 TERMINAL_STATES = {"completed", "rejected", "failed"}
@@ -101,6 +102,10 @@ def run_region(args: argparse.Namespace) -> int:
             expected_checksums=status["artifact_checksums"],
         )
         scene, created = SceneCatalog(args.ground_store).ingest(bundle)
+        ground_response = GroundClient(args.dashboard_url).ingest_bundle(bundle)
+        ground_api_scene = ground_response["scene"]
+        if ground_api_scene.get("scene_id") != scene["scene_id"]:
+            raise GroundClientError("Ground service returned a different scene identifier")
     condition = status.get("condition", {})
     print(
         json.dumps(
@@ -119,6 +124,7 @@ def run_region(args: argparse.Namespace) -> int:
                 ),
                 "condition": condition,
                 "ground_created": created,
+                "ground_api_created": ground_response.get("created"),
                 "ground_scene_id": scene["scene_id"],
                 "dashboard_url": args.dashboard_url,
             },
@@ -157,7 +163,7 @@ def main() -> None:
     args = parser().parse_args()
     try:
         raise SystemExit(args.handler(args))
-    except (PayloadClientError, ValueError) as error:
+    except (GroundClientError, PayloadClientError, ValueError) as error:
         print(f"Mission failed: {error}")
         raise SystemExit(2) from None
 

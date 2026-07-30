@@ -85,7 +85,10 @@ checks payload health, submits coordinates, displays safe candidate progress,
 and polls to a terminal state. On completion it downloads only the three routine
 files, verifies every payload-status checksum, invokes the existing bundle
 validator (including image checksums), and uses `SceneCatalog.ingest` for the
-canonical atomic ground installation.
+canonical local atomic ground installation. It then sends the same three files
+to the existing `POST /api/v1/scenes` endpoint at `--dashboard-url`; the ground
+service independently revalidates and stores them in its own persistent
+catalog. No payload intermediates are transferred.
 
 ```powershell
 vita-mission run-region `
@@ -104,3 +107,9 @@ vita-mission run-region `
 The printed result distinguishes Earth Engine metadata cloud percentage from
 payload-measured cloud, shadow and unusable percentages. No cloud, crop or
 condition result is recomputed by this client.
+
+For the final split deployment, a human operator opens an SSH local-forward
+from ground port `18081` to payload loopback port `8081`; the mission command
+then changes only `--payload-url` to `http://127.0.0.1:18081`. The payload API
+contains no SSH implementation. `scripts/open_payload_tunnel.ps1` is an
+optional password-free operator helper and is never invoked automatically.

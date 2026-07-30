@@ -68,3 +68,27 @@ The same server exposes an offline-first dashboard at `/`. It provides:
 The dashboard deliberately describes crop condition as spectral screening. It
 does not convert display colors back into measurements or claim to diagnose a
 disease.
+
+## Container service
+
+`deployment/ground/Dockerfile` installs only the shared and ground packages.
+It contains no payload package, Earth Engine client, model artifacts or
+scientific processing code. `compose.ground.yaml` mounts the project-local
+`runtime/ground` catalog at `/data/ground` inside the container and publishes
+only `127.0.0.1:8000`.
+
+After independently validating the downloaded bundle, the host mission CLI
+uploads exactly `scene.json`, `scene.webp` and `condition.png` to the canonical
+`POST /api/v1/scenes` route. The container revalidates the bundle before
+installing it, so it needs no payload job mount, model, credential or
+scientific implementation.
+
+```powershell
+docker compose --env-file .env.ground -f compose.ground.yaml build
+docker compose --env-file .env.ground -f compose.ground.yaml up -d
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/health"
+```
+
+The canonical health route is `/api/v1/health`; the dashboard and OpenAPI
+routes remain `/` and `/docs`. See `deployment/README.md` for the complete
+project-local split workflow.

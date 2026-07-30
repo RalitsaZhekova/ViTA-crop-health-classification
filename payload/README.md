@@ -76,12 +76,58 @@ is tried. The accepted candidate continues through the existing crop, condition
 and downlink stages from the same cloud result. The 60% crop cloud gate, cloud
 thresholds, masks and all scientific calculations remain unchanged.
 
-Production files are
-[`deployment/payload/Dockerfile`](../deployment/payload/Dockerfile),
-[`compose.payload.production.yaml`](../compose.payload.production.yaml) and
-[`../.env.payload.production.example`](../.env.payload.production.example).
-`PAYLOAD_BASE_IMAGE` is deliberately required: select it only after the actual
-payload CPU architecture, CUDA/JetPack version and driver ABI are known.
+Container deployment uses one application Dockerfile with separate local and
+Jetson Compose contracts:
+
+- [`deployment/payload/Dockerfile`](../deployment/payload/Dockerfile);
+- [`compose.payload.local.yaml`](../compose.payload.local.yaml);
+- [`compose.payload.jetson.yaml`](../compose.payload.jetson.yaml);
+- [`../.env.payload.example`](../.env.payload.example).
+
+`VITA_PAYLOAD_BASE_IMAGE` is deliberately required. The image copies only the
+shared and payload runtime packages, the cloud configuration and the two
+selected checksum-pinned model artifacts. It does not copy training, ground,
+integration, secrets or generated runtime data. The Earth Engine key is mounted
+only at runtime and the API is published only on host loopback.
+
+Before selecting a Jetson base image, a human operator must run on that target:
+
+```bash
+uname -m
+id -u
+id -g
+cat /etc/os-release
+cat /etc/nv_tegra_release 2>/dev/null
+dpkg-query --show nvidia-jetpack 2>/dev/null
+docker version
+docker compose version
+docker info
+```
+
+Choose an NVIDIA-supported `aarch64` PyTorch image matching the exact
+JetPack/L4T and CUDA ABI. Do not reuse the local x86 CUDA image. After manual
+placement of `secrets/earth-engine.json`, set the non-root container UID/GID in
+`.env.payload` from `id -u` and `id -g`, then use the reviewed Jetson commands:
+
+```bash
+docker compose \
+  --env-file .env.payload \
+  -f compose.payload.jetson.yaml \
+  build
+
+docker compose \
+  --env-file .env.payload \
+  -f compose.payload.jetson.yaml \
+  up -d
+
+curl --fail http://127.0.0.1:8081/health
+```
+
+These commands require no `sudo`; stop if the current user cannot access
+Docker. See [`deployment/README.md`](../deployment/README.md) for secret checks,
+local validation, rollback, health criteria and the SSH-tunnel handoff. Jetson
+deployment is always a human-reviewed step and is never performed by repository
+scripts.
 
 `scene-run` inspects a preprocessed Sentinel-2 or Balkan-1 GeoTIFF, resolves its
 declared band order, and runs cloud detection through bounded 512-pixel windows.
