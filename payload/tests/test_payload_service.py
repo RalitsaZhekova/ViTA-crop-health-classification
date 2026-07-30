@@ -53,6 +53,17 @@ def test_job_store_persists_safe_progress_and_recovers_pending(tmp_path: Path) -
     assert status["safe_payload_measured_cloud_percentage"] == 18.0
     assert "url" not in json.dumps(status).lower()
     assert "credential" not in json.dumps(status).lower()
+    assert [event["state"] for event in status["events"]] == [
+        "queued",
+        "evaluating_cloud",
+        "queued",
+    ]
+    history = store.history()
+    assert history["job_count"] == 1
+    assert history["jobs"][0]["job_id"] == command.job_id
+    assert history["jobs"][0]["candidate_attempts"] == []
+    assert history["jobs"][0]["request"]["bbox_wgs84"] == [23.1, 42.5, 23.15, 42.55]
+    assert json.loads((tmp_path / "jobs/history.json").read_text()) == history
 
 
 def test_completed_job_is_retained_and_artifacts_are_whitelisted(tmp_path: Path) -> None:
@@ -94,6 +105,7 @@ def test_service_exposes_only_fixed_artifact_routes(tmp_path: Path) -> None:
 
     with TestClient(app) as client:
         assert client.get("/health").json()["earth_engine_project"] == "vita-503208"
+        assert client.get("/v1/jobs").json()["job_count"] == 0
         assert client.get("/v1/jobs/unknown/artifacts/scene.json").status_code == 404
         assert client.get("/v1/jobs/unknown/artifacts/result.json").status_code == 404
         assert client.get("/v1/jobs/../../command.json").status_code == 404

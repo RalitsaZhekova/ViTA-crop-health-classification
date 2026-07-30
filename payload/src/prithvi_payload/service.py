@@ -186,6 +186,10 @@ def create_app(
         except queue.Full as error:
             raise HTTPException(status_code=503, detail="payload queue is full") from error
 
+    @app.get("/v1/jobs")
+    def list_jobs() -> dict[str, Any]:
+        return store.history()
+
     @app.get("/v1/jobs/{job_id}")
     def get_job(job_id: str) -> dict[str, Any]:
         try:

@@ -26,6 +26,21 @@ JOB_STATES = frozenset(
     }
 )
 TERMINAL_STATES = frozenset({"completed", "rejected", "failed"})
+HISTORY_SCHEMA_VERSION = "1.0"
+_EVENT_FIELDS = (
+    "current_candidate_number",
+    "maximum_candidate_attempts",
+    "safe_candidate_scene_id",
+    "safe_metadata_cloud_percentage",
+    "safe_payload_measured_cloud_percentage",
+    "selected_scene",
+    "metadata_cloud_percentage",
+    "payload_measured_cloud_percentage",
+    "payload_measured_shadow_percentage",
+    "payload_measured_unusable_percentage",
+    "condition",
+    "payload_status",
+)
 
 
 class JobExistsError(ValueError):
@@ -57,6 +72,8 @@ class JobStore:
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        with self._lock:
+            self._refresh_history_unlocked()
 
     def job_directory(self, job_id: str) -> Path:
         path = (self.root / job_id).resolve()
@@ -69,6 +86,55 @@ class JobStore:
 
     def _command_path(self, job_id: str) -> Path:
         return self.job_directory(job_id) / "command.json"
+
+    def _history_path(self) -> Path:
+        return self.root / "history.json"
+
+    @staticmethod
+    def _event(status: dict[str, Any]) -> dict[str, Any]:
+        event: dict[str, Any] = {
+            "timestamp": status["updated_at"],
+            "state": status["state"],
+        }
+        for field in _EVENT_FIELDS:
+            if field in status:
+                event[field] = status[field]
+        attempts = status.get("candidate_attempts")
+        if isinstance(attempts, list):
+            event["candidate_attempt_count"] = len(attempts)
+        error = status.get("error")
+        if isinstance(error, dict) and isinstance(error.get("code"), str):
+            event["error_code"] = error["code"]
+        return event
+
+    def _refresh_history_unlocked(self) -> dict[str, Any]:
+        jobs: list[dict[str, Any]] = []
+        for status_path in self.root.glob("*/status.json"):
+            try:
+                status = json.loads(status_path.read_text(encoding="utf-8"))
+                if not isinstance(status, dict):
+                    continue
+                if "request" not in status:
+                    command_path = status_path.parent / "command.json"
+                    command = PayloadAcquisitionCommand.model_validate_json(
+                        command_path.read_text(encoding="utf-8")
+                    )
+                    status["request"] = command.source.model_dump(mode="json")
+                jobs.append(status)
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+        jobs.sort(
+            key=lambda job: (str(job.get("created_at", "")), str(job.get("job_id", ""))),
+            reverse=True,
+        )
+        history = {
+            "schema_version": HISTORY_SCHEMA_VERSION,
+            "updated_at": _utc_now(),
+            "job_count": len(jobs),
+            "jobs": jobs,
+        }
+        _write_json_atomic(self._history_path(), history)
+        return history
 
     def create(self, command: PayloadAcquisitionCommand) -> dict[str, Any]:
         with self._lock:
@@ -90,13 +156,16 @@ class JobStore:
                 "safe_metadata_cloud_percentage": None,
                 "safe_payload_measured_cloud_percentage": None,
                 "candidate_attempts": [],
+                "request": command.source.model_dump(mode="json"),
                 "error": None,
             }
+            status["events"] = [self._event(status)]
             _write_json_atomic(
                 self._command_path(command.job_id),
                 command.model_dump(mode="json"),
             )
             _write_json_atomic(self._status_path(command.job_id), status)
+            self._refresh_history_unlocked()
             return status
 
     def get(self, job_id: str) -> dict[str, Any]:
@@ -119,8 +188,18 @@ class JobStore:
             status.update(fields)
             status["state"] = state
             status["updated_at"] = _utc_now()
+            events = status.setdefault("events", [])
+            if not isinstance(events, list):
+                events = []
+                status["events"] = events
+            events.append(self._event(status))
             _write_json_atomic(self._status_path(job_id), status)
+            self._refresh_history_unlocked()
             return status
+
+    def history(self) -> dict[str, Any]:
+        with self._lock:
+            return self._refresh_history_unlocked()
 
     def write_result(self, job_id: str, value: dict[str, Any]) -> None:
         with self._lock:

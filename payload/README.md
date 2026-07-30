@@ -60,8 +60,12 @@ python -m prithvi_payload.service --host 127.0.0.1 --port 8081
 The service initializes Earth Engine, CUDA, CloudSEN and the crop model once,
 warms both models once, and serializes GPU work through a bounded queue. Job
 state is written atomically below `VITA_JOB_ROOT` and completed jobs survive
-restart. Its fixed endpoints are `GET /health`, `POST /v1/jobs`, job status, and
-one endpoint for each of the three routine artifacts.
+restart. Each `status.json` retains safe state-transition events and candidate
+attempts. The store also maintains an atomic `history.json` containing all prior
+jobs, requests and completed analysis summaries; it is available from
+`GET /v1/jobs`. The remaining fixed endpoints are `GET /health`, `POST /v1/jobs`,
+individual job status, and one endpoint for each of the three routine artifacts.
+This operational history is not added to the routine three-file downlink.
 
 For `target_cloud_range`, Earth Engine scene metadata must first be within the
 requested 15-35% demonstration range. Up to five ordered candidates are then
