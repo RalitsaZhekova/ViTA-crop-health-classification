@@ -33,8 +33,36 @@ lightning_logs/
 *.tar.gz
 *.zip
 
-# Production environment values and credentials
-.env.payload.production
+# Secrets
+secrets/*
+!secrets/.gitkeep
+earth-engine.json
+*.service-account.json
 *earth-engine*.json
 *earth_engine*.json
 *credentials*.json
+
+# Local deployment configuration
+.env.payload
+.env.ground
+.env.payload.production
+.env.ground.production
+
+# Runtime data
+runtime/*
+!runtime/.gitkeep
+!runtime/payload/
+runtime/payload/*
+!runtime/payload/jobs/
+!runtime/payload/outbox/
+!runtime/payload/logs/
+runtime/payload/jobs/*
+runtime/payload/outbox/*
+runtime/payload/logs/*
+!runtime/payload/jobs/.gitkeep
+!runtime/payload/outbox/.gitkeep
+!runtime/payload/logs/.gitkeep
+!runtime/ground/
+runtime/ground/*
+!runtime/ground/.gitkeep
+ground/runtime/

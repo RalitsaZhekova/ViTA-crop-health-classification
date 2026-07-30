@@ -151,7 +151,11 @@ def create_app(
     start_service: bool = True,
 ) -> FastAPI:
     runtime = runtime or PayloadRuntime()
-    store = store or JobStore(os.environ.get("VITA_JOB_ROOT", str(DEFAULT_JOB_ROOT)))
+    jobs_directory = os.environ.get(
+        "VITA_JOBS_DIR",
+        os.environ.get("VITA_JOB_ROOT", str(DEFAULT_JOB_ROOT)),
+    )
+    store = store or JobStore(jobs_directory)
     service = PayloadJobService(
         runtime,
         store,
