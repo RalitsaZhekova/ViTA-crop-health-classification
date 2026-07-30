@@ -309,7 +309,6 @@ class EarthEngineAcquisitionProvider:
 
     def _download_parameters(
         self,
-        command: PayloadAcquisitionCommand,
         grid: TargetGrid,
     ) -> dict[str, Any]:
         return {
@@ -317,16 +316,6 @@ class EarthEngineAcquisitionProvider:
             "crs": grid.crs,
             "crs_transform": list(grid.transform)[:6],
             "dimensions": [grid.width, grid.height],
-            "region": {
-                "type": "Polygon",
-                "coordinates": [[
-                    [command.source.bbox_wgs84[0], command.source.bbox_wgs84[1]],
-                    [command.source.bbox_wgs84[2], command.source.bbox_wgs84[1]],
-                    [command.source.bbox_wgs84[2], command.source.bbox_wgs84[3]],
-                    [command.source.bbox_wgs84[0], command.source.bbox_wgs84[3]],
-                    [command.source.bbox_wgs84[0], command.source.bbox_wgs84[1]],
-                ]],
-            },
             "format": "GEO_TIFF",
             "filePerBand": False,
         }
@@ -424,7 +413,7 @@ class EarthEngineAcquisitionProvider:
             image = ee.Image(f"{EARTH_ENGINE_COLLECTION}/{candidate.system_index}").select(
                 list(EARTH_ENGINE_BANDS)
             )
-            self._stream_candidate(image, self._download_parameters(command, grid), partial_path)
+            self._stream_candidate(image, self._download_parameters(grid), partial_path)
             partial_path.replace(raw_path)
             normalize_and_validate_geotiff(raw_path, scene_path, grid=grid)
             acquired = AcquiredScene(

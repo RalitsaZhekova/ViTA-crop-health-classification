@@ -210,7 +210,7 @@ def test_download_parameters_are_fixed_and_contain_no_resampling_expression() ->
     provider = EarthEngineAcquisitionProvider(max_candidates=50, max_scene_attempts=5)
     grid = _small_grid()
 
-    parameters = provider._download_parameters(_command(), grid)
+    parameters = provider._download_parameters(grid)
 
     assert parameters["bands"] == ["B02", "B03", "B04", "B08", "B8A"]
     assert parameters["format"] == "GEO_TIFF"
@@ -218,6 +218,9 @@ def test_download_parameters_are_fixed_and_contain_no_resampling_expression() ->
     assert parameters["crs"] == grid.crs
     assert parameters["crs_transform"] == list(grid.transform)[:6]
     assert parameters["dimensions"] == [grid.width, grid.height]
+    # Earth Engine rejects region + crs_transform + dimensions. The target
+    # transform and dimensions already describe the bbox-derived grid exactly.
+    assert "region" not in parameters
     assert "resampling" not in parameters
 
 
