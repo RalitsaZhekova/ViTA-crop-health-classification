@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from prithvi_shared.calibration import HEALTH_ANALYSIS_CROP_THRESHOLD
 from prithvi_shared.health import build_analysis_mask
 
 
@@ -15,7 +16,10 @@ def test_build_analysis_mask_combines_every_quality_gate() -> None:
         dtype=np.uint8,
     )
     probability = np.array(
-        [[0.90, 0.90, 0.64, np.nan], [0.99, 0.99, 0.65, 0.80]],
+        [
+            [0.90, 0.90, HEALTH_ANALYSIS_CROP_THRESHOLD - 0.01, np.nan],
+            [0.99, 0.99, HEALTH_ANALYSIS_CROP_THRESHOLD, 0.80],
+        ],
         dtype=np.float32,
     )
     nodata = np.array(
