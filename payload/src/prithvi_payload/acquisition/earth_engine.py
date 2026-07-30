@@ -26,6 +26,9 @@ from prithvi_payload.acquisition.models import AcquiredScene, CandidateMetadata
 EARTH_ENGINE_PROJECT_ID = "vita-503208"
 EARTH_ENGINE_SCOPE = "https://www.googleapis.com/auth/earthengine"
 EARTH_ENGINE_COLLECTION = "COPERNICUS/S2_SR_HARMONIZED"
+# Earth Engine's Sentinel-2 catalog omits the leading zero used by the payload
+# contract. Select the provider names, then rename them without changing pixels.
+EARTH_ENGINE_SOURCE_BANDS = ("B2", "B3", "B4", "B8", "B8A")
 EARTH_ENGINE_BANDS = ("B02", "B03", "B04", "B08", "B8A")
 REFLECTANCE_SCALE = 10_000.0
 DEFAULT_MAX_CANDIDATES = 50
@@ -211,6 +214,11 @@ def _candidate_directory_name(system_index: str) -> str:
     safe = _SAFE_COMPONENT.sub("_", system_index).strip("_")[:64] or "scene"
     suffix = hashlib.sha256(system_index.encode("utf-8")).hexdigest()[:10]
     return f"{safe}_{suffix}"
+
+
+def _select_payload_bands(image: Any) -> Any:
+    """Map fixed Earth Engine catalog names to the payload's canonical names."""
+    return image.select(list(EARTH_ENGINE_SOURCE_BANDS), list(EARTH_ENGINE_BANDS))
 
 
 def _sha256(path: Path) -> str:
@@ -478,8 +486,8 @@ class EarthEngineAcquisitionProvider:
         try:
             import ee
 
-            image = ee.Image(f"{EARTH_ENGINE_COLLECTION}/{candidate.system_index}").select(
-                list(EARTH_ENGINE_BANDS)
+            image = _select_payload_bands(
+                ee.Image(f"{EARTH_ENGINE_COLLECTION}/{candidate.system_index}")
             )
             self._stream_candidate(image, self._download_parameters(grid), partial_path)
             partial_path.replace(raw_path)

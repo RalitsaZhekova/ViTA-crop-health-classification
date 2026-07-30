@@ -14,8 +14,10 @@ from prithvi_payload.acquisition.earth_engine import (
     EARTH_ENGINE_BANDS,
     EARTH_ENGINE_COLLECTION,
     EARTH_ENGINE_PROJECT_ID,
+    EARTH_ENGINE_SOURCE_BANDS,
     REFLECTANCE_SCALE,
     EarthEngineAcquisitionProvider,
+    _select_payload_bands,
     initialize_earth_engine,
     normalize_and_validate_geotiff,
     order_candidates,
@@ -222,6 +224,22 @@ def test_download_parameters_are_fixed_and_contain_no_resampling_expression() ->
     # transform and dimensions already describe the bbox-derived grid exactly.
     assert "region" not in parameters
     assert "resampling" not in parameters
+
+
+def test_earth_engine_source_bands_map_to_payload_contract() -> None:
+    assert EARTH_ENGINE_SOURCE_BANDS == ("B2", "B3", "B4", "B8", "B8A")
+    assert EARTH_ENGINE_BANDS == ("B02", "B03", "B04", "B08", "B8A")
+
+    class _CatalogImage:
+        selection: tuple[list[str], list[str]] | None = None
+
+        def select(self, source: list[str], destination: list[str]) -> _CatalogImage:
+            self.selection = source, destination
+            return self
+
+    image = _CatalogImage()
+    assert _select_payload_bands(image) is image
+    assert image.selection == (list(EARTH_ENGINE_SOURCE_BANDS), list(EARTH_ENGINE_BANDS))
 
 
 class _Response:
