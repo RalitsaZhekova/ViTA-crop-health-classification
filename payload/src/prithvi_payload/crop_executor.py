@@ -26,6 +26,46 @@ FLOAT_NODATA = -9999.0
 BYTE_NODATA = 255
 
 
+def _tile_blend_weights(tile_size: int, halo: int) -> np.ndarray:
+    """Return deterministic edge-tapered weights for overlapping model tiles."""
+    overlap = 2 * halo
+    if tile_size <= 0 or halo < 0 or overlap >= tile_size:
+        raise ValueError("Invalid tile size or halo for probability blending")
+    axis = np.ones(tile_size, dtype=np.float32)
+    if overlap:
+        ramp = np.arange(1, overlap + 1, dtype=np.float32) / np.float32(overlap + 1)
+        axis[:overlap] = ramp
+        axis[-overlap:] = ramp[::-1]
+    return np.multiply.outer(axis, axis)
+
+
+def _accumulate_prediction(
+    probability_sum: np.ndarray,
+    probability_weight: np.ndarray,
+    tile_probability: np.ndarray,
+    tile_weight: np.ndarray,
+    *,
+    requested_y: int,
+    requested_x: int,
+) -> None:
+    """Blend the in-bounds part of one prediction tile into scene accumulators."""
+    source_y_start = max(0, requested_y)
+    source_x_start = max(0, requested_x)
+    source_y_end = min(probability_sum.shape[0], requested_y + tile_probability.shape[0])
+    source_x_end = min(probability_sum.shape[1], requested_x + tile_probability.shape[1])
+    if source_y_start >= source_y_end or source_x_start >= source_x_end:
+        return
+    tile_y_start = source_y_start - requested_y
+    tile_x_start = source_x_start - requested_x
+    tile_y_end = tile_y_start + source_y_end - source_y_start
+    tile_x_end = tile_x_start + source_x_end - source_x_start
+    source_slice = np.s_[source_y_start:source_y_end, source_x_start:source_x_end]
+    tile_slice = np.s_[tile_y_start:tile_y_end, tile_x_start:tile_x_end]
+    weights = tile_weight[tile_slice]
+    probability_sum[source_slice] += tile_probability[tile_slice] * weights
+    probability_weight[source_slice] += weights
+
+
 def _read_padded(
     dataset: rasterio.DatasetReader,
     indices: list[int],
@@ -219,6 +259,8 @@ def execute_crop_stage(
     probability_path = output_root / "crop_maps" / f"{stem}_probability.tif"
     binary_path = output_root / "crop_maps" / f"{stem}_binary.tif"
     confidence_path = output_root / "crop_maps" / f"{stem}_confidence.tif"
+    blend_sum_path = output_root / "crop_maps" / f".{stem}_blend_sum.partial"
+    blend_weight_path = output_root / "crop_maps" / f".{stem}_blend_weight.partial"
     preview_path = output_root / "visualisations" / f"{stem}_crop.png"
     metadata_path = output_root / "metadata" / f"{stem}_crop.json"
     for path in (
@@ -229,6 +271,8 @@ def execute_crop_stage(
         metadata_path,
     ):
         path.parent.mkdir(parents=True, exist_ok=True)
+    blend_sum_path.unlink(missing_ok=True)
+    blend_weight_path.unlink(missing_ok=True)
 
     source_path = Path(plan["source_path"])
     unusable_path = Path(plan["input"]["unusable_mask"])
@@ -251,8 +295,8 @@ def execute_crop_stage(
 
     usable_count = 0
     crop_count = 0
-    probability_sum = 0.0
-    confidence_sum = 0.0
+    probability_total = 0.0
+    confidence_total = 0.0
     tile_count = 0
     inferred_tile_count = 0
     skipped_tile_count = 0
@@ -285,10 +329,30 @@ def execute_crop_stage(
         binary_output.set_band_description(1, "0 non-crop, 1 crop, 255 unusable")
         confidence_output.set_band_description(1, "winning-class confidence; -9999 unusable")
 
+        probability_sum = np.memmap(
+            blend_sum_path,
+            mode="w+",
+            dtype=np.float32,
+            shape=(source.height, source.width),
+        )
+        probability_sum[:] = 0.0
+        stack.callback(blend_sum_path.unlink, missing_ok=True)
+        stack.callback(probability_sum._mmap.close)
+        probability_weight = np.memmap(
+            blend_weight_path,
+            mode="w+",
+            dtype=np.float32,
+            shape=(source.height, source.width),
+        )
+        probability_weight[:] = 0.0
+        stack.callback(blend_weight_path.unlink, missing_ok=True)
+        stack.callback(probability_weight._mmap.close)
+        tile_weight = _tile_blend_weights(tile_size, halo)
+
         pending: list[dict[str, Any]] = []
 
         def flush_pending() -> None:
-            nonlocal crop_count, probability_sum, confidence_sum, inferred_tile_count
+            nonlocal inferred_tile_count
             if not pending:
                 return
             images = torch.from_numpy(np.stack([item["image"] for item in pending]))
@@ -307,24 +371,15 @@ def execute_crop_stage(
                 location_coords=locations,
             )
             probabilities = prediction.crop_probability.float().cpu().numpy()
-            binaries = prediction.crop_binary.cpu().numpy()
-            confidences = prediction.crop_confidence.float().cpu().numpy()
             for index, item in enumerate(pending):
-                core_slice = item["core_slice"]
-                unusable_core = item["unusable_core"]
-                probability_core = probabilities[index][core_slice].copy()
-                binary_core = binaries[index][core_slice].copy()
-                confidence_core = confidences[index][core_slice].copy()
-                usable_core = ~unusable_core
-                crop_count += int(np.count_nonzero(binary_core[usable_core] == 1))
-                probability_sum += float(probability_core[usable_core].sum(dtype=np.float64))
-                confidence_sum += float(confidence_core[usable_core].sum(dtype=np.float64))
-                probability_core[unusable_core] = FLOAT_NODATA
-                binary_core[unusable_core] = BYTE_NODATA
-                confidence_core[unusable_core] = FLOAT_NODATA
-                probability_output.write(probability_core, 1, window=item["window"])
-                binary_output.write(binary_core, 1, window=item["window"])
-                confidence_output.write(confidence_core, 1, window=item["window"])
+                _accumulate_prediction(
+                    probability_sum,
+                    probability_weight,
+                    probabilities[index],
+                    tile_weight,
+                    requested_y=item["requested_y"],
+                    requested_x=item["requested_x"],
+                )
             inferred_tile_count += len(pending)
             pending.clear()
 
@@ -348,7 +403,6 @@ def execute_crop_stage(
                 unusable_core = unusable_tile[core_slice]
                 output_window = RasterWindow(x, y, core_width, core_height)
                 usable_in_core = int(np.count_nonzero(~unusable_core))
-                usable_count += usable_in_core
                 tile_count += 1
                 if usable_in_core == 0:
                     probability_output.write(
@@ -393,14 +447,43 @@ def execute_crop_stage(
                             width=core_width,
                             height=core_height,
                         ),
-                        "core_slice": core_slice,
-                        "unusable_core": unusable_core,
-                        "window": output_window,
+                        "requested_y": y - halo,
+                        "requested_x": x - halo,
                     }
                 )
                 if len(pending) >= batch_size:
                     flush_pending()
         flush_pending()
+        probability_sum.flush()
+        probability_weight.flush()
+
+        for _, window in source.block_windows(1):
+            row_slice, column_slice = window.toslices()
+            weights = np.asarray(probability_weight[row_slice, column_slice])
+            sums = np.asarray(probability_sum[row_slice, column_slice])
+            unusable = unusable_source.read(1, window=window).astype(bool)
+            has_prediction = weights > 0
+            if np.any(~unusable & ~has_prediction):
+                raise RuntimeError("Crop probability blending left usable pixels uncovered")
+            probability = np.divide(
+                sums,
+                weights,
+                out=np.zeros_like(sums),
+                where=has_prediction,
+            )
+            binary = (probability >= CROP_CLASSIFICATION_THRESHOLD).astype(np.uint8)
+            confidence = np.maximum(probability, 1.0 - probability)
+            usable = ~unusable & has_prediction
+            usable_count += int(np.count_nonzero(usable))
+            crop_count += int(np.count_nonzero(binary[usable] == 1))
+            probability_total += float(probability[usable].sum(dtype=np.float64))
+            confidence_total += float(confidence[usable].sum(dtype=np.float64))
+            probability[~usable] = FLOAT_NODATA
+            binary[~usable] = BYTE_NODATA
+            confidence[~usable] = FLOAT_NODATA
+            probability_output.write(probability, 1, window=window)
+            binary_output.write(binary, 1, window=window)
+            confidence_output.write(confidence, 1, window=window)
         width, height = source.width, source.height
 
         preview_scale = min(1.0, 1200.0 / max(width, height))
@@ -467,6 +550,8 @@ def execute_crop_stage(
             "fully_masked_tile_count": skipped_tile_count,
             "tile_size": tile_size,
             "halo": halo,
+            "stitching_policy": "linear_overlap_weighted_probability",
+            "overlap_pixels": 2 * halo,
             "batch_size": batch_size,
         },
         "usable_pixels": usable_count,
@@ -474,8 +559,10 @@ def execute_crop_stage(
         "crop_pixels": crop_count,
         "crop_fraction_usable": crop_count / usable_count if usable_count else None,
         "crop_percentage_usable": 100.0 * crop_count / usable_count if usable_count else None,
-        "mean_crop_probability_usable": probability_sum / usable_count if usable_count else None,
-        "mean_confidence_usable": confidence_sum / usable_count if usable_count else None,
+        "mean_crop_probability_usable": (
+            probability_total / usable_count if usable_count else None
+        ),
+        "mean_confidence_usable": confidence_total / usable_count if usable_count else None,
         "output_files": {
             "crop_probability": str(probability_path.resolve()),
             "crop_binary": str(binary_path.resolve()),
