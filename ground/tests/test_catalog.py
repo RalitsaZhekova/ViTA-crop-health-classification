@@ -82,6 +82,15 @@ def _build_bundle(
         "acquired_at": acquired_at,
         "status": "MEASURED",
         "claim": "relative crop-condition screening; not an agronomic diagnosis",
+        "source": {
+            "provider": "local_file",
+            "acquired_at": acquired_at,
+            "payload_measured_thick_cloud_percentage": 12.0,
+            "payload_measured_thin_cloud_percentage": 3.0,
+            "payload_measured_shadow_percentage": 4.0,
+            "payload_measured_cloud_percentage": 15.0,
+            "payload_measured_unusable_percentage": 20.0,
+        },
         "assets": assets,
         "geospatial": {
             "bounds_wgs84": [23.0, 42.0, 23.2, 42.1],

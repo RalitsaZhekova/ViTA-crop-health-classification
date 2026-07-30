@@ -78,6 +78,33 @@ priority—not a disease diagnosis. See
 [`integration/verification.json`](integration/verification.json) for the exact
 accepted Sentinel/PASTIS execution evidence and its limitations.
 
+## Coordinate-driven Earth Engine missions
+
+The persistent payload API can acquire the fixed
+`COPERNICUS/S2_SR_HARMONIZED` five-band Sentinel-2 input directly from Google
+Earth Engine. Candidate metadata is ordered on the payload, but the existing
+CloudSEN stage remains authoritative for cloud acceptance over the requested
+region. An accepted candidate continues from the same cloud-stage result; cloud
+inference and masks are not recreated.
+
+```powershell
+vita-mission run-region `
+  --bbox "23.10,42.50,23.15,42.55" `
+  --start "2026-07-01" `
+  --end "2026-07-29" `
+  --region-id "field_42" `
+  --selection-policy target_cloud_range `
+  --target-cloud-min 15 --target-cloud-max 35 --target-cloud-ideal 25 `
+  --payload-url "http://127.0.0.1:8081" `
+  --ground-store "ground/runtime"
+```
+
+The ground command submits coordinates, polls safe progress, downloads exactly
+`scene.json`, `scene.webp` and `condition.png`, verifies independent payload and
+manifest checksums, and calls the existing ground catalog ingestion. Runtime
+credentials are mounted only into the payload service. See
+[`payload/README.md`](payload/README.md) for service and deployment details.
+
 ## Training datasets and model contract
 
 The selected payload checkpoint is based on a controlled two-source training

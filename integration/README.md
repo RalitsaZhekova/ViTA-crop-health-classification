@@ -76,3 +76,31 @@ not held-out crop accuracy, broad cloud accuracy or agronomic diagnosis.
 Successful payload-only execution ends with `DOWNLINK_READY`; complete MVP
 execution ends with `MVP_READY`. Both validate software interfaces, not radio
 transfer, contact-window scheduling, retry/resume or ground acknowledgement.
+
+## Coordinate mission client
+
+`vita-mission` is the ground-side client for the persistent payload acquisition
+API. It validates the shared command, creates a collision-resistant job ID,
+checks payload health, submits coordinates, displays safe candidate progress,
+and polls to a terminal state. On completion it downloads only the three routine
+files, verifies every payload-status checksum, invokes the existing bundle
+validator (including image checksums), and uses `SceneCatalog.ingest` for the
+canonical atomic ground installation.
+
+```powershell
+vita-mission run-region `
+  --bbox "23.10,42.50,23.15,42.55" `
+  --start "2026-07-01" `
+  --end "2026-07-29" `
+  --region-id "field_42" `
+  --selection-policy "target_cloud_range" `
+  --target-cloud-min 15 `
+  --target-cloud-max 35 `
+  --target-cloud-ideal 25 `
+  --payload-url "http://127.0.0.1:8081" `
+  --ground-store "ground/runtime"
+```
+
+The printed result distinguishes Earth Engine metadata cloud percentage from
+payload-measured cloud, shadow and unusable percentages. No cloud, crop or
+condition result is recomputed by this client.

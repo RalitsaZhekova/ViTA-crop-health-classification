@@ -32,6 +32,13 @@ CONDITION_LABELS = frozenset(
     }
 )
 SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+SOURCE_MEASUREMENT_FIELDS = (
+    "payload_measured_thick_cloud_percentage",
+    "payload_measured_thin_cloud_percentage",
+    "payload_measured_shadow_percentage",
+    "payload_measured_cloud_percentage",
+    "payload_measured_unusable_percentage",
+)
 
 
 class BundleValidationError(ValueError):
@@ -114,6 +121,127 @@ def _validate_no_absolute_paths(manifest: dict[str, Any]) -> None:
             raise BundleValidationError("Bundle metadata must not contain absolute paths")
 
 
+def _validate_source(value: Any) -> None:
+    source = _require_object(value, name="source")
+    provider = source.get("provider")
+    if provider not in {"local_file", "earth_engine"}:
+        raise BundleValidationError("source.provider is unsupported")
+    for field in SOURCE_MEASUREMENT_FIELDS:
+        _require_percentage(source.get(field), name=f"source.{field}")
+    if provider == "local_file":
+        allowed = {"provider", "acquired_at", *SOURCE_MEASUREMENT_FIELDS}
+        if not set(source) <= allowed:
+            raise BundleValidationError("Local-file source provenance contains unknown fields")
+        return
+
+    required = {
+        "collection",
+        "provider_scene_id",
+        "product_id",
+        "acquired_at",
+        "requested_bbox_wgs84",
+        "source_crs",
+        "source_transform",
+        "source_scale",
+        "source_sha256",
+        "source_bytes",
+        "selection_policy",
+        "target_cloud_range",
+        "earth_engine_metadata_cloud_percentage",
+        "candidate_rank",
+        "candidate_attempt_count",
+        "resampling_policy",
+    }
+    if not required <= set(source):
+        raise BundleValidationError("Earth Engine source provenance is incomplete")
+    allowed = {"provider", *required, *SOURCE_MEASUREMENT_FIELDS}
+    if set(source) != allowed:
+        raise BundleValidationError("Earth Engine source provenance contains unknown fields")
+    if source.get("collection") != "COPERNICUS/S2_SR_HARMONIZED":
+        raise BundleValidationError("source.collection is unsupported")
+    if not isinstance(source.get("provider_scene_id"), str) or not source[
+        "provider_scene_id"
+    ]:
+        raise BundleValidationError("source.provider_scene_id is invalid")
+    if source.get("product_id") is not None and not isinstance(source["product_id"], str):
+        raise BundleValidationError("source.product_id is invalid")
+    _normalise_datetime(source.get("acquired_at"))
+    bbox = source.get("requested_bbox_wgs84")
+    if (
+        not isinstance(bbox, list)
+        or len(bbox) != 4
+        or any(not isinstance(item, (int, float)) or not math.isfinite(item) for item in bbox)
+    ):
+        raise BundleValidationError("source.requested_bbox_wgs84 is invalid")
+    west, south, east, north = bbox
+    if not (-180 <= west < east <= 180 and -90 <= south < north <= 90):
+        raise BundleValidationError("source.requested_bbox_wgs84 is outside valid bounds")
+    transform = source.get("source_transform")
+    if (
+        not isinstance(transform, list)
+        or len(transform) != 6
+        or any(
+            not isinstance(item, (int, float)) or not math.isfinite(item)
+            for item in transform
+        )
+    ):
+        raise BundleValidationError("source.source_transform is invalid")
+    if source.get("source_scale") != 10_000:
+        raise BundleValidationError("source.source_scale is invalid")
+    if not isinstance(source.get("source_crs"), str) or not source["source_crs"]:
+        raise BundleValidationError("source.source_crs is invalid")
+    if not isinstance(source.get("source_sha256"), str) or not re.fullmatch(
+        r"[0-9a-f]{64}", source["source_sha256"]
+    ):
+        raise BundleValidationError("source.source_sha256 is invalid")
+    if source.get("selection_policy") not in {"target_cloud_range", "least_cloudy"}:
+        raise BundleValidationError("source.selection_policy is invalid")
+    if (
+        not isinstance(source.get("source_bytes"), int)
+        or isinstance(source["source_bytes"], bool)
+        or source["source_bytes"] <= 0
+    ):
+        raise BundleValidationError("source.source_bytes is invalid")
+    if (
+        not isinstance(source.get("candidate_rank"), int)
+        or isinstance(source["candidate_rank"], bool)
+        or source["candidate_rank"] < 1
+    ):
+        raise BundleValidationError("source.candidate_rank is invalid")
+    if (
+        not isinstance(source.get("candidate_attempt_count"), int)
+        or isinstance(source["candidate_attempt_count"], bool)
+        or not 1 <= source["candidate_attempt_count"] <= 5
+    ):
+        raise BundleValidationError("source.candidate_attempt_count is invalid")
+    target = source.get("target_cloud_range")
+    if source["selection_policy"] == "target_cloud_range":
+        if not isinstance(target, dict) or set(target) != {
+            "minimum_percent",
+            "maximum_percent",
+            "ideal_percent",
+        }:
+            raise BundleValidationError("source.target_cloud_range is invalid")
+        minimum = _require_percentage(
+            target["minimum_percent"], name="source.target_cloud_range.minimum_percent"
+        )
+        maximum = _require_percentage(
+            target["maximum_percent"], name="source.target_cloud_range.maximum_percent"
+        )
+        ideal = _require_percentage(
+            target["ideal_percent"], name="source.target_cloud_range.ideal_percent"
+        )
+        if not (5 <= minimum < maximum <= 50 and minimum <= ideal <= maximum):
+            raise BundleValidationError("source.target_cloud_range is outside safe bounds")
+    elif target is not None:
+        raise BundleValidationError("least-cloudy source.target_cloud_range must be null")
+    metadata_cloud = source.get("earth_engine_metadata_cloud_percentage")
+    if metadata_cloud is not None:
+        _require_percentage(metadata_cloud, name="source.earth_engine_metadata_cloud_percentage")
+    if source.get("resampling_policy") != "earth_engine_default_nearest":
+        raise BundleValidationError("source.resampling_policy is invalid")
+
+
 def _validate_asset(
     root: Path,
     value: Any,
@@ -176,6 +304,7 @@ def validate_bundle(bundle_root: str | Path) -> ValidatedBundle:
     if manifest.get("product_type") != BUNDLE_PRODUCT_TYPE:
         raise BundleValidationError("Unsupported downlink product_type")
     _validate_no_absolute_paths(manifest)
+    _validate_source(manifest.get("source"))
 
     scene_id = _require_identifier(manifest.get("scene_id"), name="scene_id")
     region_id = _require_identifier(manifest.get("region_id"), name="region_id")

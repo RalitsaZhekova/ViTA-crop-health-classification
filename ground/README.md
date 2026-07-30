@@ -29,6 +29,12 @@ every checksum and image property, and atomically copies valid bundles into an
 immutable scene store backed by SQLite. Re-ingesting the identical bundle is
 safe; reusing a scene identifier for different content is rejected.
 
+For coordinate missions, `vita-mission` in the integration package is the thin
+ground transport client. It submits the validated coordinate command, polls the
+payload, independently verifies the three downloaded files, then calls this
+same catalog ingestion path. Earth Engine access and every cloud, crop and
+condition calculation remain payload-side.
+
 ```powershell
 vita-ground-ingest `
   --bundle ..\testing\runs\pastis_10425_compact_downlink\payload\downlink `
