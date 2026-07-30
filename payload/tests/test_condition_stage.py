@@ -319,6 +319,7 @@ def _complete_payload_for_downlink(root: Path) -> Path:
             "thick_cloud_percentage": 0.1,
             "thin_cloud_percentage": 0.1,
             "cloud_shadow_percentage": 0.1,
+            "total_cloud_percentage": 0.2,
             "unusable_percentage": 100.0 * 4 / (32 * 32),
         },
         "crop": {"crop_percentage_usable": 100.0},
@@ -349,6 +350,8 @@ def test_downlink_bundle_is_three_small_web_ready_files(tmp_path: Path) -> None:
     ]
     assert manifest["product_type"] == "vita.crop-condition.web-bundle"
     assert manifest["package"]["file_count"] == 3
+    assert manifest["source"]["provider"] == "local_file"
+    assert manifest["source"]["payload_measured_cloud_percentage"] == 0.2
     assert manifest["package"]["metadata_bytes"] == (output / "scene.json").stat().st_size
     assert manifest["package"]["total_bytes"] == sum(
         path.stat().st_size for path in output.iterdir()
@@ -393,6 +396,48 @@ def test_downlink_bundle_protects_existing_metadata(tmp_path: Path) -> None:
 
     with pytest.raises(FileExistsError, match="already exists"):
         build_downlink_bundle(result_path, output_root=output)
+
+
+def test_downlink_bundle_records_safe_earth_engine_and_payload_cloud_provenance(
+    tmp_path: Path,
+) -> None:
+    result_path = _complete_payload_for_downlink(tmp_path)
+    payload = json.loads(result_path.read_text(encoding="utf-8"))
+    payload["stage_metadata"]["acquisition"] = {
+        "provider": "earth_engine",
+        "collection": "COPERNICUS/S2_SR_HARMONIZED",
+        "provider_scene_id": "20260715T090559_20260715T090600_T34TFN",
+        "product_id": "S2B_MSIL2A_20260715T090559_N0511_R050_T34TFN_20260715T120000",
+        "acquired_at": "2026-07-15T09:05:59+00:00",
+        "requested_bbox_wgs84": [23.10, 42.50, 23.15, 42.55],
+        "source_crs": "EPSG:32634",
+        "source_transform": [10, 0, 500000, 0, -10, 4700000],
+        "source_scale": 10000,
+        "source_sha256": "a" * 64,
+        "source_bytes": 12345,
+        "selection_policy": "target_cloud_range",
+        "target_cloud_range": {
+            "minimum_percent": 15,
+            "maximum_percent": 35,
+            "ideal_percent": 25,
+        },
+        "earth_engine_metadata_cloud_percentage": 24.8,
+        "candidate_rank": 1,
+        "candidate_attempt_count": 2,
+        "resampling_policy": "earth_engine_default_nearest",
+    }
+    result_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    manifest = build_downlink_bundle(result_path, output_root=tmp_path / "downlink")
+
+    source = manifest["source"]
+    assert source["provider"] == "earth_engine"
+    assert source["earth_engine_metadata_cloud_percentage"] == 24.8
+    assert source["payload_measured_cloud_percentage"] == 0.2
+    assert source["payload_measured_shadow_percentage"] == 0.1
+    assert source["payload_measured_unusable_percentage"] == pytest.approx(100 * 4 / 1024)
+    assert "url" not in json.dumps(source).lower()
+    assert "credential" not in json.dumps(source).lower()
 
 
 def test_downlink_bundle_requires_completed_condition_stage(tmp_path: Path) -> None:

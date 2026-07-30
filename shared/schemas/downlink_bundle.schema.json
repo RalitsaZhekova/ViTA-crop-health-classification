@@ -14,6 +14,7 @@
     "acquired_at",
     "status",
     "claim",
+    "source",
     "assets",
     "geospatial",
     "quality",
@@ -36,6 +37,90 @@
     "acquired_at": {"type": "string", "format": "date-time"},
     "status": {"enum": ["MEASURED", "INSUFFICIENT_DATA"]},
     "claim": {"type": "string", "minLength": 1},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "payload_measured_thick_cloud_percentage",
+        "payload_measured_thin_cloud_percentage",
+        "payload_measured_shadow_percentage",
+        "payload_measured_cloud_percentage",
+        "payload_measured_unusable_percentage"
+      ],
+      "properties": {
+        "provider": {"enum": ["local_file", "earth_engine"]},
+        "collection": {"type": "string"},
+        "provider_scene_id": {"type": "string"},
+        "product_id": {"type": ["string", "null"]},
+        "acquired_at": {"type": ["string", "null"], "format": "date-time"},
+        "requested_bbox_wgs84": {
+          "type": "array",
+          "items": {"type": "number"},
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "source_crs": {"type": "string"},
+        "source_transform": {
+          "type": "array",
+          "items": {"type": "number"},
+          "minItems": 6,
+          "maxItems": 6
+        },
+        "source_scale": {"type": "number", "const": 10000},
+        "source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "source_bytes": {"type": "integer", "minimum": 1},
+        "selection_policy": {"enum": ["target_cloud_range", "least_cloudy"]},
+        "target_cloud_range": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["minimum_percent", "maximum_percent", "ideal_percent"],
+          "properties": {
+            "minimum_percent": {"type": "number", "minimum": 5, "maximum": 50},
+            "maximum_percent": {"type": "number", "minimum": 5, "maximum": 50},
+            "ideal_percent": {"type": "number", "minimum": 0, "maximum": 100}
+          }
+        },
+        "earth_engine_metadata_cloud_percentage": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 100
+        },
+        "candidate_rank": {"type": "integer", "minimum": 1},
+        "candidate_attempt_count": {"type": "integer", "minimum": 1, "maximum": 5},
+        "resampling_policy": {"const": "earth_engine_default_nearest"},
+        "payload_measured_thick_cloud_percentage": {"type": "number", "minimum": 0, "maximum": 100},
+        "payload_measured_thin_cloud_percentage": {"type": "number", "minimum": 0, "maximum": 100},
+        "payload_measured_shadow_percentage": {"type": "number", "minimum": 0, "maximum": 100},
+        "payload_measured_cloud_percentage": {"type": "number", "minimum": 0, "maximum": 100},
+        "payload_measured_unusable_percentage": {"type": "number", "minimum": 0, "maximum": 100}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"provider": {"const": "earth_engine"}}},
+          "then": {
+            "required": [
+              "collection",
+              "provider_scene_id",
+              "product_id",
+              "acquired_at",
+              "requested_bbox_wgs84",
+              "source_crs",
+              "source_transform",
+              "source_scale",
+              "source_sha256",
+              "source_bytes",
+              "selection_policy",
+              "target_cloud_range",
+              "earth_engine_metadata_cloud_percentage",
+              "candidate_rank",
+              "candidate_attempt_count",
+              "resampling_policy"
+            ]
+          }
+        }
+      ]
+    },
     "assets": {
       "type": "object",
       "additionalProperties": false,

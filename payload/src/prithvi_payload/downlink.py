@@ -427,6 +427,34 @@ def build_downlink_bundle(
     }
     asset_bytes = sum(item["bytes"] for item in assets.values())
     crop_model = stage_metadata.get("crop", {}).get("model", {})
+    acquisition = stage_metadata.get("acquisition")
+    if isinstance(acquisition, dict):
+        source_provenance = dict(acquisition)
+    else:
+        source_provenance = {
+            "provider": "local_file",
+            "acquired_at": intake.get("acquired_at"),
+        }
+    cloud_summary = payload.get("summary", {}).get("cloud", {})
+    source_provenance.update(
+        {
+            "payload_measured_thick_cloud_percentage": cloud_summary.get(
+                "thick_cloud_percentage"
+            ),
+            "payload_measured_thin_cloud_percentage": cloud_summary.get(
+                "thin_cloud_percentage"
+            ),
+            "payload_measured_shadow_percentage": cloud_summary.get(
+                "cloud_shadow_percentage"
+            ),
+            "payload_measured_cloud_percentage": cloud_summary.get(
+                "total_cloud_percentage"
+            ),
+            "payload_measured_unusable_percentage": cloud_summary.get(
+                "unusable_percentage"
+            ),
+        }
+    )
     manifest = {
         "schema_version": DOWNLINK_SCHEMA_VERSION,
         "product_type": DOWNLINK_PRODUCT_TYPE,
@@ -437,6 +465,7 @@ def build_downlink_bundle(
         "acquired_at": intake.get("acquired_at"),
         "status": condition_report.get("status"),
         "claim": "relative crop-condition screening; not an agronomic diagnosis",
+        "source": source_provenance,
         "assets": assets,
         "geospatial": geospatial,
         "quality": {

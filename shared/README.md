@@ -10,7 +10,9 @@ It owns:
 - the preserved 13 fine classes and active crop/no-crop contract;
 - the selected checkpoint identity and calibrated thresholds;
 - sensor-neutral vegetation indices, RGB diagnostics and transparent condition scoring;
-- JSON schemas exchanged between payload and ground.
+- the strict typed Earth Engine coordinate-command contract;
+- JSON schemas exchanged between payload and ground, including acquisition and
+  the fixed three-file downlink provenance.
 
 It contains no model weights, satellite reconstruction, cloud detection,
 scene orchestration, database code or UI code.

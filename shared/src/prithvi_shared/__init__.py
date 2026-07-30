@@ -1,5 +1,11 @@
 """Stable contracts shared by training, payload and ground components."""
 
+from prithvi_shared.acquisition import (
+    ACQUISITION_SCHEMA_VERSION,
+    EARTH_ENGINE_PROVIDER,
+    EarthEngineSourceCommand,
+    PayloadAcquisitionCommand,
+)
 from prithvi_shared.bands import (
     INPUT_HEIGHT,
     INPUT_WIDTH,
@@ -45,6 +51,7 @@ from prithvi_shared.health import (
 )
 
 __all__ = [
+    "ACQUISITION_SCHEMA_VERSION",
     "BINARY_CROP_TARGET_IDS",
     "BINARY_IGNORE_CLASS_IDS",
     "CLASS_NAMES",
@@ -55,6 +62,8 @@ __all__ = [
     "ConditionScoreLayers",
     "CROP_CLASSIFICATION_THRESHOLD",
     "CROP_PROBABILITY_CLASS_IDS",
+    "EARTH_ENGINE_PROVIDER",
+    "EarthEngineSourceCommand",
     "HEALTH_ANALYSIS_CROP_THRESHOLD",
     "HEALTH_CROP_CLASS_IDS",
     "HealthLayers",
@@ -66,6 +75,7 @@ __all__ = [
     "NON_CROP_CLASS_IDS",
     "NORMALIZATION_MEANS",
     "NORMALIZATION_STDS",
+    "PayloadAcquisitionCommand",
     "SELECTED_CHECKPOINT_NAME",
     "SELECTED_CHECKPOINT_SHA256",
     "SOURCE_CHECKPOINT_SHA256",

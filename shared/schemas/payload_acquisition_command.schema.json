@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vita.example/schemas/payload-acquisition-command-v1.json",
+  "title": "ViTA payload acquisition command",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "job_id", "region_id", "source"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "job_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,80}$"},
+    "region_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,80}$"},
+    "source": {"$ref": "#/$defs/earthEngineSource"}
+  },
+  "$defs": {
+    "earthEngineSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "bbox_wgs84",
+        "start_date",
+        "end_date",
+        "selection_policy"
+      ],
+      "properties": {
+        "provider": {"const": "earth_engine"},
+        "bbox_wgs84": {
+          "type": "array",
+          "prefixItems": [
+            {"type": "number", "minimum": -180, "maximum": 180},
+            {"type": "number", "minimum": -90, "maximum": 90},
+            {"type": "number", "minimum": -180, "maximum": 180},
+            {"type": "number", "minimum": -90, "maximum": 90}
+          ],
+          "items": false,
+          "minItems": 4,
+          "maxItems": 4,
+          "description": "west, south, east, north; schema 1.0 forbids antimeridian crossing"
+        },
+        "start_date": {"type": "string", "format": "date"},
+        "end_date": {
+          "type": "string",
+          "format": "date",
+          "description": "inclusive; the validated interval must not exceed 92 days"
+        },
+        "selection_policy": {"enum": ["target_cloud_range", "least_cloudy"]},
+        "target_cloud_min_percent": {"type": "number", "minimum": 5, "maximum": 50},
+        "target_cloud_max_percent": {"type": "number", "minimum": 5, "maximum": 50},
+        "target_cloud_ideal_percent": {"type": "number", "minimum": 0, "maximum": 100}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"selection_policy": {"const": "target_cloud_range"}}
+          },
+          "then": {
+            "required": [
+              "target_cloud_min_percent",
+              "target_cloud_max_percent",
+              "target_cloud_ideal_percent"
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

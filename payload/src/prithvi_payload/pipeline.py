@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +54,8 @@ def run_scene(
     cloud_backend: CloudBackend | None = None,
     cloud_config: dict[str, Any] | None = None,
     crop_model: Any | None = None,
+    acquisition_metadata: dict[str, Any] | None = None,
+    progress_callback: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """Run only the explicitly selected stages for one preprocessed scene."""
     if stop_after not in {"intake", "cloud", "crop", "condition", "downlink"}:
@@ -143,12 +146,74 @@ def run_scene(
     result["stage_metadata"]["cloud"] = cloud_metadata
     if stop_after == "cloud":
         return _finish(output_root, result)
+    _finish(output_root, result)
+    return continue_scene_from_cloud(
+        output_root / "result.json",
+        stop_after=stop_after,
+        max_cloud_percentage=max_crop_cloud_percentage,
+        region_id=region_id,
+        condition_tile_size=condition_tile_size,
+        downlink_max_image_dimension=downlink_max_image_dimension,
+        downlink_grid_size=downlink_grid_size,
+        overwrite=overwrite,
+        crop_model=crop_model,
+        acquisition_metadata=acquisition_metadata,
+        progress_callback=progress_callback,
+    )
+
+
+def continue_scene_from_cloud(
+    payload_result_path: str | Path,
+    *,
+    stop_after: str = "downlink",
+    max_cloud_percentage: float = DEFAULT_MAX_CLOUD_PERCENTAGE,
+    region_id: str | None = None,
+    condition_tile_size: int = 512,
+    downlink_max_image_dimension: int = DEFAULT_MAX_IMAGE_DIMENSION,
+    downlink_grid_size: int = DEFAULT_GRID_SIZE,
+    overwrite: bool = False,
+    crop_model: Any | None = None,
+    acquisition_metadata: dict[str, Any] | None = None,
+    progress_callback: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    """Continue from one completed cloud stage without executing cloud inference again."""
+    if stop_after not in {"crop", "condition", "downlink"}:
+        raise ValueError("cloud continuation stop_after must be crop, condition or downlink")
+    result_path = Path(payload_result_path).resolve()
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    if result.get("status") != "CLOUD_COMPLETE" or result.get("completed_stages") != [
+        "intake",
+        "cloud",
+    ]:
+        raise ValueError("Cloud continuation requires an uncontinued CLOUD_COMPLETE result")
+    output_root = result_path.parent
+    stage_metadata = result.get("stage_metadata", {})
+    intake = stage_metadata.get("intake")
+    plan = stage_metadata.get("cloud_plan")
+    cloud_metadata = stage_metadata.get("cloud")
+    if not all(isinstance(value, dict) for value in (intake, plan, cloud_metadata)):
+        raise ValueError("Cloud continuation metadata is incomplete")
+    resolved_scene_id = str(result["scene_id"])
+    if acquisition_metadata is not None:
+        result["stage_metadata"]["acquisition"] = acquisition_metadata
+        result["summary"]["acquisition"] = {
+            "provider": acquisition_metadata.get("provider"),
+            "collection": acquisition_metadata.get("collection"),
+            "provider_scene_id": acquisition_metadata.get("provider_scene_id"),
+            "metadata_cloud_percentage": acquisition_metadata.get(
+                "earth_engine_metadata_cloud_percentage"
+            ),
+            "candidate_rank": acquisition_metadata.get("candidate_rank"),
+            "candidate_attempt_count": acquisition_metadata.get("candidate_attempt_count"),
+        }
+    if progress_callback is not None:
+        progress_callback("validating_input")
 
     crop_plan = build_crop_stage_plan(
         intake,
         plan,
         cloud_metadata,
-        max_cloud_percentage=max_crop_cloud_percentage,
+        max_cloud_percentage=max_cloud_percentage,
     )
     crop_plan_path = output_root / "metadata" / f"{resolved_scene_id}_crop_plan.json"
     _write_json(crop_plan_path, crop_plan)
@@ -172,6 +237,8 @@ def run_scene(
     # Keep the 100M crop model and TerraTorch out of intake/cloud-only runs.
     from prithvi_payload.crop_executor import execute_crop_stage
 
+    if progress_callback is not None:
+        progress_callback("running_crop")
     crop_metadata = execute_crop_stage(
         crop_plan,
         output_root=output_root,
@@ -201,6 +268,8 @@ def run_scene(
     _finish(output_root, result)
     from prithvi_payload.condition_stage import run_payload_condition
 
+    if progress_callback is not None:
+        progress_callback("running_condition")
     condition_root = output_root / "condition_analysis"
     condition_report = run_payload_condition(
         output_root / "result.json",
@@ -234,6 +303,8 @@ def run_scene(
     _finish(output_root, result)
     from prithvi_payload.downlink import build_downlink_bundle
 
+    if progress_callback is not None:
+        progress_callback("packaging")
     downlink_root = output_root / "downlink"
     downlink = build_downlink_bundle(
         output_root / "result.json",

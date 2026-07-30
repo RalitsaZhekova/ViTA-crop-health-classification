@@ -24,6 +24,61 @@ the checkpoint and `architecture.yaml`; source checkouts resolve
 The selected base model emits crop/non-crop output only. The preserved crop-type
 models remain ground-side under `outputs/` and are not part of the flight bundle.
 
+## Earth Engine acquisition service
+
+The persistent payload service accepts only the shared acquisition command
+schema and uses the fixed project `vita-503208`, collection
+`COPERNICUS/S2_SR_HARMONIZED`, band order `B02,B03,B04,B08,B8A`, 10 metre UTM
+grid and reflectance scale 10000. Regions larger than 1024 pixels in either
+dimension are rejected instead of resized. Callers cannot provide collection
+names, bands, expressions, commands, modules, output paths or executables.
+
+Application Default Credentials are initialized once; interactive
+`ee.Authenticate()` is never used:
+
+```text
+EE_PROJECT_ID=vita-503208
+GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/earth_engine_credentials
+EE_MAX_CANDIDATES=50
+EE_MAX_SCENE_ATTEMPTS=5
+CUDA_REQUIRED=1
+```
+
+Verify credential and collection access without printing credential data or a
+signed download URL:
+
+```powershell
+python -m prithvi_payload.ee_smoke
+```
+
+Start the long-lived API after mounting the runtime credential and model files:
+
+```powershell
+python -m prithvi_payload.service --host 127.0.0.1 --port 8081
+```
+
+The service initializes Earth Engine, CUDA, CloudSEN and the crop model once,
+warms both models once, and serializes GPU work through a bounded queue. Job
+state is written atomically below `VITA_JOB_ROOT` and completed jobs survive
+restart. Its fixed endpoints are `GET /health`, `POST /v1/jobs`, job status, and
+one endpoint for each of the three routine artifacts.
+
+For `target_cloud_range`, Earth Engine scene metadata must first be within the
+requested 15-35% demonstration range. Up to five ordered candidates are then
+downloaded one at a time and evaluated by the existing CloudSEN stage over the
+actual AOI. A candidate outside the payload-measured range is recorded safely,
+its unnecessary raster/model intermediates are removed, and the next candidate
+is tried. The accepted candidate continues through the existing crop, condition
+and downlink stages from the same cloud result. The 60% crop cloud gate, cloud
+thresholds, masks and all scientific calculations remain unchanged.
+
+Production files are
+[`deployment/payload/Dockerfile`](../deployment/payload/Dockerfile),
+[`compose.payload.production.yaml`](../compose.payload.production.yaml) and
+[`../.env.payload.production.example`](../.env.payload.production.example).
+`PAYLOAD_BASE_IMAGE` is deliberately required: select it only after the actual
+payload CPU architecture, CUDA/JetPack version and driver ABI are known.
+
 `scene-run` inspects a preprocessed Sentinel-2 or Balkan-1 GeoTIFF, resolves its
 declared band order, and runs cloud detection through bounded 512-pixel windows.
 When explicitly requested, scenes below the 60% cloud gate continue through
