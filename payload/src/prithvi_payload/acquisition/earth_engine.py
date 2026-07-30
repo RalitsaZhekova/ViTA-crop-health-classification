@@ -38,6 +38,60 @@ TRANSIENT_HTTP_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
 _SAFE_COMPONENT = re.compile(r"[^A-Za-z0-9_-]+")
 
 
+def _safe_download_request_error(error: Exception) -> dict[str, Any]:
+    """Classify a provider exception without retaining its potentially sensitive text."""
+    message = str(error).casefold()
+    response = getattr(error, "resp", None)
+    raw_status = getattr(response, "status", None)
+    status_code = raw_status if isinstance(raw_status, int) and 400 <= raw_status <= 599 else None
+
+    if status_code in TRANSIENT_HTTP_STATUS_CODES or any(
+        marker in message
+        for marker in ("temporarily unavailable", "deadline exceeded", "timed out", "timeout")
+    ):
+        reason = "transient_provider_failure"
+    elif status_code in {401, 403} or any(
+        marker in message
+        for marker in (
+            "permission",
+            "forbidden",
+            "not authorized",
+            "not authorised",
+            "access denied",
+            "not registered",
+            "insufficient authentication",
+        )
+    ):
+        reason = "permission_denied"
+    elif status_code == 429 or any(
+        marker in message for marker in ("quota", "resource exhausted", "rate limit")
+    ):
+        reason = "quota_exceeded"
+    elif "crs" in message or "projection" in message:
+        reason = "invalid_projection"
+    elif "affine" in message or "transform" in message:
+        reason = "invalid_transform"
+    elif "dimension" in message or "pixel grid" in message:
+        reason = "invalid_dimensions"
+    elif "band" in message:
+        reason = "invalid_bands"
+    elif "not found" in message:
+        reason = "scene_not_found"
+    elif "cannot specify" in message or status_code == 400:
+        reason = "invalid_request"
+    else:
+        reason = "request_rejected"
+
+    safe_type = _SAFE_COMPONENT.sub("_", type(error).__name__).strip("_")[:80] or "Exception"
+    details: dict[str, Any] = {
+        "provider_reason": reason,
+        "provider_error_type": safe_type,
+    }
+    if status_code is not None:
+        details["provider_status_code"] = status_code
+    return details
+
+
 def initialize_earth_engine(project_id: str) -> None:
     """Initialize with Application Default Credentials and no interactive fallback."""
     if project_id != EARTH_ENGINE_PROJECT_ID:
@@ -324,7 +378,21 @@ class EarthEngineAcquisitionProvider:
         partial.unlink(missing_ok=True)
         for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
             try:
-                signed_url = image.getDownloadURL(parameters)
+                try:
+                    signed_url = image.getDownloadURL(parameters)
+                except Exception as error:
+                    details = _safe_download_request_error(error)
+                    if (
+                        details["provider_reason"] == "transient_provider_failure"
+                        and attempt < DOWNLOAD_ATTEMPTS
+                    ):
+                        time.sleep(2 ** (attempt - 1))
+                        continue
+                    raise AcquisitionError(
+                        "EARTH_ENGINE_DOWNLOAD_REQUEST_FAILED",
+                        "Earth Engine rejected the fixed GeoTIFF download request",
+                        details=details,
+                    ) from None
                 with self.session.get(
                     signed_url,
                     stream=True,

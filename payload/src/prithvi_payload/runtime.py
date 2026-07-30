@@ -189,17 +189,29 @@ class PayloadRuntime:
                 )
             except AcquisitionError as error:
                 last_acquisition_error = error
+                provider_reason = error.details.get("provider_reason")
+                reason_suffix = (
+                    f"; {provider_reason}" if isinstance(provider_reason, str) else ""
+                )
                 attempt = _safe_attempt(
                     candidate_scene_id=candidate.system_index,
                     acquired_at=candidate.acquired_at,
                     metadata_cloud_percentage=candidate.metadata_cloud_percent,
                     cloud=None,
                     accepted=False,
-                    rejection_reason=f"candidate acquisition failed ({error.code})",
+                    rejection_reason=(
+                        f"candidate acquisition failed ({error.code}{reason_suffix})"
+                    ),
                 )
                 attempts.append(attempt)
                 status_fields.update(candidate_attempts=attempts)
                 _notify(status_callback, "acquiring", **status_fields)
+                if error.code == "EARTH_ENGINE_DOWNLOAD_REQUEST_FAILED":
+                    raise AcquisitionError(
+                        error.code,
+                        error.safe_message,
+                        details={"candidate_attempts": attempts, **error.details},
+                    ) from None
                 continue
             candidate_root = acquired.local_tiff_path.parent
             payload_root = candidate_root / "payload"
@@ -303,6 +315,14 @@ class PayloadRuntime:
                 "payload_status": "DOWNLINK_READY",
             }
         if command.source.selection_policy == "target_cloud_range":
+            if attempts and all(
+                attempt["payload_measured_cloud_percentage"] is None for attempt in attempts
+            ):
+                raise AcquisitionError(
+                    "EARTH_ENGINE_ACQUISITION_FAILED",
+                    "Earth Engine candidates could not be acquired",
+                    details={"candidate_attempts": attempts},
+                ) from None
             raise AcquisitionError(
                 "PAYLOAD_NO_SCENE_IN_TARGET_CLOUD_RANGE",
                 "No metadata-qualified candidate met the payload-measured cloud target",

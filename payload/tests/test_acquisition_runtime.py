@@ -273,6 +273,51 @@ def test_candidate_acquisition_failure_advances_safely(
     assert "credential" not in json.dumps(failed).lower()
 
 
+def test_download_request_failure_stops_with_safe_provider_reason(tmp_path: Path) -> None:
+    provider = _Provider(2)
+    runtime = _runtime(provider)
+
+    def reject_request(*_args: Any, **_kwargs: Any) -> None:
+        raise AcquisitionError(
+            "EARTH_ENGINE_DOWNLOAD_REQUEST_FAILED",
+            "Earth Engine rejected the fixed GeoTIFF download request",
+            details={
+                "provider_reason": "invalid_request",
+                "provider_error_type": "EEException",
+            },
+        )
+
+    provider.acquire_candidate = reject_request  # type: ignore[method-assign]
+
+    with pytest.raises(AcquisitionError) as caught:
+        runtime.process(_command(), tmp_path / "job", lambda *_: None)
+
+    assert caught.value.code == "EARTH_ENGINE_DOWNLOAD_REQUEST_FAILED"
+    assert caught.value.details["provider_reason"] == "invalid_request"
+    assert len(caught.value.details["candidate_attempts"]) == 1
+    assert "invalid_request" in caught.value.details["candidate_attempts"][0][
+        "reason_rejected_for_demonstration"
+    ]
+
+
+def test_all_download_failures_are_not_reported_as_cloud_range_rejection(
+    tmp_path: Path,
+) -> None:
+    failed_scenes = {f"scene-{index}" for index in range(1, 6)}
+    provider = _Provider(5, failures=failed_scenes)
+    runtime = _runtime(provider)
+
+    with pytest.raises(AcquisitionError) as caught:
+        runtime.process(_command(), tmp_path / "job", lambda *_: None)
+
+    assert caught.value.code == "EARTH_ENGINE_ACQUISITION_FAILED"
+    assert len(caught.value.details["candidate_attempts"]) == 5
+    assert all(
+        attempt["payload_measured_cloud_percentage"] is None
+        for attempt in caught.value.details["candidate_attempts"]
+    )
+
+
 def test_existing_scientific_rejection_threshold_is_unchanged() -> None:
     assert DEFAULT_MAX_CLOUD_PERCENTAGE == 60.0
 

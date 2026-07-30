@@ -264,6 +264,16 @@ class _Image:
         return self.url
 
 
+class _RejectedImage:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+        self.calls = 0
+
+    def getDownloadURL(self, _: dict[str, Any]) -> str:  # noqa: N802
+        self.calls += 1
+        raise self.error
+
+
 def test_candidate_download_retries_without_logging_signed_url(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -285,6 +295,51 @@ def test_candidate_download_retries_without_logging_signed_url(
     assert len(session.urls) == 2
     assert signed_url not in caplog.text
     assert "top-secret" not in caplog.text
+
+
+def test_download_request_failure_exposes_only_safe_category(tmp_path: Path) -> None:
+    secret = "https://provider.invalid/download?access_token=top-secret"
+    provider = EarthEngineAcquisitionProvider(session=_Session([]))
+    image = _RejectedImage(RuntimeError(f"Permission denied for {secret}"))
+
+    with pytest.raises(AcquisitionError) as caught:
+        provider._stream_candidate(image, {}, tmp_path / "download.partial")
+
+    assert caught.value.code == "EARTH_ENGINE_DOWNLOAD_REQUEST_FAILED"
+    assert caught.value.details == {
+        "provider_reason": "permission_denied",
+        "provider_error_type": "RuntimeError",
+    }
+    serialized = str(caught.value.safe_record())
+    assert secret not in serialized
+    assert "top-secret" not in serialized
+
+
+def test_transient_download_request_failure_retries_safely(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _EventuallyAvailableImage:
+        calls = 0
+
+        def getDownloadURL(self, _: dict[str, Any]) -> str:  # noqa: N802
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("Service temporarily unavailable")
+            return "https://provider.invalid/safe"
+
+    grid = _small_grid()
+    raw = tmp_path / "raw.tif"
+    _write_raw_tiff(raw, grid)
+    image = _EventuallyAvailableImage()
+    provider = EarthEngineAcquisitionProvider(
+        session=_Session([_Response(200, raw.read_bytes())])
+    )
+    monkeypatch.setattr("prithvi_payload.acquisition.earth_engine.time.sleep", lambda _: None)
+
+    provider._stream_candidate(image, {}, tmp_path / "download.partial")
+
+    assert image.calls == 2
 
 
 def test_authentication_failure_is_sanitized(monkeypatch: pytest.MonkeyPatch) -> None:
