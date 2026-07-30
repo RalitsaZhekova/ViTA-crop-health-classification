@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from prithvi_shared.calibration import HEALTH_ANALYSIS_CROP_THRESHOLD
+from prithvi_shared.calibration import (
+    CROP_CLASSIFICATION_THRESHOLD,
+    HEALTH_ANALYSIS_CROP_THRESHOLD,
+)
 from prithvi_shared.health import build_analysis_mask
 
 
@@ -39,6 +42,11 @@ def test_build_analysis_mask_combines_every_quality_gate() -> None:
         dtype=bool,
     )
     np.testing.assert_array_equal(result, expected)
+
+
+def test_selected_model_thresholds_match_recorded_calibration() -> None:
+    assert CROP_CLASSIFICATION_THRESHOLD == 0.49
+    assert HEALTH_ANALYSIS_CROP_THRESHOLD == 0.645
 
 
 def test_build_analysis_mask_accepts_boolean_masks() -> None:
