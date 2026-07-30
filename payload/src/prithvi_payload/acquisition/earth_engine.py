@@ -477,6 +477,7 @@ class EarthEngineAcquisitionProvider:
         *,
         grid: TargetGrid,
     ) -> AcquiredScene:
+        acquisition_started = time.perf_counter()
         candidate_root = destination_directory / _candidate_directory_name(candidate.system_index)
         candidate_root.mkdir(parents=True, exist_ok=True)
         partial_path = candidate_root / "download.partial"
@@ -489,9 +490,18 @@ class EarthEngineAcquisitionProvider:
             image = _select_payload_bands(
                 ee.Image(f"{EARTH_ENGINE_COLLECTION}/{candidate.system_index}")
             )
+            download_started = time.perf_counter()
             self._stream_candidate(image, self._download_parameters(grid), partial_path)
+            download_seconds = time.perf_counter() - download_started
             partial_path.replace(raw_path)
+            validation_started = time.perf_counter()
             normalize_and_validate_geotiff(raw_path, scene_path, grid=grid)
+            validation_seconds = time.perf_counter() - validation_started
+            acquisition_timing = {
+                "earth_engine_download_seconds": download_seconds,
+                "geotiff_validation_seconds": validation_seconds,
+                "total_acquisition_seconds": time.perf_counter() - acquisition_started,
+            }
             acquired = AcquiredScene(
                 local_tiff_path=scene_path.resolve(),
                 provider="earth_engine",
@@ -511,6 +521,7 @@ class EarthEngineAcquisitionProvider:
                 sha256=_sha256(scene_path),
                 byte_size=scene_path.stat().st_size,
                 candidate_rank=candidate.candidate_rank,
+                timing=acquisition_timing,
             )
             _write_json_atomic(
                 record_path,
@@ -528,6 +539,7 @@ class EarthEngineAcquisitionProvider:
                         "byte_size": acquired.byte_size,
                         "resampling_policy": "earth_engine_default_nearest",
                     },
+                    "timing": acquisition_timing,
                 },
             )
             return acquired

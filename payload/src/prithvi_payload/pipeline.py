@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -306,6 +307,7 @@ def continue_scene_from_cloud(
     if progress_callback is not None:
         progress_callback("packaging")
     downlink_root = output_root / "downlink"
+    packaging_started = time.perf_counter()
     downlink = build_downlink_bundle(
         output_root / "result.json",
         output_root=downlink_root,
@@ -313,6 +315,7 @@ def continue_scene_from_cloud(
         grid_size=downlink_grid_size,
         overwrite=overwrite,
     )
+    packaging_seconds = time.perf_counter() - packaging_started
     downlink_files = {
         "metadata": downlink_root / "scene.json",
         "rgb_preview": downlink_root / downlink["assets"]["rgb_preview"]["href"],
@@ -331,12 +334,14 @@ def continue_scene_from_cloud(
         "total_bytes": package_bytes,
         "source_scene_bytes": source_bytes,
         "size_fraction_of_source": package_bytes / source_bytes if source_bytes else None,
+        "runtime_seconds": packaging_seconds,
     }
     result["stage_metadata"]["downlink"] = {
         "schema_version": downlink["schema_version"],
         "product_type": downlink["product_type"],
         "algorithm_version": downlink["algorithm_version"],
         "package": downlink["package"],
+        "runtime": {"seconds": packaging_seconds},
     }
     return _finish(output_root, result)
 

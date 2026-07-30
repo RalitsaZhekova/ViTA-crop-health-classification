@@ -10,6 +10,7 @@ from typing import Any
 
 import numpy as np
 import rasterio
+import torch
 from cloud_detection.backend import CloudBackend
 from cloud_detection.postprocessing import postprocess
 from cloud_detection.preprocessing import normalize_reflectance
@@ -32,6 +33,12 @@ def _output_profile(source: dict[str, Any]) -> dict[str, Any]:
         BIGTIFF="IF_SAFER",
     )
     return profile
+
+
+def _synchronize_cuda(backend: CloudBackend) -> None:
+    device = getattr(backend, "device", None)
+    if getattr(device, "type", None) == "cuda":
+        torch.cuda.synchronize(device)
 
 
 def _read_padded_tile(
@@ -117,6 +124,8 @@ def execute_cloud_stage(
     unusable_count = 0
     score_kind: str | None = None
     tile_count = 0
+    inference_seconds = 0.0
+    mask_processing_seconds = 0.0
 
     with rasterio.open(source_path) as source, ExitStack() as stack:
         if max(indices) > source.count or len(set(indices)) != 4:
@@ -151,7 +160,11 @@ def execute_cloud_stage(
                     clip_max=config["input"].get("clip_max"),
                     nodata_value=nodata_value,
                 )
+                _synchronize_cuda(backend)
+                inference_started = time.perf_counter()
                 prediction = backend.predict(image.astype(np.float32, copy=False))
+                _synchronize_cuda(backend)
+                inference_seconds += time.perf_counter() - inference_started
                 if prediction.scores.shape != (4, tile_size, tile_size):
                     raise ValueError(
                         "Cloud backend returned unexpected score shape: "
@@ -163,12 +176,14 @@ def execute_cloud_stage(
                     raise ValueError("Cloud backend returned mixed score kinds")
 
                 semantic_tile = prediction.scores.argmax(axis=0).astype(np.uint8)
+                mask_started = time.perf_counter()
                 unusable_tile = postprocess(
                     semantic_tile,
                     classes,
                     config["postprocessing"],
                     invalid,
                 )
+                mask_processing_seconds += time.perf_counter() - mask_started
                 core_slice = (
                     slice(halo, halo + core_height),
                     slice(halo, halo + core_width),
@@ -264,6 +279,8 @@ def execute_cloud_stage(
         "raster": {"width": width, "height": height, "total_pixels": total_pixels},
         "runtime": {
             "seconds": time.perf_counter() - started,
+            "inference_seconds": inference_seconds,
+            "mask_processing_seconds": mask_processing_seconds,
             "tile_count": tile_count,
             "tile_size": tile_size,
             "halo": halo,

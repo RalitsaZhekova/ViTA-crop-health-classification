@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +48,7 @@ class AcquiredScene:
     sha256: str
     byte_size: int
     candidate_rank: int
+    timing: dict[str, float] = field(default_factory=dict)
 
     def safe_provenance(
         self,

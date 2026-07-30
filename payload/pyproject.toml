@@ -34,6 +34,8 @@ scene-plan-cloud = "prithvi_payload.cloud_stage:main"
 scene-run = "prithvi_payload.pipeline:main"
 payload-condition = "prithvi_payload.condition_stage:main"
 vita-payload-serve = "prithvi_payload.service:main"
+vita-payload-preflight = "prithvi_payload.container_preflight:main"
+vita-payload-benchmark = "prithvi_payload.benchmark:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

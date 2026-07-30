@@ -6,6 +6,7 @@ import hashlib
 import os
 import shutil
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,15 @@ from prithvi_payload.inference import PayloadCropModel
 from prithvi_payload.pipeline import continue_scene_from_cloud, run_scene
 
 StatusCallback = Callable[[str, dict[str, Any]], None]
+
+
+def _stage_seconds(value: Any, *keys: str) -> float:
+    current = value
+    for key in keys:
+        if not isinstance(current, dict):
+            return 0.0
+        current = current.get(key)
+    return float(current) if isinstance(current, (int, float)) else 0.0
 
 
 def _notify(callback: StatusCallback, state: str, **fields: Any) -> None:
@@ -137,6 +147,8 @@ class PayloadRuntime:
     def health(self) -> dict[str, Any]:
         return {
             "status": "ok" if self.initialized else "starting",
+            "ready": self.initialized,
+            "earth_engine_initialized": self.initialized,
             "earth_engine_project": self.provider.project_id,
             "cuda_required": self.cuda_required,
             "cuda_available": torch.cuda.is_available(),
@@ -163,8 +175,12 @@ class PayloadRuntime:
         job_directory: Path,
         status_callback: StatusCallback,
     ) -> dict[str, Any]:
+        payload_started = time.perf_counter()
         _notify(status_callback, "searching_candidates")
+        search_started = time.perf_counter()
         candidates, grid = self.provider.search_candidates(command)
+        candidate_search_seconds = time.perf_counter() - search_started
+        earth_engine_acquisition_seconds = candidate_search_seconds
         acquisition_root = job_directory / "acquisition"
         acquisition_root.mkdir(parents=True, exist_ok=True)
         attempts: list[dict[str, Any]] = []
@@ -180,6 +196,7 @@ class PayloadRuntime:
                 "candidate_attempts": attempts,
             }
             _notify(status_callback, "acquiring", **status_fields)
+            acquisition_started = time.perf_counter()
             try:
                 acquired = self.provider.acquire_candidate(
                     command,
@@ -188,6 +205,7 @@ class PayloadRuntime:
                     grid=grid,
                 )
             except AcquisitionError as error:
+                earth_engine_acquisition_seconds += time.perf_counter() - acquisition_started
                 last_acquisition_error = error
                 provider_reason = error.details.get("provider_reason")
                 reason_suffix = (
@@ -213,6 +231,7 @@ class PayloadRuntime:
                         details={"candidate_attempts": attempts, **error.details},
                     ) from None
                 continue
+            earth_engine_acquisition_seconds += time.perf_counter() - acquisition_started
             candidate_root = acquired.local_tiff_path.parent
             payload_root = candidate_root / "payload"
             _notify(status_callback, "validating_input", **status_fields)
@@ -301,6 +320,51 @@ class PayloadRuntime:
             artifact_checksums = {
                 filename: _sha256(downlink_root / filename) for filename in sorted(entries)
             }
+            cloud_runtime = payload.get("stage_metadata", {}).get("cloud", {}).get(
+                "runtime", {}
+            )
+            completed_stages = completed.get("stage_metadata", {})
+            crop_runtime = completed_stages.get("crop", {}).get("runtime", {})
+            condition_runtime = completed_stages.get("condition", {}).get("runtime", {})
+            downlink_runtime = completed_stages.get("downlink", {}).get("runtime", {})
+            timing = {
+                "candidate_search_seconds": candidate_search_seconds,
+                "earth_engine_acquisition_seconds": earth_engine_acquisition_seconds,
+                "earth_engine_download_seconds": acquired.timing.get(
+                    "earth_engine_download_seconds", 0.0
+                ),
+                "geotiff_validation_seconds": acquired.timing.get(
+                    "geotiff_validation_seconds", 0.0
+                ),
+                "cloud_inference_seconds": _stage_seconds(
+                    cloud_runtime, "inference_seconds"
+                ),
+                "mask_processing_seconds": _stage_seconds(
+                    cloud_runtime, "mask_processing_seconds"
+                ),
+                "crop_inference_seconds": _stage_seconds(
+                    crop_runtime, "inference_seconds"
+                ),
+                "condition_calculation_seconds": _stage_seconds(
+                    condition_runtime, "seconds"
+                ),
+                "downlink_packaging_seconds": _stage_seconds(
+                    downlink_runtime, "seconds"
+                ),
+            }
+            timing["warm_science_seconds"] = sum(
+                timing[name]
+                for name in (
+                    "cloud_inference_seconds",
+                    "mask_processing_seconds",
+                    "crop_inference_seconds",
+                    "condition_calculation_seconds",
+                    "downlink_packaging_seconds",
+                )
+            )
+            timing["total_payload_processing_seconds"] = (
+                time.perf_counter() - payload_started
+            )
             return {
                 "selected_scene": acquired.provider_scene_id,
                 "metadata_cloud_percentage": acquired.metadata_cloud_percent,
@@ -313,6 +377,7 @@ class PayloadRuntime:
                 "artifacts": ["scene.json", "scene.webp", "condition.png"],
                 "artifact_checksums": artifact_checksums,
                 "payload_status": "DOWNLINK_READY",
+                "timing": timing,
             }
         if command.source.selection_policy == "target_cloud_range":
             if attempts and all(

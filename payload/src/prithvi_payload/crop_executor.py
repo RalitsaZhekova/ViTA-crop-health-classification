@@ -300,6 +300,7 @@ def execute_crop_stage(
     tile_count = 0
     inferred_tile_count = 0
     skipped_tile_count = 0
+    inference_seconds = 0.0
 
     with (
         rasterio.open(source_path) as source,
@@ -352,7 +353,7 @@ def execute_crop_stage(
         pending: list[dict[str, Any]] = []
 
         def flush_pending() -> None:
-            nonlocal inferred_tile_count
+            nonlocal inference_seconds, inferred_tile_count
             if not pending:
                 return
             images = torch.from_numpy(np.stack([item["image"] for item in pending]))
@@ -365,11 +366,17 @@ def execute_crop_stage(
                 [item["location"] for item in pending],
                 dtype=torch.float32,
             )
+            if model.device.type == "cuda":
+                torch.cuda.synchronize(model.device)
+            inference_started = time.perf_counter()
             prediction = model.predict(
                 images,
                 temporal_coords=temporal,
                 location_coords=locations,
             )
+            if model.device.type == "cuda":
+                torch.cuda.synchronize(model.device)
+            inference_seconds += time.perf_counter() - inference_started
             probabilities = prediction.crop_probability.float().cpu().numpy()
             for index, item in enumerate(pending):
                 _accumulate_prediction(
@@ -544,6 +551,7 @@ def execute_crop_stage(
         "raster": {"width": width, "height": height, "total_pixels": total_pixels},
         "runtime": {
             "seconds": runtime_seconds,
+            "inference_seconds": inference_seconds,
             "device": str(model.device),
             "tile_count": tile_count,
             "inferred_tile_count": inferred_tile_count,
