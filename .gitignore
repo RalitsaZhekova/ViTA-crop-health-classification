@@ -32,3 +32,9 @@ lightning_logs/
 *.tar
 *.tar.gz
 *.zip
+
+# Production environment values and credentials
+.env.payload.production
+*earth-engine*.json
+*earth_engine*.json
+*credentials*.json

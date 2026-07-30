@@ -22,6 +22,7 @@ include:
   - ../shared/class_mapping.yaml
   - ../shared/schemas/inference_result.schema.json
   - ../shared/schemas/downlink_bundle.schema.json
+  - ../shared/schemas/payload_acquisition_command.schema.json
 exclude:
   - ../training
   - ../ground
