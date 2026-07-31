@@ -120,10 +120,20 @@ def test_payload_composes_use_project_paths_secret_and_loopback_only() -> None:
 
 def test_payload_container_constraints_prevent_future_numpy_and_opencv_drift() -> None:
     constraints = _read("deployment/payload/constraints.txt")
+    stack_guard = _read("deployment/payload/stack_guard.py")
 
     assert "numpy>=2.2,<2.3" in constraints
     assert "opencv-python-headless==4.11.0.86" in constraints
     assert "opencv-python-headless==5" not in constraints
+    assert 'PINNED_OPENCV_HEADLESS_VERSION = "4.11.0.86"' in stack_guard
+    assert '"nvidia-nccl-"' in stack_guard
+    for snapshot_field in (
+        "cv2_importable",
+        "cv2_version",
+        "cv2_path",
+        "opencv_wheels",
+    ):
+        assert snapshot_field in stack_guard
 
 
 def test_ground_and_full_local_composes_keep_services_separate() -> None:

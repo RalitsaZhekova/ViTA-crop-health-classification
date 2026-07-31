@@ -44,8 +44,9 @@ COPY deployment/payload/stack_guard.py /tmp/vita-stack-guard.py
 COPY deployment/payload/constraints.txt /tmp/vita-payload-constraints.txt
 
 # The selected base must already provide its target-qualified PyTorch/CUDA
-# stack. Local x86 may add one constrained headless OpenCV 4.x wheel when the
-# base has none; Jetson may not change Python OpenCV wheels at all.
+# stack. Local x86 may add one constrained headless OpenCV 4.x wheel. Jetson
+# may add only the exact pinned headless wheel when no wheel or importable cv2
+# provider exists in the base image.
 RUN test "${VITA_TARGET_PLATFORM}" = "local-x86" -o "${VITA_TARGET_PLATFORM}" = "jetson" \
     && python /tmp/vita-stack-guard.py snapshot /tmp/vita-stack-before.json \
         --target-platform "${VITA_TARGET_PLATFORM}" \
