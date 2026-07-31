@@ -11,6 +11,7 @@ services:
         BUILD_DATE: ${VITA_BUILD_DATE:-unknown}
         APPLICATION_UID: ${VITA_CONTAINER_UID:-1000}
         APPLICATION_GID: ${VITA_CONTAINER_GID:-1000}
+        VITA_TARGET_PLATFORM: local-x86
     restart: unless-stopped
     command: [python, -m, prithvi_payload.service, --host, 0.0.0.0, --port, "8081"]
     ports:

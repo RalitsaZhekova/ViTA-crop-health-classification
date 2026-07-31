@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import pytest
-
 from prithvi_payload import container_preflight
-
 
 MODEL_HASHES = {
     "crop_model_sha256": "c" * 64,

@@ -1,0 +1,7 @@
+# TerraTorch 1.2.10 requires NumPy >=2.2. Keep the container on the stable
+# NumPy 2.2 line instead of accepting an unbounded future 2.x release.
+numpy>=2.2,<2.3
+
+# Albumentations requires opencv-python-headless >=4.9. Pin the verified 4.x
+# runtime wheel and prevent an automatic future-major OpenCV upgrade.
+opencv-python-headless==4.11.0.86

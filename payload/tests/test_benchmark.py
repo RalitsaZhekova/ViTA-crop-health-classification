@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from prithvi_payload.benchmark import TIMING_FIELDS, benchmark_record
 
 

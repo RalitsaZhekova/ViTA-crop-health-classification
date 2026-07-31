@@ -8,6 +8,7 @@ ARG VCS_REF=unknown
 ARG BUILD_DATE=unknown
 ARG APPLICATION_UID=1000
 ARG APPLICATION_GID=1000
+ARG VITA_TARGET_PLATFORM
 
 LABEL org.opencontainers.image.title="ViTA payload service" \
       org.opencontainers.image.version="${APPLICATION_VERSION}" \
@@ -40,18 +41,24 @@ COPY payload/cloud_detection/configs payload/cloud_detection/configs
 COPY payload/models payload/models
 COPY deployment/payload/entrypoint.sh /usr/local/bin/vita-payload-entrypoint
 COPY deployment/payload/stack_guard.py /tmp/vita-stack-guard.py
+COPY deployment/payload/constraints.txt /tmp/vita-payload-constraints.txt
 
 # The selected base must already provide its target-qualified PyTorch/CUDA
-# stack. Abort if dependency installation changes torch, torchvision, OpenCV or
-# CuPy instead of silently replacing the base-image stack.
-RUN python /tmp/vita-stack-guard.py snapshot /tmp/vita-stack-before.json \
-    && python -m pip install -e /workspace/vita/shared -e /workspace/vita/payload \
+# stack. Local x86 may add one constrained headless OpenCV 4.x wheel when the
+# base has none; Jetson may not change Python OpenCV wheels at all.
+RUN test "${VITA_TARGET_PLATFORM}" = "local-x86" -o "${VITA_TARGET_PLATFORM}" = "jetson" \
+    && python /tmp/vita-stack-guard.py snapshot /tmp/vita-stack-before.json \
+        --target-platform "${VITA_TARGET_PLATFORM}" \
+    && python -m pip install --constraint /tmp/vita-payload-constraints.txt \
+        -e /workspace/vita/shared -e /workspace/vita/payload \
     && python /tmp/vita-stack-guard.py compare /tmp/vita-stack-before.json \
+        --target-platform "${VITA_TARGET_PLATFORM}" \
     && python -m prithvi_payload.container_preflight --models-only \
     && chmod 0555 /usr/local/bin/vita-payload-entrypoint \
     && mkdir -p /data/jobs /data/outbox /data/logs/matplotlib \
     && chown -R ${APPLICATION_UID}:${APPLICATION_GID} /data /workspace/vita \
-    && rm -f /tmp/vita-stack-guard.py /tmp/vita-stack-before.json
+    && rm -f /tmp/vita-stack-guard.py /tmp/vita-stack-before.json \
+        /tmp/vita-payload-constraints.txt
 
 USER ${APPLICATION_UID}:${APPLICATION_GID}
 EXPOSE 8081

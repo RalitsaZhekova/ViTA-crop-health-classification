@@ -62,6 +62,8 @@ def test_payload_image_has_fixed_boundary_and_no_credentials() -> None:
     assert "GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/earth_engine_credentials" in dockerfile
     assert "prithvi_payload.container_preflight --models-only" in dockerfile
     assert "vita-stack-guard.py compare" in dockerfile
+    assert "--constraint /tmp/vita-payload-constraints.txt" in dockerfile
+    assert 'ARG VITA_TARGET_PLATFORM' in dockerfile
     for checksum in MODEL_HASHES:
         assert checksum in dockerfile
 
@@ -106,11 +108,22 @@ def test_payload_composes_use_project_paths_secret_and_loopback_only() -> None:
         assert "/opt/" not in compose
 
     jetson = _read("compose.payload.jetson.yaml")
+    local = _read("compose.payload.local.yaml")
+    assert "VITA_TARGET_PLATFORM: local-x86" in local
     assert "runtime: nvidia" in jetson
     assert "reservations:" not in jetson
+    assert "VITA_TARGET_PLATFORM: jetson" in jetson
     assert 'VITA_MAX_CONCURRENT_JOBS: "1"' in jetson
     assert "models_warmed" in jetson
     assert "cuda_available" in jetson
+
+
+def test_payload_container_constraints_prevent_future_numpy_and_opencv_drift() -> None:
+    constraints = _read("deployment/payload/constraints.txt")
+
+    assert "numpy>=2.2,<2.3" in constraints
+    assert "opencv-python-headless==4.11.0.86" in constraints
+    assert "opencv-python-headless==5" not in constraints
 
 
 def test_ground_and_full_local_composes_keep_services_separate() -> None:
