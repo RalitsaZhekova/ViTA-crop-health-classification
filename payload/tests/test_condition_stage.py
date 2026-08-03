@@ -13,7 +13,7 @@ from prithvi_payload.condition_stage import (
     StreamingMetric,
     run_payload_condition,
 )
-from prithvi_payload.downlink import build_downlink_bundle
+from prithvi_payload.downlink import _stretch_rgb, build_downlink_bundle
 from rasterio.transform import from_origin
 
 
@@ -387,6 +387,25 @@ def test_downlink_bundle_is_three_small_web_ready_files(tmp_path: Path) -> None:
     assert manifest["algorithm_version"] == "compact-downlink-v2"
     assert "classes" not in manifest["legend"]
     assert "transparent" in manifest["legend"]["overlay_semantics"]
+
+
+def test_balkan_web_stretch_balances_channels_without_changing_input() -> None:
+    values = np.stack(
+        [
+            np.linspace(0.05, 0.15, 100, dtype=np.float32).reshape(10, 10),
+            np.linspace(0.20, 0.40, 100, dtype=np.float32).reshape(10, 10),
+            np.linspace(0.45, 0.75, 100, dtype=np.float32).reshape(10, 10),
+        ]
+    )
+    original = values.copy()
+
+    balanced = _stretch_rgb(values, channelwise=True)
+
+    np.testing.assert_array_equal(values, original)
+    assert balanced.shape == (10, 10, 3)
+    for channel in range(3):
+        assert balanced[..., channel].min() == 0
+        assert balanced[..., channel].max() == 255
 
 
 def test_downlink_bundle_protects_existing_metadata(tmp_path: Path) -> None:

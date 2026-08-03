@@ -73,8 +73,22 @@ def _preview_dimensions(width: int, height: int, maximum: int) -> tuple[int, int
     return max(1, round(width * scale)), max(1, round(height * scale))
 
 
-def _stretch_rgb(values: np.ndarray) -> np.ndarray:
+def _stretch_rgb(values: np.ndarray, *, channelwise: bool = False) -> np.ndarray:
     rgb = np.moveaxis(values, 0, -1).astype(np.float32, copy=False)
+    if channelwise:
+        output = np.zeros(rgb.shape, dtype=np.uint8)
+        valid = np.all(np.isfinite(rgb), axis=-1) & np.any(rgb != 0, axis=-1)
+        for channel in range(rgb.shape[-1]):
+            samples = rgb[..., channel][valid]
+            if not samples.size:
+                continue
+            low, high = np.percentile(samples, (2, 98))
+            if high <= low:
+                high = low + 1.0
+            scaled = np.clip((rgb[..., channel] - low) / (high - low), 0.0, 1.0)
+            output[..., channel] = np.round(255.0 * scaled).astype(np.uint8)
+        output[~valid] = 0
+        return output
     finite = rgb[np.isfinite(rgb)]
     if not finite.size:
         return np.zeros(rgb.shape, dtype=np.uint8)
@@ -281,8 +295,10 @@ def build_downlink_bundle(
         raise RuntimeError("The installed Pillow build does not support WebP")
     result_path = Path(payload_result_path).resolve()
     payload = _read_json(result_path)
-    if payload.get("status") != "CONDITION_COMPLETE":
-        raise ValueError("Downlink packaging requires payload status CONDITION_COMPLETE")
+    if payload.get("status") not in {"CONDITION_COMPLETE", "DOWNLINK_READY"}:
+        raise ValueError(
+            "Downlink packaging requires payload status CONDITION_COMPLETE or DOWNLINK_READY"
+        )
     result_root = result_path.parent
     output = Path(output_root).resolve()
     metadata_path = output / "scene.json"
@@ -365,7 +381,10 @@ def build_downlink_bundle(
             resampling=Resampling.bilinear,
         ).astype(np.float32)
         rgb /= float(reflectance_scale)
-        Image.fromarray(_stretch_rgb(rgb)).save(
+        balkan_channelwise_display = payload.get("sensor") == "balkan-1"
+        Image.fromarray(
+            _stretch_rgb(rgb, channelwise=balkan_channelwise_display)
+        ).save(
             rgb_path,
             format="WEBP",
             quality=RGB_WEBP_QUALITY,
@@ -493,6 +512,15 @@ def build_downlink_bundle(
                 "condition_algorithm_version"
             ),
             "radiometry": condition_report.get("radiometry", {}),
+            "rgb_display": {
+                "input_values_modified": False,
+                "mode": (
+                    "per-channel 2-98% display stretch"
+                    if payload.get("sensor") == "balkan-1"
+                    else "combined RGB 2-98% display stretch"
+                ),
+                "scope": "web preview only",
+            },
         },
         "limitations": condition_report.get("condition", {}).get("limitations", []),
         "warnings": condition_report.get("warnings", []),

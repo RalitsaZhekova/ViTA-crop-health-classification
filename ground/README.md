@@ -37,7 +37,7 @@ condition calculation remain payload-side.
 
 ```powershell
 vita-ground-ingest `
-  --bundle ..\testing\runs\pastis_10425_compact_downlink\payload\downlink `
+  ..\testing\runs\pastis_10425_compact_downlink\payload\downlink `
   --store .\runtime
 ```
 
