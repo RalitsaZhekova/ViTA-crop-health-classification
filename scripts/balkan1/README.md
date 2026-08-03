@@ -1,0 +1,210 @@
+# Balkan-1 local imagery workflow
+
+This directory contains only versioned workflow and preprocessing code. Full
+Balkan-1 acquisitions stay outside `payload/`, outside container build contexts
+and outside Git.
+
+## Local data layout
+
+The default workspace is:
+
+```text
+data/balkan1/
+  raw/
+    <scene-id>/              delivered TIFF and acquisition metadata
+  preprocessed/
+    <scene-id>_L1ORT.tif     georeferenced five-band analysis product
+
+testing/inputs/balkan1/      optional bounded proof chips only
+testing/runs/                cloud/crop/condition/downlink run products
+```
+
+Everything below `data/`, `testing/inputs/balkan1/` and `testing/runs/` is
+ignored by Git. `data` and `testing/inputs` are also excluded from Docker build
+contexts. The workflow accepts external roots, so an existing multi-gigabyte
+collection does not need to be copied into the checkout.
+
+The inspected collection has raw bands named `Band_1`, `Band_2`, `Band_3`,
+`Band_7`, `Band_0`. Its imager metadata records central wavelengths of 490,
+560, 665 and 842 nm for the blue, green, red and NIR channels; the remaining
+625 nm channel is the panchromatic product. The existing five-band L1ORT files
+retain this order but have no GeoTIFF band descriptions. The launchers therefore
+declare `BLUE GREEN RED NIR PAN` explicitly. This mapping is collection-specific
+and must be reviewed again for another delivery.
+
+## Add a preprocessor
+
+Place the Python implementation under `scripts/balkan1/preprocessors/` so it is
+versioned independently from imagery. The generic launcher invokes only scenes
+selected by `--scene-id` unless `--all` is supplied explicitly.
+
+The default preprocessor contract is:
+
+```text
+python your_preprocessor.py --input <raw-scene-folder> --output <output-tiff>
+```
+
+Run one scene from the default local layout:
+
+```powershell
+.venv\Scripts\python.exe scripts\balkan1\preprocess_collection.py `
+  scripts\balkan1\preprocessors\your_preprocessor.py `
+  --scene-id 3036
+```
+
+For an existing external collection, point to its current roots without moving
+or duplicating it:
+
+```powershell
+.venv\Scripts\python.exe scripts\balkan1\preprocess_collection.py `
+  scripts\balkan1\preprocessors\your_preprocessor.py `
+  --raw-root D:\path\to\collection `
+  --preprocessed-root D:\path\to\collection\SEN2_OUTPUT `
+  --scene-id 3036
+```
+
+If the preprocessor uses another CLI, put its arguments after `--`. The
+launcher expands `{scene_id}`, `{scene_dir}`, `{raw_root}`,
+`{preprocessed_root}` and `{output}`. Use `--dry-run` to inspect the exact
+command first. Quote arguments containing placeholders in PowerShell.
+
+## Do not use the supplied reference implementations
+
+`preprocessors/l1a.py`, `l1b.py` and `l1b_tif_batch.py` are educational
+reference implementations, not the processor that produced the existing
+L1ORT collection. Their calibration values are random/mock values and their
+orbit fallback is synthesized. Do not overwrite the trusted files in
+`data/balkan1/preprocessed/` with their output.
+They are quarantined as reference material and are not part of the commands
+below.
+
+The existing per-scene logs show that the trusted L1ORT files were produced by
+a separate GPU processor using mission calibration tables, band timing and
+interior-orientation corrections, the delivered attitude/position samples, a
+terrain DEM, a reference image and TensorRT feature registration. That
+processor, its configuration and its calibration/reference assets are not in
+these three Python files. They are required before this repository can
+reproduce the trusted L1ORT products directly from raw imagery.
+
+## Real L0R validation and minimum L1A
+
+The supported non-mock starting point is `process_l1a.py`. It validates the
+delivered packet/JSON/TIFF reconstruction, removes the inactive detector
+border documented by the production log, estimates only high-frequency
+fixed-pattern striping from the real scene, and registers all bands to Red
+using real SIFT feature matches with a RANSAC quality gate. The delivered
+`DarkOffset` hardware setting is recorded but is not treated as a calibrated
+black level. Use `--black-level-dn` only when an actual calibration source
+defines that value.
+
+Validate the delivered L0 reconstruction without writing an image:
+
+```powershell
+.venv\Scripts\python.exe scripts\balkan1\process_l1a.py 3036 --validate-only
+```
+
+Build one minimum L1A product:
+
+```powershell
+.venv\Scripts\python.exe scripts\balkan1\process_l1a.py 3036
+```
+
+Regenerate only the comparison image with a brighter or darker display gamma
+without rewriting the L1A TIFF:
+
+```powershell
+.venv\Scripts\python.exe scripts\balkan1\process_l1a.py 3036 `
+  --preview-only --preview-gamma 0.65
+```
+
+Gamma affects the PNG only. Values below 1 brighten midtones; the L1A pixels
+and metadata remain unchanged.
+
+Outputs are written to `data/balkan1/derived/l1a/`: a validated L0R manifest,
+the five-band `*_L1A_MIN.tif`, a detailed L1A manifest and a comparison PNG.
+The product is real corrected DN in registered sensor space. It is explicitly
+not radiance, reflectance, georeferenced or orthorectified and must not yet be
+sent to the cloud/crop models.
+
+Validate every delivered scene, then process the collection sequentially:
+
+```powershell
+.venv\Scripts\python.exe scripts\balkan1\process_l1a_collection.py `
+  --all --validate-only
+
+.venv\Scripts\python.exe scripts\balkan1\process_l1a_collection.py --all
+```
+
+Sequential execution is intentional because every product is approximately a
+gigabyte and concurrent readers/writers would contend for disk and memory.
+
+## Visualize preprocessing before inference
+
+Each `<scene-id>_Raw.tif` already stores five band planes in one TIFF. It is
+not yet a combined map product: the planes are raw DN, displaced in time and
+sensor geometry, and have no CRS. The L1ORT product combines them only after
+correction, band registration and orthorectification.
+
+Create a preprocessing-only before/after explanation from an existing raw and
+trusted L1ORT pair:
+
+```powershell
+.venv\Scripts\python.exe scripts\balkan1\visualize_preprocessing.py 3036
+```
+
+The command reads bounded windows and writes an ignored PNG plus a JSON
+manifest under `testing/runs/balkan1_preprocessing_3036/`. It shows the five
+raw bands, raw RGB misregistration, registered L1ORT RGB, NIR false color and
+panchromatic detail. It does not invoke cloud detection, crop classification,
+or modify either source TIFF.
+
+## Stage a bounded proof chip
+
+Full L1ORT products are roughly gigabyte-scale. Create an ignored, bounded chip
+for fast pipeline and target-acceleration tests:
+
+```powershell
+.venv\Scripts\python.exe scripts\balkan1\stage_sample.py `
+  D:\path\to\SEN2_OUTPUT\3036_L1ORT.tif `
+  --size 1024
+```
+
+The default output is `testing/inputs/balkan1/3036_L1ORT_sample.tif`. The script
+preserves georeferencing, writes explicit band descriptions and records the
+source window and output SHA-256 in an ignored manifest. Use `--window X Y W H`
+to select a reviewed region. It refuses to write proof imagery below `payload/`.
+
+## Run the payload stages
+
+Cloud detection is the safe default and remains a provisional Sentinel-to-
+Balkan transfer:
+
+```powershell
+.venv\Scripts\python.exe scripts\balkan1\run_pipeline.py `
+  testing\inputs\balkan1\3036_L1ORT_sample.tif `
+  --stop-after cloud `
+  --reflectance-scale 1
+```
+
+Only use a scale of 1 after confirming that the preprocessed values are
+reflectance. Raw DN must not be passed to either model. If the scale is omitted,
+scene intake reports its sampled inference; that inference is not a calibration
+certificate.
+
+The Balkan NIR response is not validated as the crop model's narrow-NIR input.
+Crop, condition and downlink execution therefore require an explicit
+execution-only opt-in and an acquisition time:
+
+```powershell
+.venv\Scripts\python.exe scripts\balkan1\run_pipeline.py `
+  testing\inputs\balkan1\3036_L1ORT_sample.tif `
+  --acquired-at 2026-01-01T12:00:00Z `
+  --stop-after crop `
+  --reflectance-scale 1 `
+  --allow-provisional-crop
+```
+
+The run metadata records the adapter as `EXECUTION_ONLY_UNVALIDATED`, the cloud
+and crop device, synchronized model timing and warnings. This can demonstrate
+that the software path runs and uses an accelerator; it is not Balkan crop or
+cloud accuracy evidence.

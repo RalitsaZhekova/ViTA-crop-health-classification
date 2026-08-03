@@ -137,6 +137,19 @@ cloud and invalid pixel in the operational unusable mask is excluded from crop
 and condition outputs. The Balkan-1 route is provisional until real imagery is
 radiometrically and spectrally validated.
 
+Real Balkan-1 collections remain under ignored `data/` storage or at an
+external path; they are not stored in this component. The versioned local
+preprocessing and handoff utilities are documented in
+[`scripts/balkan1/README.md`](../scripts/balkan1/README.md). They can supply an
+explicit band order for existing L1ORT products that have no GeoTIFF band
+descriptions, without copying or rewriting the multi-gigabyte source.
+
+Balkan crop transfer remains blocked by default. An explicit
+`--allow-provisional-balkan-crop` execution-only adapter is available for
+accelerator and interface demonstrations. Its metadata records the broad-NIR to
+narrow-NIR transfer as unvalidated; its outputs must not be presented as Balkan
+crop accuracy evidence.
+
 Run only from an explicit command:
 
 ```powershell

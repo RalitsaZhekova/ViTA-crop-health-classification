@@ -24,6 +24,10 @@ dependencies = [
 dev = [
   "ruff>=0.9,<1",
 ]
+balkan = [
+  "matplotlib>=3.8,<4",
+  "opencv-python-headless>=4.8,<6",
+]
 
 [project.scripts]
 prithvi-download = "prithvi_crop.download_data:main"
@@ -43,6 +47,11 @@ where = ["src"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+extend-exclude = [
+  "scripts/balkan1/preprocessors/l1a.py",
+  "scripts/balkan1/preprocessors/l1b.py",
+  "scripts/balkan1/preprocessors/l1b_tif_batch.py",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]

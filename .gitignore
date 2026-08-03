@@ -28,10 +28,17 @@ lightning_logs/
 *.pt
 *.pth
 *.tif
+*.tiff
 *.tgz
 *.tar
 *.tar.gz
 *.zip
+
+# Supplied Balkan-1 mock/reference preprocessors are local comparison material only.
+# Production workflows use process_l1a.py and process_l1a_collection.py.
+/scripts/balkan1/preprocessors/l1a.py
+/scripts/balkan1/preprocessors/l1b.py
+/scripts/balkan1/preprocessors/l1b_tif_batch.py
 
 # Secrets
 secrets/*

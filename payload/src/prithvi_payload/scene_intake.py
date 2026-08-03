@@ -6,6 +6,7 @@ import argparse
 import json
 import math
 import re
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -118,10 +119,19 @@ def inspect_scene(
     sensor: str,
     acquired_at: str | None = None,
     scene_id: str | None = None,
+    band_order: Sequence[str] | None = None,
+    allow_provisional_balkan_crop: bool = False,
 ) -> dict[str, Any]:
     """Inspect a scene without loading the full raster into memory."""
     if sensor not in SUPPORTED_SENSORS:
         raise ValueError(f"sensor must be one of {SUPPORTED_SENSORS}")
+    if allow_provisional_balkan_crop and sensor != "balkan-1":
+        raise ValueError("The provisional Balkan crop adapter is only valid for balkan-1")
+    explicit_band_order = None if band_order is None else list(band_order)
+    if explicit_band_order is not None and any(
+        not isinstance(item, str) or not item.strip() for item in explicit_band_order
+    ):
+        raise ValueError("band_order entries must be non-empty strings")
     raster_path = Path(path)
     if not raster_path.is_file():
         raise FileNotFoundError(raster_path)
@@ -144,8 +154,29 @@ def inspect_scene(
         if dataset.width <= 0 or dataset.height <= 0:
             errors.append("Raster dimensions must be positive")
 
-        for index, (description, dtype) in enumerate(
-            zip(dataset.descriptions, dataset.dtypes, strict=True),
+        source_descriptions = dataset.descriptions
+        if explicit_band_order is not None and len(explicit_band_order) != dataset.count:
+            errors.append(
+                "Explicit band order must contain exactly one entry per raster band: "
+                f"expected {dataset.count}, received {len(explicit_band_order)}"
+            )
+        use_explicit_band_order = (
+            explicit_band_order is not None and len(explicit_band_order) == dataset.count
+        )
+        effective_descriptions = (
+            tuple(explicit_band_order) if use_explicit_band_order else source_descriptions
+        )
+        band_order_source = (
+            "explicit_override" if use_explicit_band_order else "geotiff_descriptions"
+        )
+
+        for index, (description, source_description, dtype) in enumerate(
+            zip(
+                effective_descriptions,
+                source_descriptions,
+                dataset.dtypes,
+                strict=True,
+            ),
             start=1,
         ):
             role = _logical_role(description)
@@ -153,7 +184,9 @@ def inspect_scene(
             record = {
                 "index": index,
                 "description": description,
+                "source_description": source_description,
                 "logical_role": role,
+                "mapping_source": band_order_source,
                 "dtype": dtype,
                 "sample": stats,
             }
@@ -165,9 +198,13 @@ def inspect_scene(
                     mapping[role] = {
                         "index": index,
                         "description": description,
+                        "source_description": source_description,
+                        "mapping_source": band_order_source,
                     }
 
-        if any(description is None for description in dataset.descriptions):
+        if not use_explicit_band_order and any(
+            description is None for description in source_descriptions
+        ):
             errors.append("Every input band must have a description")
         unrecognised = [
             item["index"] for item in bands if item["logical_role"] is None
@@ -228,11 +265,19 @@ def inspect_scene(
             crop_status = "MISSING_REQUIRED_BANDS"
     else:
         cloud_status = "BALKAN_1_CLOUD_ADAPTER_REQUIRED"
-        crop_status = (
-            "BALKAN_1_SPECTRAL_HARMONISATION_REQUIRED"
-            if not missing_rgb and (has_nir_broad or has_nir_narrow)
-            else "MISSING_REQUIRED_BANDS"
-        )
+        if missing_rgb or not (has_nir_broad or has_nir_narrow):
+            crop_status = "MISSING_REQUIRED_BANDS"
+        elif allow_provisional_balkan_crop:
+            crop_status = "READY_PROVISIONAL"
+            warnings.extend(
+                [
+                    "Balkan-1 NIR transfer into the crop model is enabled for execution "
+                    "testing only",
+                    "Balkan-1 crop output is not accuracy or sensor-compatibility evidence",
+                ]
+            )
+        else:
+            crop_status = "BALKAN_1_SPECTRAL_HARMONISATION_REQUIRED"
 
     cloud_order = ("NIR_BROAD", "RED", "GREEN", "BLUE")
     crop_order = ("BLUE", "GREEN", "RED", "NIR_NARROW")
@@ -241,17 +286,33 @@ def inspect_scene(
         if all(role in mapping for role in cloud_order)
         else None
     )
-    crop_indices = (
+    native_crop_indices = (
         [mapping[role]["index"] for role in crop_order]
         if all(role in mapping for role in crop_order)
         else None
     )
     crop_approximate_indices = None
-    if crop_indices is None and not missing_rgb and has_nir_broad:
+    if native_crop_indices is None and not missing_rgb and has_nir_broad:
         crop_approximate_indices = [
             mapping[role]["index"]
             for role in ("BLUE", "GREEN", "RED", "NIR_BROAD")
         ]
+    crop_indices = native_crop_indices
+    crop_source_roles = list(crop_order) if native_crop_indices is not None else None
+    spectral_adapter = None
+    if sensor == "balkan-1" and allow_provisional_balkan_crop:
+        if native_crop_indices is not None:
+            crop_source_roles = list(crop_order)
+        elif crop_approximate_indices is not None:
+            crop_indices = crop_approximate_indices
+            crop_source_roles = ["BLUE", "GREEN", "RED", "NIR_BROAD"]
+        if crop_indices is not None:
+            spectral_adapter = {
+                "mode": "PROVISIONAL_BALKAN_1_NIR_TRANSFER",
+                "source_nir_role": crop_source_roles[-1],
+                "model_nir_role": "NIR_NARROW",
+                "validation_status": "EXECUTION_ONLY_UNVALIDATED",
+            }
 
     resolved_scene_id = _validate_scene_id(scene_id or raster_path.stem)
     return {
@@ -268,6 +329,8 @@ def inspect_scene(
                 else ["BLUE", "GREEN", "RED", "NIR_BROAD or NIR_NARROW"]
             ),
             "pan_used_by_current_models": False,
+            "band_order_source": band_order_source,
+            "provisional_crop_adapter_enabled": allow_provisional_balkan_crop,
         },
         "raster": raster,
         "bands": bands,
@@ -286,7 +349,9 @@ def inspect_scene(
             "crop_classification": {
                 "expected_logical_order": list(crop_order),
                 "source_band_indices": crop_indices,
+                "source_logical_order": crop_source_roles,
                 "unharmonised_broad_nir_indices": crop_approximate_indices,
+                "spectral_adapter": spectral_adapter,
             },
         },
         "errors": errors,
@@ -302,6 +367,16 @@ def main() -> None:
     parser.add_argument("--sensor", required=True, choices=SUPPORTED_SENSORS)
     parser.add_argument("--acquired-at")
     parser.add_argument("--scene-id")
+    parser.add_argument(
+        "--band-order",
+        nargs="+",
+        help="Explicit source-band labels, one per raster band",
+    )
+    parser.add_argument(
+        "--allow-provisional-balkan-crop",
+        action="store_true",
+        help="Enable unvalidated Balkan NIR transfer for execution testing only",
+    )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     report = inspect_scene(
@@ -309,6 +384,8 @@ def main() -> None:
         sensor=args.sensor,
         acquired_at=args.acquired_at,
         scene_id=args.scene_id,
+        band_order=args.band_order,
+        allow_provisional_balkan_crop=args.allow_provisional_balkan_crop,
     )
     rendered = json.dumps(report, indent=2, sort_keys=True)
     if args.output:

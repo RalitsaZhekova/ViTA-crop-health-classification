@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +43,8 @@ def run_scene(
     output_root: str | Path,
     acquired_at: str | None = None,
     scene_id: str | None = None,
+    band_order: Sequence[str] | None = None,
+    allow_provisional_balkan_crop: bool = False,
     reflectance_scale: float | None = None,
     stop_after: str = "cloud",
     max_crop_cloud_percentage: float = DEFAULT_MAX_CLOUD_PERCENTAGE,
@@ -71,6 +73,8 @@ def run_scene(
         sensor=sensor,
         acquired_at=acquired_at,
         scene_id=scene_id,
+        band_order=band_order,
+        allow_provisional_balkan_crop=allow_provisional_balkan_crop,
     )
     resolved_scene_id = intake["scene_id"]
     intake_path = output_root / "metadata" / f"{resolved_scene_id}_intake.json"
@@ -355,6 +359,16 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=Path("testing/runs"))
     parser.add_argument("--acquired-at")
     parser.add_argument("--scene-id")
+    parser.add_argument(
+        "--band-order",
+        nargs="+",
+        help="Explicit source-band labels, one per raster band",
+    )
+    parser.add_argument(
+        "--allow-provisional-balkan-crop",
+        action="store_true",
+        help="Enable unvalidated Balkan NIR transfer for execution testing only",
+    )
     parser.add_argument("--reflectance-scale", type=float)
     parser.add_argument(
         "--stop-after",
@@ -384,6 +398,8 @@ def main() -> None:
         output_root=args.output,
         acquired_at=args.acquired_at,
         scene_id=args.scene_id,
+        band_order=args.band_order,
+        allow_provisional_balkan_crop=args.allow_provisional_balkan_crop,
         reflectance_scale=args.reflectance_scale,
         stop_after=args.stop_after,
         max_crop_cloud_percentage=args.max_crop_cloud_percentage,

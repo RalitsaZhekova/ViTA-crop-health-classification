@@ -14,6 +14,12 @@ testing/
 Input imagery and generated runs are ignored by Git. Payload code, configs and
 models remain under `payload/`; runtime data must not be stored there.
 
+The full Balkan-1 collection belongs under `data/balkan1/` or at an external
+path. Only bounded, explicitly selected proof chips should be placed in
+`testing/inputs/balkan1/`. See
+[`scripts/balkan1/README.md`](../scripts/balkan1/README.md) for preprocessing,
+sampling and the guarded Balkan payload handoff.
+
 Run a Sentinel-2 scene:
 
 ```powershell
@@ -42,6 +48,22 @@ Run cloud detection and then crop classification when cloud coverage is below
 The Sentinel-2 file must declare `B02`, `B03`, `B04`, `B08` and `B8A` band
 descriptions. Band order is resolved from those descriptions. Crop outputs are
 written to `crop_maps/` and the combined preview to `visualisations/`.
+
+Run a staged Balkan-1 proof chip through the same payload without replacing the
+Sentinel-2 route:
+
+```powershell
+.venv\Scripts\python.exe scripts\balkan1\run_pipeline.py `
+  testing\inputs\balkan1\your_L1ORT_sample.tif `
+  --acquired-at 2026-07-27T12:00:00Z `
+  --reflectance-scale 1 `
+  --allow-provisional-crop `
+  --output testing\runs\your_balkan_run
+```
+
+Sentinel-2 and Balkan-1 inputs and results coexist under separate sensor/run
+folders. Sensor selection is per scene; the Balkan execution-only opt-in does
+not alter Sentinel-2 band resolution or model inputs.
 
 Run the complete local payload-to-ground demonstration:
 

@@ -281,6 +281,7 @@ def execute_cloud_stage(
             "seconds": time.perf_counter() - started,
             "inference_seconds": inference_seconds,
             "mask_processing_seconds": mask_processing_seconds,
+            "device": str(getattr(backend, "device", "unknown")),
             "tile_count": tile_count,
             "tile_size": tile_size,
             "halo": halo,

@@ -43,11 +43,24 @@ def build_crop_stage_plan(
     expected_order = route.get("expected_logical_order")
     errors: list[str] = []
     warnings: list[str] = []
+    crop_input_readiness = intake.get("readiness", {}).get("crop")
+    spectral_adapter = route.get("spectral_adapter")
 
-    if gate_passed and intake.get("readiness", {}).get("crop") != "READY":
+    if gate_passed and crop_input_readiness not in {"READY", "READY_PROVISIONAL"}:
         errors.append(
             "Crop input is not spectrally ready; the selected model requires "
             "BLUE, GREEN, RED and NIR_NARROW"
+        )
+    if gate_passed and crop_input_readiness == "READY_PROVISIONAL":
+        if not isinstance(spectral_adapter, dict) or spectral_adapter.get(
+            "validation_status"
+        ) != "EXECUTION_ONLY_UNVALIDATED":
+            errors.append("Provisional crop readiness is missing its spectral adapter record")
+        warnings.extend(
+            [
+                "Balkan-1 crop inference uses an unvalidated NIR transfer",
+                "Results demonstrate software execution only, not crop accuracy",
+            ]
         )
     if gate_passed and (
         not isinstance(source_indices, list)
@@ -91,6 +104,11 @@ def build_crop_stage_plan(
         "sensor": intake.get("sensor"),
         "acquired_at": intake.get("acquired_at"),
         "readiness": readiness,
+        "compatibility": (
+            "PROVISIONAL_EXECUTION_ONLY"
+            if crop_input_readiness == "READY_PROVISIONAL"
+            else "VALIDATED_MODEL_INPUT_CONTRACT"
+        ),
         "gate": {
             "metric": "cloud_percentage",
             "comparison": "strictly_less_than",
@@ -100,7 +118,9 @@ def build_crop_stage_plan(
         },
         "input": {
             "logical_band_order": expected_order,
+            "source_logical_band_order": route.get("source_logical_order"),
             "source_band_indices_1_based": source_indices,
+            "spectral_adapter": spectral_adapter,
             "unusable_mask": unusable_mask,
             "training_scale_multiplier": training_scale_multiplier,
             "temporal_coordinate_year_doy": temporal_coordinate,

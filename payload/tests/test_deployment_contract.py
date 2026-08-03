@@ -26,6 +26,10 @@ def test_secrets_environments_and_runtime_are_excluded() -> None:
         ".env.ground",
         "runtime/*",
         "!runtime/.gitkeep",
+        "data/*",
+        "testing/inputs/balkan1/*",
+        "*.tif",
+        "*.tiff",
     ):
         assert rule in gitignore
     for rule in (
@@ -38,6 +42,7 @@ def test_secrets_environments_and_runtime_are_excluded() -> None:
         "runtime",
         "data",
         "outputs",
+        "testing/inputs",
         "testing/runs",
         "notebooks",
     ):

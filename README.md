@@ -40,6 +40,19 @@ runtime and the remaining system responsibilities are separated into:
 [`COMPONENTS.md`](COMPONENTS.md) defines ownership and canonical storage
 locations.
 
+## Local Balkan-1 imagery
+
+Raw and preprocessed Balkan-1 imagery belongs under the ignored
+`data/balkan1/` workspace, or may remain in an external collection referenced by
+path. It is never copied into `payload/` or a container image. Versioned
+preprocessing, proof-chip and payload-handoff utilities live under
+[`scripts/balkan1/`](scripts/balkan1/README.md). Bounded, explicitly selected
+proof chips may be staged under the already ignored `testing/inputs/balkan1/`
+when local or target acceleration evidence is needed.
+
+The current Balkan cloud route and opt-in crop route are sensor-transfer
+execution tests. They do not establish cloud or crop accuracy on Balkan-1.
+
 ## Complete Sentinel MVP
 
 The complete local command runs intake, cloud/shadow masking, crop segmentation,

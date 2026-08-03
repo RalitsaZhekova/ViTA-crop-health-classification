@@ -25,6 +25,9 @@ shared/    -> no project-domain dependency
 
 - Datasets remain under `data/` and are indexed by
   `training/datasets/manifest.yaml`; they are never duplicated into packages.
+- Local Balkan-1 acquisitions use ignored `data/balkan1/` storage or an external
+  root. Only bounded proof chips may be staged in ignored
+  `testing/inputs/balkan1/`; neither location enters the payload image.
 - Training implementation, configuration, and launchers have one canonical
   home in `src/prithvi_crop/`, `configs/`, and `scripts/`.
 - Required training checkpoints stay under `outputs/`; payload deployment uses

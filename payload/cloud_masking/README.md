@@ -51,8 +51,10 @@ or above the configured 60% gate.
 
 Cloud classification uses Sentinel-2 `B08`; the crop model uses `B8A`. These
 must not be silently substituted. Sentinel-2 crop runs therefore require both
-bands in the preprocessed scene. A future sensor adapter may perform an
-explicitly validated conversion when only one NIR band is available.
+bands in the preprocessed scene. Balkan execution tests may use the explicit
+`--allow-provisional-balkan-crop` adapter, which records broad-NIR transfer as
+unvalidated and is blocked by default. A scientifically valid mission route
+still requires a spectrally validated conversion for the one available NIR.
 
 Before Balkan-1 use, the classifier must be validated for its 1.5 m resolution,
 spectral response and 12-bit calibration. Shared RGB/NIR labels alone do not

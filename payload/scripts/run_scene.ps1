@@ -8,6 +8,8 @@ param(
 
     [string]$AcquiredAt,
     [string]$SceneId,
+    [string[]]$BandOrder,
+    [switch]$AllowProvisionalBalkanCrop,
     [string]$Output,
     [ValidateSet("intake", "cloud", "crop", "condition", "downlink")]
     [string]$StopAfter = "cloud",
@@ -51,6 +53,13 @@ if ($AcquiredAt) {
 }
 if ($SceneId) {
     $pipelineArguments += @("--scene-id", $SceneId)
+}
+if ($BandOrder) {
+    $pipelineArguments += "--band-order"
+    $pipelineArguments += $BandOrder
+}
+if ($AllowProvisionalBalkanCrop) {
+    $pipelineArguments += "--allow-provisional-balkan-crop"
 }
 if ($RegionId) {
     $pipelineArguments += @("--region-id", $RegionId)
