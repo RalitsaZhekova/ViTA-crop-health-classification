@@ -89,13 +89,16 @@ reproduce the trusted L1ORT products directly from raw imagery.
 ## Real L0R validation and minimum L1A
 
 The supported non-mock starting point is `process_l1a.py`. It validates the
-delivered packet/JSON/TIFF reconstruction, removes the inactive detector
-border documented by the production log, estimates only high-frequency
-fixed-pattern striping from the real scene, and registers all bands to Red
-using real SIFT feature matches with a RANSAC quality gate. The delivered
-`DarkOffset` hardware setting is recorded but is not treated as a calibrated
-black level. Use `--black-level-dn` only when an actual calibration source
-defines that value.
+delivered packet/JSON/TIFF reconstruction and uses both documented detector
+margins. On every line and band it measures the dark bias from the 68 real
+calibration pixels at the left and right edges, interpolates the cross-track
+dark plane, subtracts it, removes the remaining 88-pixel inactive margin,
+estimates only high-frequency fixed-pattern striping from the real scene, and
+registers all bands to Red using real SIFT feature matches with a RANSAC quality
+gate. The delivered `DarkOffset` hardware setting is recorded but is not
+misinterpreted as a black level. `--black-level-dn` is an explicit constant
+override for the measured dark-reference model and should be used only when an
+actual calibration source requires it.
 
 Validate the delivered L0 reconstruction without writing an image:
 
@@ -119,6 +122,18 @@ without rewriting the L1A TIFF:
 
 Gamma affects the PNG only. Values below 1 brighten midtones; the L1A pixels
 and metadata remain unchanged.
+
+Validate the L1A against the supplied L1ORT without making that reference an
+input to preprocessing:
+
+```powershell
+.venv\Scripts\python.exe scripts\balkan1\validate_l1a.py 3036
+```
+
+This flips and robustly aligns bounded overviews for QA, reports feature-match
+and per-band correlation/error metrics, and writes a three-panel aligned
+comparison. Its per-scene affine fits are diagnostics only; they are never
+applied to L1A data and must not be reused as physical calibration.
 
 Outputs are written to `data/balkan1/derived/l1a/`: a validated L0R manifest,
 the five-band `*_L1A_MIN.tif`, a detailed L1A manifest and a comparison PNG.

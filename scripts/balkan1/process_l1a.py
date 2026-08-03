@@ -11,6 +11,7 @@ import re
 import tempfile
 import uuid
 import warnings
+from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
@@ -25,6 +26,18 @@ DEFAULT_DATA_ROOT = REPOSITORY_ROOT / "data" / "balkan1"
 RAW_BAND_IDS = ("1", "2", "3", "7", "0")
 BAND_NAMES = ("BLUE", "GREEN", "RED", "NIR", "PAN")
 REFERENCE_BAND_INDEX = 2
+
+
+@dataclass(frozen=True)
+class DarkReferenceModel:
+    """Per-line detector bias measured from the delivered calibration columns."""
+
+    left_dn: np.ndarray
+    right_dn: np.ndarray
+    left_detector_x: float
+    right_detector_x: float
+    source: str
+    diagnostics: list[dict[str, float | str]]
 
 
 def _csv_records(path: Path) -> int:
@@ -381,10 +394,128 @@ def _estimate_registration(
     return matrices, diagnostics
 
 
+def _fill_missing_rows(values: np.ndarray) -> np.ndarray:
+    """Interpolate unavailable calibration rows while preserving real valid samples."""
+
+    row_numbers = np.arange(values.size, dtype=np.float64)
+    valid = np.isfinite(values)
+    if not np.any(valid):
+        raise RuntimeError("Dark-reference calibration pixels contain no valid samples")
+    if np.all(valid):
+        return values.astype(np.float32, copy=False)
+    return np.interp(row_numbers, row_numbers[valid], values[valid]).astype(np.float32)
+
+
+def _estimate_dark_reference(
+    source: rasterio.DatasetReader,
+    calibration_border_pixels: int,
+    constant_override_dn: float | None,
+) -> DarkReferenceModel:
+    """Measure per-line dark bias from the real left/right calibration pixels."""
+
+    if constant_override_dn is not None:
+        values = np.full(
+            (source.count, source.height), constant_override_dn, dtype=np.float32
+        )
+        diagnostics: list[dict[str, float | str]] = [
+            {
+                "band": band_name,
+                "left_median_dn": float(constant_override_dn),
+                "right_median_dn": float(constant_override_dn),
+                "median_cross_track_delta_dn": 0.0,
+                "left_row_drift_p02_p98_dn": 0.0,
+                "right_row_drift_p02_p98_dn": 0.0,
+            }
+            for band_name in BAND_NAMES[: source.count]
+        ]
+        return DarkReferenceModel(
+            left_dn=values,
+            right_dn=values.copy(),
+            left_detector_x=0.0,
+            right_detector_x=float(source.width - 1),
+            source="explicit --black-level-dn override",
+            diagnostics=diagnostics,
+        )
+
+    if calibration_border_pixels < 8:
+        raise RuntimeError(
+            "At least 8 trusted calibration-border pixels are required per detector side"
+        )
+    if calibration_border_pixels * 2 >= source.width:
+        raise RuntimeError("Calibration-border evidence is incompatible with detector width")
+    left = source.read(
+        window=Window(0, 0, calibration_border_pixels, source.height),
+        out_dtype="float32",
+    )
+    right = source.read(
+        window=Window(
+            source.width - calibration_border_pixels,
+            0,
+            calibration_border_pixels,
+            source.height,
+        ),
+        out_dtype="float32",
+    )
+    left[left <= 0] = np.nan
+    right[right <= 0] = np.nan
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        left_rows = np.nanmedian(left, axis=2)
+        right_rows = np.nanmedian(right, axis=2)
+
+    diagnostics = []
+    for band_index in range(source.count):
+        left_rows[band_index] = _fill_missing_rows(left_rows[band_index])
+        right_rows[band_index] = _fill_missing_rows(right_rows[band_index])
+        left_p02, left_p98 = np.percentile(left_rows[band_index], (2, 98))
+        right_p02, right_p98 = np.percentile(right_rows[band_index], (2, 98))
+        diagnostics.append(
+            {
+                "band": BAND_NAMES[band_index],
+                "left_median_dn": float(np.median(left_rows[band_index])),
+                "right_median_dn": float(np.median(right_rows[band_index])),
+                "median_cross_track_delta_dn": float(
+                    np.median(right_rows[band_index] - left_rows[band_index])
+                ),
+                "left_row_drift_p02_p98_dn": float(left_p98 - left_p02),
+                "right_row_drift_p02_p98_dn": float(right_p98 - right_p02),
+            }
+        )
+    left_detector_x = (calibration_border_pixels - 1) / 2
+    right_detector_x = source.width - (calibration_border_pixels + 1) / 2
+    return DarkReferenceModel(
+        left_dn=left_rows.astype(np.float32),
+        right_dn=right_rows.astype(np.float32),
+        left_detector_x=left_detector_x,
+        right_detector_x=right_detector_x,
+        source=(
+            f"per-line median of {calibration_border_pixels} delivered dark-reference "
+            "pixels on each detector side; linear cross-track interpolation"
+        ),
+        diagnostics=diagnostics,
+    )
+
+
+def _dark_surface(
+    model: DarkReferenceModel,
+    band_index: int,
+    detector_x: np.ndarray,
+    row_y: np.ndarray,
+) -> np.ndarray:
+    """Evaluate the measured dark-reference plane at detector coordinates."""
+
+    source_rows = np.arange(model.left_dn.shape[1], dtype=np.float32)
+    left = np.interp(row_y, source_rows, model.left_dn[band_index]).astype(np.float32)
+    right = np.interp(row_y, source_rows, model.right_dn[band_index]).astype(np.float32)
+    denominator = model.right_detector_x - model.left_detector_x
+    alpha = (detector_x - model.left_detector_x) / denominator
+    return left[:, None] + (right - left)[:, None] * alpha[None, :]
+
+
 def _column_corrections(
     source: rasterio.DatasetReader,
     border: int,
-    black_level: float,
+    dark_reference: DarkReferenceModel,
     sample_rows: int = 512,
 ) -> tuple[list[np.ndarray], list[dict[str, float]]]:
     valid_width = source.width - 2 * border
@@ -396,8 +527,15 @@ def _column_corrections(
     )
     corrections: list[np.ndarray] = []
     diagnostics: list[dict[str, float]] = []
-    for band in sampled:
-        corrected = np.maximum(band - black_level, 0)
+    detector_x = border + np.arange(valid_width, dtype=np.float32)
+    sampled_y = (
+        (np.arange(sample_rows, dtype=np.float32) + 0.5)
+        * (source.height / sample_rows)
+        - 0.5
+    )
+    for band_index, band in enumerate(sampled):
+        dark = _dark_surface(dark_reference, band_index, detector_x, sampled_y)
+        corrected = np.maximum(band - dark, 0)
         profile = np.median(corrected, axis=0)
         smooth = cv2.GaussianBlur(
             profile.reshape(1, -1), (0, 0), sigmaX=64, sigmaY=0
@@ -424,7 +562,7 @@ def _remap_strip(
     output_height: int,
     y_start: int,
     strip_height: int,
-    black_level: float,
+    dark_reference: DarkReferenceModel,
     column_correction: np.ndarray,
 ) -> np.ndarray:
     y_stop = min(output_height, y_start + strip_height)
@@ -452,7 +590,14 @@ def _remap_strip(
         out_dtype="float32",
     )
     source_valid = (source_band > 0).astype(np.uint8)
-    source_band -= black_level
+    detector_x = border + np.arange(x_min, x_max, dtype=np.float32)
+    source_y = np.arange(y_min, y_max, dtype=np.float32)
+    source_band -= _dark_surface(
+        dark_reference,
+        band_number - 1,
+        detector_x,
+        source_y,
+    )
     source_band -= column_correction[x_min:x_max][None, :]
     np.maximum(source_band, 0, out=source_band)
     remapped = cv2.remap(
@@ -479,7 +624,7 @@ def _write_l1a(
     source: rasterio.DatasetReader,
     output: Path,
     border: int,
-    black_level: float,
+    dark_reference: DarkReferenceModel,
     matrices: list[np.ndarray],
     column_corrections: list[np.ndarray],
     strip_height: int,
@@ -515,7 +660,7 @@ def _write_l1a(
                     GEOLOCATION_STATUS="UNREFERENCED_NOT_ORTHORECTIFIED",
                     REGISTRATION_METHOD="SIFT cross-band features + RANSAC partial affine",
                     REFERENCE_BAND="RED",
-                    BLACK_LEVEL_DN=str(black_level),
+                    DARK_REFERENCE_METHOD=dark_reference.source,
                 )
                 for band_index, band_name in enumerate(BAND_NAMES):
                     inverse = cv2.invertAffineTransform(matrices[band_index])
@@ -529,7 +674,7 @@ def _write_l1a(
                             source.height,
                             y_start,
                             strip_height,
-                            black_level,
+                            dark_reference,
                             column_corrections[band_index],
                         )
                         destination.write(
@@ -699,8 +844,9 @@ def main() -> None:
         "--black-level-dn",
         type=float,
         help=(
-            "Explicit calibrated black level to subtract. Omit unless a calibration source "
-            "defines it; SensorConfiguration.DarkOffset is not assumed to be a black level."
+            "Explicit constant black-level override. By default, the processor measures a "
+            "per-line, per-band dark plane from the delivered calibration-border pixels. "
+            "SensorConfiguration.DarkOffset is not assumed to be a black level."
         ),
     )
     parser.add_argument("--validate-only", action="store_true")
@@ -768,36 +914,43 @@ def main() -> None:
     evidence = l0r_manifest["production_log_evidence"]
     border = evidence.get("border_pixels")
     valid_width = evidence.get("valid_detector_width")
-    if not isinstance(border, int) or not isinstance(valid_width, int):
+    calibration_border = evidence.get("calibration_border_pixels")
+    if (
+        not isinstance(border, int)
+        or not isinstance(valid_width, int)
+        or not isinstance(calibration_border, int)
+    ):
         raise RuntimeError(
-            "Trusted log evidence for detector border/valid width is unavailable; refusing to guess"
+            "Trusted log evidence for detector border, calibration pixels, or valid width is "
+            "unavailable; refusing to guess"
         )
     if valid_width + 2 * border != int(metadata["Scenes"][0]["Width"]):
         raise RuntimeError("Trusted detector border evidence does not match the raw scene width")
+    if calibration_border > border:
+        raise RuntimeError("Calibration-border evidence exceeds the detector margin")
     sensor_configuration = metadata.get("SensorConfiguration", {})
     dark_offset = float(sensor_configuration.get("DarkOffset", 0))
-    black_level = args.black_level_dn if args.black_level_dn is not None else 0.0
-    black_level_source = (
-        "explicit --black-level-dn calibration input"
-        if args.black_level_dn is not None
-        else "not applied; delivered DarkOffset is retained as hardware configuration metadata"
-    )
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", NotGeoreferencedWarning)
         with rasterio.open(raw_path) as source:
+            dark_reference = _estimate_dark_reference(
+                source,
+                calibration_border,
+                args.black_level_dn,
+            )
             preview, scale_x, scale_y = _registration_preview(
                 source, border, args.registration_downsample
             )
             matrices, registration = _estimate_registration(preview, scale_x, scale_y)
             corrections, correction_diagnostics = _column_corrections(
-                source, border, black_level
+                source, border, dark_reference
             )
             _write_l1a(
                 source,
                 output,
                 border,
-                black_level,
+                dark_reference,
                 matrices,
                 corrections,
                 args.strip_height,
@@ -815,7 +968,7 @@ def main() -> None:
         output, args.registration_downsample
     )
     l1a_manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "scene_id": args.scene_id,
         "processing_level": "L1A_MINIMUM_SENSOR_SPACE",
         "source_l0r_manifest": str(l0r_manifest_path),
@@ -831,9 +984,11 @@ def main() -> None:
             "statistics": _sample_statistics(output),
         },
         "radiometric_processing": {
-            "black_level_dn_applied": black_level,
-            "black_level_source": black_level_source,
+            "dark_reference_method": dark_reference.source,
+            "dark_reference_pixels_per_side": calibration_border,
+            "dark_reference_diagnostics": dark_reference.diagnostics,
             "delivered_sensor_dark_offset_setting": dark_offset,
+            "delivered_sensor_dark_offset_applied_as_black_level": False,
             "inactive_detector_border_pixels_removed_each_side": border,
             "column_fixed_pattern_correction": "scene-estimated high-frequency median profile",
             "column_correction_diagnostics": correction_diagnostics,
