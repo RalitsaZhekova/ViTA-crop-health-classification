@@ -101,19 +101,44 @@ def _metadata_from_extraction_log(path: Path) -> dict[str, object]:
     width = _extract_integer(text, r"SceneWidth\s*=\s*([\d,]+)", "SceneWidth")
     height = _extract_integer(text, r"SceneHeight\s*=\s*([\d,]+)", "SceneHeight")
     line_tables: dict[str, list[list[int | None]]] = {band_id: [] for band_id in RAW_BAND_IDS}
-    for match in re.finditer(
-        r"LineData\s+SpectralBand\s*=\s*(\d+)\s+LineNumber\s*=\s*([\d,]+)", text
-    ):
-        band_id = match.group(1)
-        if band_id in line_tables:
-            line_tables[band_id].append(
-                [int(match.group(2).replace(",", "")), None, None]
+    exposure_timestamp: int | None = None
+    for line in text.splitlines():
+        exposure = re.search(r"ExposureStart\s+Timestamp\s*=\s*([\d,]+)", line)
+        if exposure:
+            exposure_timestamp = int(exposure.group(1).replace(",", ""))
+        line_data = re.search(
+            r"LineData\s+SpectralBand\s*=\s*(\d+)\s+LineNumber\s*=\s*([\d,]+)",
+            line,
+        )
+        if line_data and line_data.group(1) in line_tables:
+            line_tables[line_data.group(1)].append(
+                [
+                    int(line_data.group(2).replace(",", "")),
+                    exposure_timestamp,
+                    exposure_timestamp,
+                ]
             )
     missing_tables = [band_id for band_id, lines in line_tables.items() if not lines]
     if missing_tables:
         raise ValueError(f"Extraction log has no line records for bands {missing_tables}")
     scene: dict[str, object] = {"Width": width, "Height": height}
     scene.update(line_tables)
+    time_sync = [
+        {"ImagerTime": int(match.group(1)), "PPS": True}
+        for match in re.finditer(
+            r"\{'ImagerTime':\s*(\d+),\s*'PPS':\s*True\}", text
+        )
+    ]
+    utc_anchors = [
+        {
+            "LastExposureTimestamp": int(match.group(1)),
+            "Data": match.group(2),
+        }
+        for match in re.finditer(
+            r"\{'ExposureTimestamp':\s*(\d+),\s*'Data':\s*b?'([0-9.]+)'\}",
+            text,
+        )
+    ]
     metadata: dict[str, object] = {
         "PlatformID": _extract_integer(text, r"PlatformID\s*=\s*(\d+)", "PlatformID"),
         "InstrumentID": _extract_integer(
@@ -143,6 +168,8 @@ def _metadata_from_extraction_log(path: Path) -> dict[str, object]:
             ),
         },
         "Scenes": [scene],
+        "Timesync": time_sync,
+        "UserData": {"5": utc_anchors},
         "_metadata_source": "packet_extraction_log",
     }
     return metadata
@@ -263,6 +290,11 @@ def _validate_l0r(
         },
         "imager_configuration": metadata.get("ImagerConfiguration"),
         "sensor_configuration": metadata.get("SensorConfiguration"),
+        "timing": {
+            "pps_samples": len(metadata.get("Timesync", [])),
+            "utc_anchor_samples": len(metadata.get("UserData", {}).get("5", [])),
+            "source": metadata_source,
+        },
         "line_diagnostics": line_diagnostics,
         "total_missing_band_lines": total_missing_lines,
         "production_log_evidence": _processing_evidence(processing_log),
@@ -305,6 +337,77 @@ def _registration_preview(
     return preview, valid_width / preview_width, source.height / preview_height
 
 
+def _phase_feature(image: np.ndarray) -> np.ndarray:
+    return np.abs(cv2.Laplacian(image.astype(np.float32), cv2.CV_32F, ksize=3))
+
+
+def _phase_shift(
+    moving: np.ndarray,
+    target: np.ndarray,
+) -> tuple[np.ndarray, float]:
+    window = cv2.createHanningWindow(
+        (moving.shape[1], moving.shape[0]), cv2.CV_32F
+    )
+    shift, response = cv2.phaseCorrelate(
+        _phase_feature(moving),
+        _phase_feature(target),
+        window,
+    )
+    return np.asarray(shift, dtype=np.float64), float(response)
+
+
+def _full_resolution_matrix(
+    preview_matrix: np.ndarray,
+    scale_x: float,
+    scale_y: float,
+) -> np.ndarray:
+    scale = np.diag([scale_x, scale_y])
+    linear = scale @ preview_matrix[:, :2] @ np.linalg.inv(scale)
+    translation = scale @ preview_matrix[:, 2]
+    return np.column_stack([linear, translation]).astype(np.float64)
+
+
+def _phase_bridge_registration(
+    image: np.ndarray,
+    bridge_image: np.ndarray,
+    bridge_to_reference: np.ndarray,
+    reference: np.ndarray,
+) -> tuple[np.ndarray, dict[str, object]]:
+    bridge_shift, bridge_response = _phase_shift(image, bridge_image)
+    if bridge_response < 0.12 or np.max(np.abs(bridge_shift)) > 16:
+        raise RuntimeError(
+            "Phase-correlation bridge rejected: "
+            f"response={bridge_response:.3f}, shift={bridge_shift.tolist()}"
+        )
+    source_to_bridge = np.array(
+        [[1, 0, bridge_shift[0]], [0, 1, bridge_shift[1]], [0, 0, 1]],
+        dtype=np.float64,
+    )
+    preview_matrix = (np.vstack([bridge_to_reference, [0, 0, 1]]) @ source_to_bridge)[
+        :2
+    ]
+    warped = cv2.warpAffine(
+        image,
+        preview_matrix,
+        (reference.shape[1], reference.shape[0]),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_REFLECT,
+    )
+    residual_shift, residual_response = _phase_shift(warped, reference)
+    residual_applied = bool(
+        residual_response >= 0.05 and np.max(np.abs(residual_shift)) <= 4
+    )
+    if residual_applied:
+        preview_matrix[:, 2] += residual_shift
+    return preview_matrix, {
+        "phase_bridge_shift_preview_pixels": bridge_shift.tolist(),
+        "phase_bridge_response": bridge_response,
+        "phase_residual_shift_preview_pixels": residual_shift.tolist(),
+        "phase_residual_response": residual_response,
+        "phase_residual_applied": residual_applied,
+    }
+
+
 def _estimate_registration(
     preview: np.ndarray,
     scale_x: float,
@@ -312,39 +415,136 @@ def _estimate_registration(
 ) -> tuple[list[np.ndarray], list[dict[str, object]]]:
     prepared = [cv2.createCLAHE(2.0, (8, 8)).apply(_display_u8(band)) for band in preview]
     sift = cv2.SIFT_create(nfeatures=12_000, contrastThreshold=0.02)
-    reference_keypoints, reference_descriptors = sift.detectAndCompute(
-        prepared[REFERENCE_BAND_INDEX], None
-    )
+    reference = prepared[REFERENCE_BAND_INDEX]
+    reference_keypoints, reference_descriptors = sift.detectAndCompute(reference, None)
     if reference_descriptors is None or len(reference_keypoints) < 500:
         raise RuntimeError("Too few real features in the Red-band registration preview")
     matcher = cv2.BFMatcher(cv2.NORM_L2)
-    matrices: list[np.ndarray] = []
-    diagnostics: list[dict[str, object]] = []
-    for band_index, (band_name, image) in enumerate(zip(BAND_NAMES, prepared, strict=True)):
-        if band_index == REFERENCE_BAND_INDEX:
-            matrix = np.array([[1, 0, 0], [0, 1, 0]], dtype=np.float64)
-            matrices.append(matrix)
-            diagnostics.append(
-                {
-                    "band": band_name,
-                    "reference": True,
-                    "keypoints": len(reference_keypoints),
-                    "good_matches": len(reference_keypoints),
-                    "inliers": len(reference_keypoints),
-                    "inlier_ratio": 1.0,
-                    "rmse_pixels": 0.0,
-                    "matrix_source_to_red": matrix.tolist(),
-                }
-            )
-            continue
+    matrices: list[np.ndarray | None] = [None] * len(BAND_NAMES)
+    preview_matrices: list[np.ndarray | None] = [None] * len(BAND_NAMES)
+    diagnostics: list[dict[str, object] | None] = [None] * len(BAND_NAMES)
+    identity = np.array([[1, 0, 0], [0, 1, 0]], dtype=np.float64)
+    matrices[REFERENCE_BAND_INDEX] = identity
+    preview_matrices[REFERENCE_BAND_INDEX] = identity.copy()
+    diagnostics[REFERENCE_BAND_INDEX] = {
+        "band": BAND_NAMES[REFERENCE_BAND_INDEX],
+        "reference": True,
+        "registration_source": "reference",
+        "keypoints": len(reference_keypoints),
+        "good_matches": len(reference_keypoints),
+        "inliers": len(reference_keypoints),
+        "inlier_ratio": 1.0,
+        "rmse_pixels": 0.0,
+        "matrix_source_to_red": identity.tolist(),
+    }
 
+    # PAN is solved before NIR so it can provide a spectrally closer phase bridge
+    # when vegetation or haze leaves NIR with too few direct Red-band features.
+    for band_index in (0, 1, 4, 3):
+        band_name = BAND_NAMES[band_index]
+        image = prepared[band_index]
         keypoints, descriptors = sift.detectAndCompute(image, None)
         if descriptors is None:
             raise RuntimeError(f"No descriptors found for real band {band_name}")
         pairs = matcher.knnMatch(descriptors, reference_descriptors, k=2)
         good = [first for first, second in pairs if first.distance < 0.72 * second.distance]
+        source_points = np.float32([keypoints[match.queryIdx].pt for match in good])
+        target_points = np.float32(
+            [reference_keypoints[match.trainIdx].pt for match in good]
+        )
+
         if len(good) < 100:
-            raise RuntimeError(f"Only {len(good)} cross-band matches found for {band_name}")
+            pan_preview_matrix = preview_matrices[4]
+            if band_index != 3 or pan_preview_matrix is None:
+                raise RuntimeError(
+                    f"Only {len(good)} cross-band matches found for {band_name}"
+                )
+            preview_matrix, phase_bridge = _phase_bridge_registration(
+                image,
+                prepared[4],
+                pan_preview_matrix,
+                reference,
+            )
+            if len(good) < 4:
+                raise RuntimeError(
+                    f"Only {len(good)} independent features support the {band_name} phase bridge"
+                )
+            weak_matrix, weak_mask = cv2.estimateAffinePartial2D(
+                source_points,
+                target_points,
+                method=cv2.RANSAC,
+                ransacReprojThreshold=3,
+                maxIters=20_000,
+                confidence=0.999,
+                refineIters=50,
+            )
+            phase_corroborated_sparse_fit = False
+            maximum_model_disagreement = None
+            if weak_matrix is not None and weak_mask is not None:
+                weak_inliers = weak_mask.ravel().astype(bool)
+                control_points = np.float32(
+                    [
+                        [0, 0],
+                        [image.shape[1] - 1, 0],
+                        [0, image.shape[0] - 1],
+                        [image.shape[1] - 1, image.shape[0] - 1],
+                        [(image.shape[1] - 1) / 2, (image.shape[0] - 1) / 2],
+                    ]
+                )
+                weak_control = cv2.transform(control_points[:, None, :], weak_matrix)[
+                    :, 0, :
+                ]
+                phase_control = cv2.transform(
+                    control_points[:, None, :], preview_matrix
+                )[:, 0, :]
+                maximum_model_disagreement = float(
+                    np.max(np.linalg.norm(weak_control - phase_control, axis=1))
+                )
+                phase_corroborated_sparse_fit = bool(
+                    np.count_nonzero(weak_inliers) >= 4
+                    and np.count_nonzero(weak_inliers) / len(good) >= 0.5
+                    and maximum_model_disagreement <= 8
+                )
+                if phase_corroborated_sparse_fit:
+                    preview_matrix = weak_matrix
+            predicted = cv2.transform(source_points[:, None, :], preview_matrix)[:, 0, :]
+            preview_residual = target_points - predicted
+            inliers = np.linalg.norm(preview_residual, axis=1) <= 5
+            inlier_count = int(np.count_nonzero(inliers))
+            if inlier_count < 4:
+                raise RuntimeError(
+                    f"Only {inlier_count} independent features validate the {band_name} "
+                    "phase bridge"
+                )
+            matrix = _full_resolution_matrix(preview_matrix, scale_x, scale_y)
+            residual = preview_residual[inliers].copy()
+            residual[:, 0] *= scale_x
+            residual[:, 1] *= scale_y
+            rmse = float(np.sqrt(np.mean(np.sum(residual**2, axis=1))))
+            matrices[band_index] = matrix
+            preview_matrices[band_index] = preview_matrix
+            diagnostics[band_index] = {
+                "band": band_name,
+                "reference": False,
+                "registration_source": (
+                    "sparse_sift_ransac_corroborated_by_phase"
+                    if phase_corroborated_sparse_fit
+                    else "phase_correlation_via_pan"
+                ),
+                "keypoints": len(keypoints),
+                "good_matches": len(good),
+                "inliers": inlier_count,
+                "inlier_ratio": inlier_count / len(good),
+                "rmse_pixels": rmse,
+                "phase_corroborated_sparse_fit": phase_corroborated_sparse_fit,
+                "maximum_sparse_phase_model_disagreement_preview_pixels": (
+                    maximum_model_disagreement
+                ),
+                **phase_bridge,
+                "matrix_source_to_red": matrix.tolist(),
+            }
+            continue
+
         source_points = np.float32([keypoints[match.queryIdx].pt for match in good])
         target_points = np.float32(
             [reference_keypoints[match.trainIdx].pt for match in good]
@@ -369,29 +569,66 @@ def _estimate_registration(
                 f"ratio {inlier_ratio:.3f}"
             )
 
-        scale = np.diag([scale_x, scale_y])
-        linear = scale @ preview_matrix[:, :2] @ np.linalg.inv(scale)
-        translation = scale @ preview_matrix[:, 2]
-        matrix = np.column_stack([linear, translation]).astype(np.float64)
+        warped = cv2.warpAffine(
+            image,
+            preview_matrix,
+            (reference.shape[1], reference.shape[0]),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_REFLECT,
+        )
+        phase_shift_array, phase_response = _phase_shift(warped, reference)
+        predicted_before_phase = cv2.transform(
+            source_points[inliers, None, :], preview_matrix
+        )[:, 0, :]
+        residual_before_phase = target_points[inliers] - predicted_before_phase
+        preview_rmse_before_phase = float(
+            np.sqrt(np.mean(np.sum(residual_before_phase**2, axis=1)))
+        )
+        candidate_residual = residual_before_phase - phase_shift_array
+        preview_rmse_after_phase = float(
+            np.sqrt(np.mean(np.sum(candidate_residual**2, axis=1)))
+        )
+        phase_applied = bool(
+            phase_response >= 0.05
+            and np.max(np.abs(phase_shift_array)) <= 8
+            and preview_rmse_after_phase < preview_rmse_before_phase
+        )
+        if phase_applied:
+            preview_matrix[:, 2] += phase_shift_array
+
+        matrix = _full_resolution_matrix(preview_matrix, scale_x, scale_y)
         predicted = cv2.transform(source_points[inliers, None, :], preview_matrix)[:, 0, :]
         residual = target_points[inliers] - predicted
         residual[:, 0] *= scale_x
         residual[:, 1] *= scale_y
         rmse = float(np.sqrt(np.mean(np.sum(residual**2, axis=1))))
-        matrices.append(matrix)
-        diagnostics.append(
-            {
-                "band": band_name,
-                "reference": False,
-                "keypoints": len(keypoints),
-                "good_matches": len(good),
-                "inliers": inlier_count,
-                "inlier_ratio": inlier_ratio,
-                "rmse_pixels": rmse,
-                "matrix_source_to_red": matrix.tolist(),
-            }
-        )
-    return matrices, diagnostics
+        matrices[band_index] = matrix
+        preview_matrices[band_index] = preview_matrix
+        diagnostics[band_index] = {
+            "band": band_name,
+            "reference": False,
+            "registration_source": "sift_ransac_with_phase_gate",
+            "keypoints": len(keypoints),
+            "good_matches": len(good),
+            "inliers": inlier_count,
+            "inlier_ratio": inlier_ratio,
+            "rmse_pixels": rmse,
+            "phase_correlation_shift_preview_pixels": phase_shift_array.tolist(),
+            "phase_correlation_response": phase_response,
+            "phase_correlation_applied": phase_applied,
+            "phase_preview_rmse_before_pixels": preview_rmse_before_phase,
+            "phase_preview_rmse_after_pixels": preview_rmse_after_phase,
+            "matrix_source_to_red": matrix.tolist(),
+        }
+
+    if any(matrix is None for matrix in matrices) or any(
+        diagnostic is None for diagnostic in diagnostics
+    ):
+        raise RuntimeError("Registration did not produce all five band transforms")
+    return (
+        [matrix for matrix in matrices if matrix is not None],
+        [diagnostic for diagnostic in diagnostics if diagnostic is not None],
+    )
 
 
 def _fill_missing_rows(values: np.ndarray) -> np.ndarray:
@@ -658,7 +895,9 @@ def _write_l1a(
                     RADIOMETRIC_UNITS="scene-destriped relative DN",
                     RADIOMETRIC_STATUS="NOT_RADIANCE_NOT_REFLECTANCE",
                     GEOLOCATION_STATUS="UNREFERENCED_NOT_ORTHORECTIFIED",
-                    REGISTRATION_METHOD="SIFT cross-band features + RANSAC partial affine",
+                    REGISTRATION_METHOD=(
+                        "SIFT + RANSAC partial affine + gated phase-correlation refinement"
+                    ),
                     REFERENCE_BAND="RED",
                     DARK_REFERENCE_METHOD=dark_reference.source,
                 )
@@ -727,7 +966,6 @@ def _read_rgb_overview(path: Path, gamma: float, size: int = 1200) -> np.ndarray
 def _write_preview(
     raw_path: Path,
     l1a_path: Path,
-    reference_path: Path,
     output: Path,
     gamma: float,
 ) -> None:
@@ -749,13 +987,6 @@ def _write_preview(
             "New minimum L1A\nreal feature-registered corrected DN",
         ),
     ]
-    if reference_path.is_file():
-        panels.append(
-            (
-                _read_rgb_overview(reference_path, gamma),
-                "Supplied L1ORT reference\ncalibrated + orthorectified externally",
-            )
-        )
     figure, axes = plt.subplots(1, len(panels), figsize=(7 * len(panels), 8))
     if len(panels) == 1:
         axes = [axes]
@@ -773,7 +1004,7 @@ def _write_preview(
         0.02,
         (
             "The new L1A is a real sensor-space product, not mock data. It is intentionally not "
-            "labelled radiance, reflectance, georeferenced or orthorectified."
+            "rotated, or labelled radiance, reflectance, georeferenced or orthorectified."
         ),
         ha="center",
         fontsize=11,
@@ -896,7 +1127,6 @@ def main() -> None:
     if args.validate_only:
         print(json.dumps({"l0r_manifest": str(l0r_manifest_path)}, indent=2))
         return
-    reference_path = data_root / "preprocessed" / f"{args.scene_id}_L1ORT.tif"
     preview_path = output.with_name(f"{args.scene_id}_L1A_comparison.png")
     if args.preview_only:
         if not output.is_file():
@@ -904,7 +1134,6 @@ def main() -> None:
         _write_preview(
             raw_path,
             output,
-            reference_path,
             preview_path,
             args.preview_gamma,
         )
@@ -960,7 +1189,6 @@ def main() -> None:
     _write_preview(
         raw_path,
         output,
-        reference_path,
         preview_path,
         args.preview_gamma,
     )
@@ -995,7 +1223,10 @@ def main() -> None:
             "absolute_calibration_applied": False,
         },
         "registration": {
-            "method": "SIFT cross-band features + RANSAC partial affine",
+            "method": (
+                "SIFT cross-band features + RANSAC partial affine + gated "
+                "phase-correlation refinement"
+            ),
             "reference_band": "RED",
             "preview_downsample": args.registration_downsample,
             "bands": registration,

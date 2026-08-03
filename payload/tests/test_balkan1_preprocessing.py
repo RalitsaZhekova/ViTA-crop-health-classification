@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import warnings
 
+import cv2
 import numpy as np
 import pytest
 from rasterio.errors import NotGeoreferencedWarning
@@ -10,6 +11,8 @@ from rasterio.io import MemoryFile
 from scripts.balkan1.process_l1a import (
     _dark_surface,
     _estimate_dark_reference,
+    _metadata_from_extraction_log,
+    _phase_shift,
     _remap_strip,
 )
 from scripts.balkan1.validate_l1a import _radiometric_diagnostic
@@ -109,3 +112,63 @@ def test_reference_radiometric_fit_is_diagnostic_and_deterministic() -> None:
     assert diagnostic["diagnostic_affine_intercept"] == pytest.approx(0.125)
     assert diagnostic["pearson_correlation"] == pytest.approx(1)
     assert diagnostic["rmse_after_diagnostic_affine"] < 1e-9
+
+
+def test_phase_correlation_recovers_real_subpixel_translation() -> None:
+    moving = np.random.default_rng(7).normal(size=(256, 256)).astype(np.float32)
+    expected = np.array([4.25, -2.5])
+    target = cv2.warpAffine(
+        moving,
+        np.array([[1, 0, expected[0]], [0, 1, expected[1]]], dtype=np.float64),
+        (moving.shape[1], moving.shape[0]),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_WRAP,
+    )
+
+    shift, response = _phase_shift(moving, target)
+
+    np.testing.assert_allclose(shift, expected, atol=0.4)
+    assert response > 0.5
+
+
+def test_extraction_log_recovers_line_timing_and_utc_anchors(tmp_path) -> None:
+    log = tmp_path / "log_extract.txt"
+    log.write_text(
+        """
+PlatformID = 0
+InstrumentID = 0
+PacketVersion = [1, 0]
+Closed = True
+LinePeriod = 880
+SpectralBands = 8
+ExposureTime = 848
+BandSetup = [4, 7, 10, 16, 0, 0, 0, 11]
+BandStartRow = [3396, 4616, 4212, 3764, 2804, 2312, 1924, 3044]
+BandCWL = [625, 490, 560, 665, 0, 0, 0, 842]
+PGAGain = 125
+ADCGain = 38
+DarkOffset = -700
+SceneWidth = 9520
+SceneHeight = 1
+ExposureStart Timestamp = 101
+LineData SpectralBand = 1 LineNumber = 0
+ExposureStart Timestamp = 102LineData SpectralBand = 2 LineNumber = 0
+ExposureStart Timestamp = 103
+LineData SpectralBand = 3 LineNumber = 0
+ExposureStart Timestamp = 104LineData SpectralBand = 7 LineNumber = 0
+ExposureStart Timestamp = 105
+LineData SpectralBand = 0 LineNumber = 0
+{'ImagerTime': 1000000, 'PPS': True}
+{'ExposureTimestamp': 101, 'Data': b'1770953894.4859014'}
+""",
+        encoding="utf-8",
+    )
+
+    metadata = _metadata_from_extraction_log(log)
+
+    assert metadata["Scenes"][0]["1"][0] == [0, 101, 101]
+    assert metadata["Scenes"][0]["2"][0] == [0, 102, 102]
+    assert metadata["Timesync"] == [{"ImagerTime": 1_000_000, "PPS": True}]
+    assert metadata["UserData"]["5"] == [
+        {"LastExposureTimestamp": 101, "Data": "1770953894.4859014"}
+    ]

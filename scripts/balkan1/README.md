@@ -32,6 +32,20 @@ retain this order but have no GeoTIFF band descriptions. The launchers therefore
 declare `BLUE GREEN RED NIR PAN` explicitly. This mapping is collection-specific
 and must be reviewed again for another delivery.
 
+Every inspected acquisition includes `position.csv`, `attitude.csv`, the raw
+TIFF and either decoded JSON or a packet-extraction log. The extraction logs
+retain per-line exposure timestamps, PPS samples and UTC user-data anchors, so
+the processor recovers those values even for the six scenes whose JSON and
+packet stream are no longer present. This is sufficient evidence to build an
+initial line-by-line navigation model.
+
+The delivered raw folders do not contain DSNU/PRNU or absolute-gain tables, a
+DEM, an independent map reference, or atmospheric state. The supplied
+production logs show that those were loaded from separate paths such as
+`/code/assets/balkan/GIPPs/GIPP_BLK1.yml`, per-scene `l1c_dem/merged.tif` and
+`l1c_reference_s2/s2_ref.tif`. Do not claim absolute L1B radiance/reflectance,
+terrain-corrected L1C, or surface reflectance merely from the navigation files.
+
 ## Add a preprocessor
 
 Place the Python implementation under `scripts/balkan1/preprocessors/` so it is
@@ -95,7 +109,8 @@ calibration pixels at the left and right edges, interpolates the cross-track
 dark plane, subtracts it, removes the remaining 88-pixel inactive margin,
 estimates only high-frequency fixed-pattern striping from the real scene, and
 registers all bands to Red using real SIFT feature matches with a RANSAC quality
-gate. The delivered `DarkOffset` hardware setting is recorded but is not
+gate, then accepts a dense phase-correlation translation only when it improves
+the feature residual. The delivered `DarkOffset` hardware setting is recorded but is not
 misinterpreted as a black level. `--black-level-dn` is an explicit constant
 override for the measured dark-reference model and should be used only when an
 actual calibration source requires it.
@@ -121,7 +136,9 @@ without rewriting the L1A TIFF:
 ```
 
 Gamma affects the PNG only. Values below 1 brighten midtones; the L1A pixels
-and metadata remain unchanged.
+and metadata remain unchanged. This normal preview deliberately keeps the raw
+and L1A products in their native sensor orientation and does not add the
+north-up L1ORT panel.
 
 Validate the L1A against the supplied L1ORT without making that reference an
 input to preprocessing:
@@ -132,8 +149,9 @@ input to preprocessing:
 
 This flips and robustly aligns bounded overviews for QA, reports feature-match
 and per-band correlation/error metrics, and writes a three-panel aligned
-comparison. Its per-scene affine fits are diagnostics only; they are never
-applied to L1A data and must not be reused as physical calibration.
+comparison in sensor-row orientation. Its per-scene affine fits are diagnostics
+only; they are never applied to L1A data and must not be reused as physical
+calibration.
 
 Outputs are written to `data/balkan1/derived/l1a/`: a validated L0R manifest,
 the five-band `*_L1A_MIN.tif`, a detailed L1A manifest and a comparison PNG.

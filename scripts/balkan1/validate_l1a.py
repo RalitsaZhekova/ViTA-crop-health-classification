@@ -196,8 +196,11 @@ def _write_visualization(
     difference = np.clip(np.abs(moving_rgb - reference_rgb) * 2, 0, 1)
     figure, axes = plt.subplots(1, 3, figsize=(21, 8))
     panels = (
-        (moving_rgb, "New L1A aligned for QA\nindependent display stretch"),
-        (reference_rgb, "Supplied L1ORT reference\nindependent display stretch"),
+        (moving_rgb, "New L1A in sensor-row orientation\nindependent display stretch"),
+        (
+            reference_rgb,
+            "Supplied L1ORT reprojected for QA\nno display rotation",
+        ),
         (difference, "Display-space absolute difference\n2x amplification"),
     )
     for axis, (image, title) in zip(axes, panels, strict=True):
@@ -292,10 +295,20 @@ def main() -> None:
     output_dir = l1a_path.parent
     visualization_path = output_dir / f"{args.scene_id}_L1A_reference_validation.png"
     metrics_path = output_dir / f"{args.scene_id}_L1A_reference_validation.json"
-    _write_visualization(
-        aligned,
+    reference_in_sensor_orientation, reference_sensor_valid = _warp_product(
         reference,
-        overlap,
+        np.linalg.inv(homography),
+        l1a.shape[1:],
+    )
+    sensor_overlap = (
+        reference_sensor_valid
+        & np.all(l1a > 0, axis=0)
+        & np.all(reference_in_sensor_orientation > 0, axis=0)
+    )
+    _write_visualization(
+        l1a,
+        reference_in_sensor_orientation,
+        sensor_overlap,
         visualization_path,
         args.scene_id,
         args.gamma,
