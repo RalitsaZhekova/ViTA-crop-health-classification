@@ -3,21 +3,22 @@ status: integrated_classifier_only
 component: prithvi_payload.PayloadCloudClassifier
 full_pipeline_config: ../cloud_detection/configs/cloud_detector.yaml
 model:
-  name: dtacs4bands
-  package: cloudsen12_models
-  package_version: 1.0.2
-  weights: ../models/cloudsen12/dtacs4bands.pt
-  sha256: 37205adce72fbbb65a3cfa8f47676c84ebf9b1555a27a3838d584072c954b22d
+  name: omnicloudmask_v4
+  package: omnicloudmask
+  package_version: 1.7.1
+  model_version: 4.0
+  weights: ../models/omnicloudmask
+  ensemble_sha256: ab8f039866d6714b249f850779b9523b5f6afb55ee891077a71db0fdebc9b529
 input:
-  sensor: Sentinel-2
-  processing_level: L1C
-  radiometry: top_of_atmosphere_reflectance
+  sensors: [Sentinel-2, Balkan-1]
+  processing_level: reflectance_product
+  radiometry: dynamically_normalized_per_patch
   band_order: [B08, B04, B03, B02]
-  digital_number_scale: 10000
+  model_band_order: [B04, B03, B08]
   layout: channels_height_width
 tiling:
-  size: 512
-  overlap: 64
+  size: 1000
+  overlap: 300
   padding: reflect
 classes:
   0: clear
@@ -30,6 +31,5 @@ output:
   invalid_input_map: enabled
   unusable_mask: not_connected
 compatibility:
-  sentinel_2_l1c: prototype_ready
-  sentinel_2_l2a: requires_input_contract_review
-  balkan_1: requires_sensor_validation_and_calibration
+  sentinel_2_l1c_l2a: upstream_validated
+  balkan_1_l1ort_10m: supplied_zero_shot_benchmark

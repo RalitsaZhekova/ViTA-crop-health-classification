@@ -3,6 +3,15 @@ from __future__ import annotations
 import numpy as np
 
 
+def strict_valid_mask(image_rgn: np.ndarray) -> np.ndarray:
+    """Return the supplied detector's strict-valid Red/Green/NIR footprint."""
+    if image_rgn.ndim != 3 or image_rgn.shape[0] != 3:
+        raise ValueError("image_rgn must have shape (3,height,width) in Red/Green/NIR order")
+    tiny = np.finfo(np.float32).tiny
+    finite = np.all(np.isfinite(image_rgn), axis=0)
+    return finite & np.all(image_rgn > tiny, axis=0)
+
+
 def normalize_reflectance(
     array: np.ndarray,
     scale: float,
@@ -10,10 +19,11 @@ def normalize_reflectance(
     clip_max: float | None = None,
     nodata_value: int | float | None = 0,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Convert Sentinel-2 digital numbers to float32 reflectance.
+    """Convert scaled sensor values to float32 reflectance.
 
-    The official CloudSEN12 example divides L1C values by 10,000. Clipping is optional and
-    disabled by default so the wrapper does not silently alter bright observations.
+    Scaling remains required by downstream science. OmniCloudMask dynamically
+    normalizes each patch again, so this conversion does not define its model
+    distribution. Clipping is disabled by default.
     """
     if array.ndim != 3:
         raise ValueError(f"Expected C x H x W input, found {array.shape}.")

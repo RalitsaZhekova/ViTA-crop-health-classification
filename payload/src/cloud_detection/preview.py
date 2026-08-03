@@ -75,14 +75,29 @@ def save_preview(
     image: np.ndarray,
     semantic: np.ndarray,
     unusable: np.ndarray,
+    *,
+    channelwise_rgb: bool = False,
 ) -> None:
     rgb = image[[1, 2, 3]].transpose(1, 2, 0)
-    finite_values = rgb[np.isfinite(rgb)]
-    if finite_values.size:
-        low, high = np.percentile(finite_values, [2, 98])
-        rgb = np.clip((rgb - low) / max(high - low, 1e-6), 0, 1)
+    if channelwise_rgb:
+        displayed = np.zeros_like(rgb, dtype=np.float32)
+        valid = np.all(np.isfinite(rgb), axis=-1) & np.any(rgb != 0, axis=-1)
+        for channel in range(3):
+            values = rgb[..., channel][valid]
+            if values.size:
+                low, high = np.percentile(values, [2, 98])
+                displayed[..., channel] = np.clip(
+                    (rgb[..., channel] - low) / max(high - low, 1e-6), 0, 1
+                )
+        displayed[~valid] = 0
+        rgb = displayed
     else:
-        rgb = np.zeros_like(rgb)
+        finite_values = rgb[np.isfinite(rgb)]
+        if finite_values.size:
+            low, high = np.percentile(finite_values, [2, 98])
+            rgb = np.clip((rgb - low) / max(high - low, 1e-6), 0, 1)
+        else:
+            rgb = np.zeros_like(rgb)
 
     figure = Figure(figsize=(14, 11), constrained_layout=True)
     FigureCanvasAgg(figure)

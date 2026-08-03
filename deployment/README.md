@@ -9,7 +9,7 @@ ground checksum/schema validation -> immutable catalog -> API/dashboard
 ```
 
 The payload image contains the shared package, payload package, fixed Earth
-Engine provider, CloudSEN runtime, Prithvi crop runtime and exactly the selected
+Engine provider, OmniCloudMask runtime, Prithvi crop runtime and exactly the selected
 checksum-pinned model artifacts. The ground image contains the shared and
 ground packages plus the dashboard assets. It contains no payload package,
 Earth Engine client, model weights or scientific execution code.
@@ -84,7 +84,8 @@ git check-ignore .env.ground
 
 All three paths must be reported as ignored. `.dockerignore` excludes
 `secrets`, `.env*`, runtime data, datasets, outputs, notebooks and test runs.
-It deliberately does not exclude the two selected `.pt` model artifacts.
+It deliberately does not exclude the selected `.pt` crop artifact or the two
+selected `.safetensors` cloud artifacts.
 
 ## Local payload validation
 

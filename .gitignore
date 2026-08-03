@@ -27,6 +27,7 @@ lightning_logs/
 *.ckpt
 *.pt
 *.pth
+*.safetensors
 *.tif
 *.tiff
 *.tgz

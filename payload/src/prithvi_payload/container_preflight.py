@@ -13,7 +13,6 @@ import torch
 from prithvi_shared import SELECTED_CHECKPOINT_NAME, SELECTED_CHECKPOINT_SHA256
 
 from prithvi_payload.cloud_classifier import (
-    CLOUD_MODEL_NAME,
     CLOUD_MODEL_SHA256,
     cloud_checkpoint_sha256,
     default_cloud_weights_directory,
@@ -33,13 +32,13 @@ def verify_model_artifacts() -> dict[str, str]:
     crop_directory = default_model_directory()
     architecture = crop_directory / "architecture.yaml"
     crop_checkpoint = crop_directory / SELECTED_CHECKPOINT_NAME
-    cloud_checkpoint = default_cloud_weights_directory() / f"{CLOUD_MODEL_NAME}.pt"
-    for artifact in (architecture, crop_checkpoint, cloud_checkpoint):
+    cloud_directory = default_cloud_weights_directory()
+    for artifact in (architecture, crop_checkpoint):
         if not artifact.is_file():
             raise RuntimeError("A required payload model artifact is missing")
     if checkpoint_sha256(crop_checkpoint) != SELECTED_CHECKPOINT_SHA256:
         raise RuntimeError("Selected crop-model checksum mismatch")
-    if cloud_checkpoint_sha256(cloud_checkpoint) != CLOUD_MODEL_SHA256:
+    if cloud_checkpoint_sha256(cloud_directory) != CLOUD_MODEL_SHA256:
         raise RuntimeError("Selected cloud-model checksum mismatch")
     return {
         "crop_model_sha256": SELECTED_CHECKPOINT_SHA256,

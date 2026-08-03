@@ -1,25 +1,18 @@
-"""Download and verify the pinned prototype cloud-classifier checkpoint."""
+"""Download and verify the pinned OmniCloudMask V4 ensemble."""
 
 from __future__ import annotations
 
 import argparse
-import hashlib
 from pathlib import Path
 
-import torch
-from cloudsen12_models import cloudsen12
+from cloud_detection.backend import (
+    OMNICLOUDMASK_ENSEMBLE_SHA256,
+    OMNICLOUDMASK_MODEL_VERSION,
+    ensemble_sha256,
+)
+from omnicloudmask.download_models import get_models
 
-MODEL_NAME = "dtacs4bands"
-EXPECTED_SHA256 = "37205adce72fbbb65a3cfa8f47676c84ebf9b1555a27a3838d584072c954b22d"
-DEFAULT_DIRECTORY = Path(__file__).resolve().parents[1] / "models" / "cloudsen12"
-
-
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as file:
-        for chunk in iter(lambda: file.read(8 * 1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+DEFAULT_DIRECTORY = Path(__file__).resolve().parents[1] / "models" / "omnicloudmask"
 
 
 def main() -> None:
@@ -28,23 +21,29 @@ def main() -> None:
         "--directory",
         type=Path,
         default=DEFAULT_DIRECTORY,
-        help="Destination directory for dtacs4bands.pt.",
+        help="Destination directory for the two OmniCloudMask V4 checkpoints.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Download both checkpoints again before verification.",
     )
     args = parser.parse_args()
     args.directory.mkdir(parents=True, exist_ok=True)
-    cloudsen12.load_model_by_name(
-        name=MODEL_NAME,
-        weights_folder=str(args.directory),
-        device=torch.device("cpu"),
+    get_models(
+        force_download=args.force,
+        model_dir=args.directory,
+        source="hugging_face",
+        model_version=OMNICLOUDMASK_MODEL_VERSION,
     )
-    model_path = args.directory / f"{MODEL_NAME}.pt"
-    actual = sha256(model_path)
-    if actual != EXPECTED_SHA256:
+    actual = ensemble_sha256(args.directory)
+    if actual != OMNICLOUDMASK_ENSEMBLE_SHA256:
         raise SystemExit(
-            f"Checkpoint hash mismatch: expected {EXPECTED_SHA256}, found {actual}. "
-            "The file was preserved for inspection."
+            "Ensemble hash mismatch: "
+            f"expected {OMNICLOUDMASK_ENSEMBLE_SHA256}, found {actual}. "
+            "The files were preserved for inspection."
         )
-    print(f"Verified {model_path} ({actual}).")
+    print(f"Verified OmniCloudMask V4 in {args.directory} ({actual}).")
 
 
 if __name__ == "__main__":

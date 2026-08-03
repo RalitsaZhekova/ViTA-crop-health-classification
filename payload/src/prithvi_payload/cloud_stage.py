@@ -50,7 +50,12 @@ def build_cloud_stage_plan(
         or any(not isinstance(index, int) or index <= 0 for index in source_indices)
     ):
         errors.append("A complete four-band cloud route is unavailable")
-    if expected_order != ["NIR_BROAD", "RED", "GREEN", "BLUE"]:
+    if (
+        not isinstance(expected_order, list)
+        or len(expected_order) != 4
+        or expected_order[0] not in {"NIR_BROAD", "NIR_NARROW"}
+        or expected_order[1:] != ["RED", "GREEN", "BLUE"]
+    ):
         errors.append("Cloud route has an unexpected logical band order")
 
     supplied_scale = _positive_scale(reflectance_scale)
@@ -70,15 +75,15 @@ def build_cloud_stage_plan(
         )
 
     if sensor == "sentinel-2":
-        compatibility = "NATIVE_SENTINEL_2"
-        validation_status = "VALIDATED_INPUT_CONTRACT"
+        compatibility = "OMNICLOUDMASK_SENTINEL_2"
+        validation_status = "UPSTREAM_VALIDATED_SENTINEL_2"
     else:
-        compatibility = "PROVISIONAL_BALKAN_1_TRANSFER"
-        validation_status = "REQUIRES_REAL_BALKAN_1_VALIDATION"
+        compatibility = "OMNICLOUDMASK_BALKAN_1"
+        validation_status = "SUPPLIED_ZERO_SHOT_BALKAN_1_BENCHMARK"
         warnings.extend(
             [
-                "CloudSEN12 was trained for Sentinel-2, not Balkan-1",
-                "Balkan-1 spectral response and 1.5 m GSD remain unvalidated",
+                "Balkan-1 validation applies to L1ORT imagery resampled to 10 m",
+                "Benchmark annotation caveats remain scene-specific",
                 "Panchromatic is retained in the source but is not used by this model",
             ]
         )
@@ -107,9 +112,13 @@ def build_cloud_stage_plan(
         },
         "execution": {
             "mode": "WINDOWED_GEOTIFF",
-            "full_scene_materialization_allowed": False,
-            "tile_size": 512,
-            "overlap": 64,
+            "source_full_scene_materialization_allowed": False,
+            "balkan_resampled_analysis_grid_materialization_allowed": True,
+            "tile_size": 1000,
+            # Adjacent model tiles overlap by 300 px: 150 px of context is
+            # discarded on each side before the core is written.
+            "overlap": 150,
+            "model_patch_overlap": 300,
         },
         "output_contract": {
             "semantic_classes": [

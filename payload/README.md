@@ -57,7 +57,7 @@ Start the long-lived API after mounting the runtime credential and model files:
 python -m prithvi_payload.service --host 127.0.0.1 --port 8081
 ```
 
-The service initializes Earth Engine, CUDA, CloudSEN and the crop model once,
+The service initializes Earth Engine, CUDA, OmniCloudMask and the crop model once,
 warms both models once, and serializes GPU work through a bounded queue. Job
 state is written atomically below `VITA_JOB_ROOT` and completed jobs survive
 restart. Each `status.json` retains safe state-transition events and candidate
@@ -69,7 +69,7 @@ This operational history is not added to the routine three-file downlink.
 
 For `target_cloud_range`, Earth Engine scene metadata must first be within the
 requested 15-35% demonstration range. Up to five ordered candidates are then
-downloaded one at a time and evaluated by the existing CloudSEN stage over the
+downloaded one at a time and evaluated by the existing OmniCloudMask stage over the
 actual AOI. A candidate outside the payload-measured range is recorded safely,
 its unnecessary raster/model intermediates are removed, and the next candidate
 is tried. The accepted candidate continues through the existing crop, condition
@@ -219,8 +219,8 @@ A successful run ends with `DOWNLINK_READY` and records the three absolute local
 paths in payload `result.json`. The portable `scene.json` itself contains only
 relative image references and checksums.
 
-The crop route requires both Sentinel-2 `B08` for CloudSEN12 and `B8A` for the
-selected Prithvi model. It writes crop probability, binary crop and confidence
+The cloud route prefers Sentinel-2 `B8A` and falls back to `B08`; the selected
+Prithvi model requires `B8A`. It writes crop probability, binary crop and confidence
 GeoTIFFs, crop metadata and a combined PNG. A scene at or above the configured
 cloud percentage is stopped before the crop model is loaded.
 

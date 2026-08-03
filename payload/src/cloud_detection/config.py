@@ -33,16 +33,39 @@ def load_config(path: str | Path) -> dict[str, Any]:
         raise ConfigurationError(f"Missing sections: {sorted(missing)}")
 
     expected_order = ["B08", "B04", "B03", "B02"]
-    if raw["model"].get("name") != "dtacs4bands":
-        raise ConfigurationError("Only the reviewed dtacs4bands model is supported.")
+    if raw["model"].get("name") != "omnicloudmask_v4":
+        raise ConfigurationError("Only the reviewed OmniCloudMask V4 model is supported.")
+    if raw["model"].get("backend") != "omnicloudmask":
+        raise ConfigurationError("The cloud backend must be omnicloudmask.")
+    if str(raw["model"].get("package_version")) != "1.7.1":
+        raise ConfigurationError("OmniCloudMask package version must be pinned to 1.7.1.")
+    if float(raw["model"].get("model_version", 0)) != 4.0:
+        raise ConfigurationError("OmniCloudMask model version must be V4.")
+    if raw["model"].get("inference_dtype") != "fp32":
+        raise ConfigurationError("The reviewed OmniCloudMask baseline requires FP32.")
+    if (
+        int(raw["model"].get("patch_size", 0)) != 1000
+        or int(raw["model"].get("patch_overlap", -1)) != 300
+    ):
+        raise ConfigurationError(
+            "The reviewed OmniCloudMask baseline requires 1000/300 patch settings."
+        )
     if raw["input"].get("band_names") != expected_order:
         raise ConfigurationError(
-            f"dtacs4bands requires the exact band order {expected_order}."
+            f"The standalone four-band adapter requires the exact order {expected_order}."
         )
-    if raw["input"].get("processing_level") != "L1C":
-        raise ConfigurationError("dtacs4bands is trained for Sentinel-2 L1C inputs.")
+    if raw["model"].get("model_input_order") != ["RED", "GREEN", "NIR"]:
+        raise ConfigurationError("OmniCloudMask requires Red, Green, NIR model input.")
+    if raw["input"].get("processing_level") != "MULTISENSOR_REFLECTANCE":
+        raise ConfigurationError(
+            "OmniCloudMask input must use the reviewed multisensor reflectance contract."
+        )
     if float(raw["input"].get("reflectance_scale", 0)) <= 0:
         raise ConfigurationError("Reflectance scale must be positive.")
+    if float(raw["input"].get("balkan_target_resolution_m", 0)) != 10.0:
+        raise ConfigurationError("Balkan-1 cloud inference must use the validated 10 m grid.")
+    if int(raw["input"].get("balkan_max_analysis_pixels", 0)) <= 0:
+        raise ConfigurationError("Balkan-1 analysis-grid memory bound must be positive.")
 
     expected_classes = {
         "clear": 0,

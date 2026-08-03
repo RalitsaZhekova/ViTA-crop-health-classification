@@ -2,44 +2,44 @@
 
 from __future__ import annotations
 
-import hashlib
 import os
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-from cloud_detection.backend import CloudBackend, CloudSEN12Backend
-from cloud_detection.preprocessing import normalize_reflectance
+from cloud_detection.backend import (
+    OMNICLOUDMASK_ENSEMBLE_SHA256,
+    CloudBackend,
+    OmniCloudMaskBackend,
+    ensemble_sha256,
+)
+from cloud_detection.preprocessing import normalize_reflectance, strict_valid_mask
 from cloud_detection.tiling import reconstruct, split_tiles
 
-CLOUD_MODEL_NAME = "dtacs4bands"
-CLOUD_MODEL_SHA256 = "37205adce72fbbb65a3cfa8f47676c84ebf9b1555a27a3838d584072c954b22d"
+CLOUD_MODEL_NAME = "omnicloudmask_v4"
+CLOUD_MODEL_SHA256 = OMNICLOUDMASK_ENSEMBLE_SHA256
 CLOUD_BANDS = ("B08", "B04", "B03", "B02")
 CLOUD_CLASS_NAMES = ("clear", "thick_cloud", "thin_cloud", "cloud_shadow")
-DEFAULT_TILE_SIZE = 512
-DEFAULT_OVERLAP = 64
+DEFAULT_TILE_SIZE = 1000
+DEFAULT_OVERLAP = 300
 DEFAULT_REFLECTANCE_SCALE = 10_000.0
 
 PAYLOAD_ROOT = Path(__file__).resolve().parents[2]
 
 
 def default_cloud_weights_directory() -> Path:
-    configured = os.environ.get("CLOUDSEN12_MODEL_DIR")
+    configured = os.environ.get("OMNICLOUDMASK_MODEL_DIR")
     if configured:
         return Path(configured)
-    source_checkout = PAYLOAD_ROOT / "models" / "cloudsen12"
+    source_checkout = PAYLOAD_ROOT / "models" / "omnicloudmask"
     if source_checkout.parent.is_dir():
         return source_checkout
-    return Path.cwd() / "models" / "cloudsen12"
+    return Path.cwd() / "models" / "omnicloudmask"
 
 
-def cloud_checkpoint_sha256(path: Path) -> str:
-    """Hash the cloud checkpoint without loading it into memory."""
-    digest = hashlib.sha256()
-    with path.open("rb") as file:
-        for chunk in iter(lambda: file.read(8 * 1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+def cloud_checkpoint_sha256(directory: Path) -> str:
+    """Verify and fingerprint the two-component OmniCloudMask ensemble."""
+    return ensemble_sha256(directory)
 
 
 @dataclass(frozen=True)
@@ -56,7 +56,7 @@ class CloudClassification:
 
 
 class PayloadCloudClassifier:
-    """Classify Sentinel-2 L1C pixels as clear/cloud/thin-cloud/shadow."""
+    """Classify Sentinel-2 or Balkan-1 pixels as clear/cloud/thin-cloud/shadow."""
 
     def __init__(
         self,
@@ -83,19 +83,13 @@ class PayloadCloudClassifier:
         overlap: int = DEFAULT_OVERLAP,
     ) -> PayloadCloudClassifier:
         weights_directory = weights_directory or default_cloud_weights_directory()
-        model_path = weights_directory / f"{CLOUD_MODEL_NAME}.pt"
-        if not model_path.is_file():
-            raise FileNotFoundError(
-                f"{model_path} is missing. Run "
-                "payload/scripts/download_cloud_weights.py while online."
-            )
-        actual_digest = cloud_checkpoint_sha256(model_path)
+        actual_digest = cloud_checkpoint_sha256(weights_directory)
         if actual_digest != CLOUD_MODEL_SHA256:
             raise RuntimeError(
                 "Cloud checkpoint checksum mismatch: "
                 f"expected {CLOUD_MODEL_SHA256}, got {actual_digest}"
             )
-        backend = CloudSEN12Backend(
+        backend = OmniCloudMaskBackend(
             CLOUD_MODEL_NAME,
             weights_directory,
             device=device,
@@ -116,10 +110,11 @@ class PayloadCloudClassifier:
         reflectance_scale: float = DEFAULT_REFLECTANCE_SCALE,
         nodata_value: int | float | None = 0,
     ) -> CloudClassification:
-        """Classify a co-registered ``[B08,B04,B03,B02]`` L1C array.
+        """Classify a co-registered ``[NIR,Red,Green,Blue]`` array.
 
-        ``reflectance_scale=10000`` accepts Sentinel-2 L1C digital numbers.
-        Use ``reflectance_scale=1`` only for values already in TOA reflectance.
+        The default names describe the retained Sentinel-2 adapter. Balkan-1
+        uses the same spectral order through the stage planner. The model then
+        applies its own per-patch dynamic normalization.
         """
         supplied_bands = tuple(band_order)
         if supplied_bands != CLOUD_BANDS:
@@ -139,6 +134,8 @@ class PayloadCloudClassifier:
             scale=reflectance_scale,
             nodata_value=nodata_value,
         )
+        invalid |= ~strict_valid_mask(normalized[[1, 2, 0]])
+        normalized[:, invalid] = 0.0
         tiles, windows, original_shape, padded_shape = split_tiles(
             normalized,
             size=self.tile_size,

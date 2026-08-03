@@ -1,7 +1,7 @@
 # Core model inference
 torch>=2.5,<3
 terratorch==1.2.10
-cloudsen12_models==1.0.2
+omnicloudmask==1.7.1
 numpy>=1.26,<3
 pyyaml>=6,<7
 

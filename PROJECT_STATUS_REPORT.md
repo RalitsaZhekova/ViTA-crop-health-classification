@@ -55,9 +55,10 @@ The payload intake validates:
 - acquisition time and scene identifier;
 - explicit or inferred reflectance scale.
 
-The current Sentinel development adapter uses B08 for CloudSEN12 and B8A for the
-selected crop model. This five-band development interface is not the final
-single-NIR Balkan mission contract.
+The current Sentinel adapter prefers B8A for OmniCloudMask and also uses B8A for
+the selected crop model, while retaining B08 fallback compatibility. Balkan-1
+uses its native NIR band for the cloud model; its crop transfer remains
+explicitly provisional.
 
 ### Cloud and unusable mask
 
@@ -155,7 +156,7 @@ evidence chips, periodic calibration scenes or critical complete scenes.
 
 ## Verified Sentinel execution
 
-The real retained CloudSEN12 and Prithvi models were executed on the georeferenced
+The previously retained cloud model and Prithvi model were executed on the georeferenced
 PASTIS/Sentinel development scene `pastis_10425_20190924_5band.tif`.
 
 | Measurement | Verified result |
@@ -226,9 +227,8 @@ accelerator availability, peak RAM, storage, energy use and thermal behavior.
 
 ### Commercial licensing
 
-The current CloudSEN12 `dtacs4bands` weights are recorded as CC-BY-NC-4.0.
-Commercial B2B deployment is blocked until commercial permission is obtained or
-the checkpoint is replaced with a commercially compatible cloud detector.
+The selected OmniCloudMask `1.7.1` code and official V4 weights are recorded as
+MIT licensed. Preserve upstream notices and attribution in distributed builds.
 
 ## Ground and business application work remaining
 

@@ -23,4 +23,4 @@ earth-engine.json
 runtime
 ground/runtime
 **/.cache
-payload/models/cloudsen12/.cache
+payload/models/omnicloudmask/.cache

@@ -1,43 +1,40 @@
 # Cloud pipeline provenance
 
-The payload cloud module was integrated from:
+The selected integration was reviewed from:
 
-- repository: `https://github.com/Gab1604/ViTA-SpaceChallenges2026`;
-- branch: `feature/cloud-detection-reviewed`;
-- source directory: `phase1/cloud_detection`;
-- reviewed commit: `a1ce4d3612ea60a39da679a0dc9db52cb59c9800`.
+- repository: `https://github.com/Gab1604/Vita-CloudDetector`;
+- commit: `a991819bf4462238b12dd0191e5dfaa35b69f39a`;
+- package version: `vita-cloud-detector 0.1.0`;
+- frozen model package: `omnicloudmask==1.7.1`;
+- OmniCloudMask reference commit:
+  `fbc6d3f5665eb3425fb2474cb3e6f574e2e71a1b`;
+- model: V4 two-member ensemble;
+- weights registry: `NickWright/OmniCloudMask` on Hugging Face.
 
-Its runtime package is integrated under `payload/src/cloud_detection/`;
-configs, docs and the batch inference script are under
-`payload/cloud_detection/`. The reviewed commit and Git history provide the
-recovery point without retaining a second source tree.
+The payload reuses the supplied repository's band mappings, validity rule,
+10 m Balkan projection, V4 settings and class contract. Only the adapter around
+those rules is local because this payload already owns windowed GeoTIFF I/O,
+post-processing, crop masking, metadata and downlink interfaces.
 
-The integrated runtime makes four deployment-specific changes:
+Both V4 component hashes and a deterministic ensemble fingerprint are pinned in
+`payload/models/omnicloudmask/model.yaml`. Runtime loading is offline-only:
+missing or changed files fail startup rather than downloading silently.
 
-- require and verify the pinned checkpoint before inference;
-- resolve the weight directory relative to its configuration;
-- render previews through a headless backend;
-- reject partially or incorrectly described band stacks.
+## Licensing
 
-`PayloadCloudClassifier` remains the classifier-only public API. The complete
-`CloudDetectionPipeline` additionally provides GeoTIFF I/O, four-class score
-rasters, post-processing, previews, metadata and an unusable-pixel mask.
-
-## Licensing gate
-
-`cloudsen12_models==1.0.2` reports LGPL-3.0 for its software package. The
-reviewed model card identifies the distributed `dtacs4bands` checkpoint as
-CC BY-NC 4.0. That checkpoint is acceptable for this non-commercial prototype,
-but it is not approved for the planned commercial/B2B service. Obtain separate
-commercial permission or replace the checkpoint before production.
-
-The reviewed ViTA branch does not contain a root or module-level `LICENSE`
-file. Confirm the integration-code licence with the repository owner before
-external distribution.
+The ViTA integration repository is MIT licensed. OmniCloudMask `1.7.1` is MIT
+licensed, and the official Hugging Face model repository declares the V4
+weights MIT. Preserve upstream notices and attribution when distributing the
+software or model files.
 
 ## Validation boundary
 
-The reviewed project has no reported quantitative evaluation on its
-expert-labelled holdout. The retained verification record confirms that all
-semantic classes and the real checkpoint ran on CPU and CUDA. Runtime success
-does not establish accuracy on Sentinel-2 or Balkan-1 imagery.
+The supplied zero-shot benchmark uses original Balkan-1 L1ORT products
+resampled to 10 m UTM. It reports labelled-scene F1 values from 0.6932 to 0.9824
+and very low false positives on clear scenes. Scene 3408 is reported as
+99.7709% clear; this integration reproduced 99.7720% clear on the same complete
+L1ORT image.
+
+That evidence validates the cloud model transfer, not the separate Prithvi crop
+model transfer. Sparse-label and snow/ice caveats documented by the supplied
+repository still apply, and mission-specific monitoring remains required.

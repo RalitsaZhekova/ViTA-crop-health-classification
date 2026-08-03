@@ -117,6 +117,12 @@ def test_sentinel_end_to_end_builds_verified_compact_downlink(tmp_path: Path) ->
         "rgb_preview",
         "condition_overlay",
     }
+    assert payload["stage_metadata"]["intake"]["model_band_routes"][
+        "cloud_detection"
+    ] == {
+        "expected_logical_order": ["NIR_NARROW", "RED", "GREEN", "BLUE"],
+        "source_band_indices": [5, 1, 2, 3],
+    }
     condition_report_path = output / result["condition_report"]
     condition = json.loads(condition_report_path.read_text())
     downlink_manifest_path = output / result["downlink_manifest"]

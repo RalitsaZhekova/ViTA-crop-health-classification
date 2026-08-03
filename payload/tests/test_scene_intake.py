@@ -163,4 +163,10 @@ def test_provisional_balkan_route_reaches_crop_execution(tmp_path: Path) -> None
         "PROVISIONAL_EXECUTION_ONLY"
     )
     assert result["stage_metadata"]["cloud"]["runtime"]["device"] == "unknown"
+    assert result["stage_metadata"]["cloud"]["analysis_grid"]["mode"] == (
+        "balkan_1_utm_10m"
+    )
+    for mask_name in ("semantic_mask", "unusable_mask", "invalid_mask"):
+        with rasterio.open(result["artifacts"]["cloud"][mask_name]) as mask:
+            assert mask.shape == (16, 16)
     assert result["summary"]["crop"]["device"] == "cpu"

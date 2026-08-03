@@ -1,5 +1,5 @@
 schema_version: 1
-status: prototype_only
+status: archived_unused
 name: dtacs4bands
 file: dtacs4bands.pt
 bytes: 41267324
@@ -12,3 +12,5 @@ training_sensor: Sentinel-2
 training_product: L1C_top_of_atmosphere
 weights_license: CC-BY-NC-4.0
 commercial_deployment_approved: false
+runtime_selected: false
+replacement: ../omnicloudmask/model.yaml

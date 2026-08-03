@@ -76,10 +76,9 @@ Open `http://127.0.0.1:8000` for the client and
 batch run should stop after verified ground ingestion.
 
 The Sentinel development route currently requires described B02, B03, B04,
-B08 and B8A bands because the retained cloud and crop models use different NIR
-responses. The final Balkan mission contract remains RGB plus one NIR; this
-five-band development adapter must not be mistaken for that unresolved sensor
-interface.
+B08 and B8A bands for compatibility with historical inputs. OmniCloudMask
+prefers B8A and the crop model also uses B8A. Balkan-1 retains its RGB, NIR and
+PAN L1ORT contract; PAN is not sent to either selected model.
 
 The payload reaches `DOWNLINK_READY`; the complete receiver flow finishes with
 `MVP_READY`. Routine transmission consists of
@@ -96,7 +95,7 @@ accepted Sentinel/PASTIS execution evidence and its limitations.
 The persistent payload API can acquire the fixed
 `COPERNICUS/S2_SR_HARMONIZED` five-band Sentinel-2 input directly from Google
 Earth Engine. Candidate metadata is ordered on the payload, but the existing
-CloudSEN stage remains authoritative for cloud acceptance over the requested
+OmniCloudMask stage remains authoritative for cloud acceptance over the requested
 region. An accepted candidate continues from the same cloud-stage result; cloud
 inference and masks are not recreated.
 

@@ -1,14 +1,15 @@
 schema_version: 1
 bundle_status: prototype_compact_downlink_pipeline_ready
 commercial_release:
-  status: blocked
-  reason: dtacs4bands_weights_are_cc_by_nc_4_0
+  status: approved_by_recorded_licenses
+  reason: omnicloudmask_software_and_v4_weights_are_mit
 include:
   - models/prithvi_crop_binary_single_frame_v1_weights.pt
   - models/architecture.yaml
   - models/selected_model.yaml
-  - models/cloudsen12/dtacs4bands.pt
-  - models/cloudsen12/model.yaml
+  - models/omnicloudmask/PM_model_OCM_7.97_R_G_NIR_3_smp_edgenext_small.usi_in1k_PT_state.safetensors
+  - models/omnicloudmask/PM_model_OCM_7.97_R_G_NIR_3_smp_regnety_004.pycls_in1k_PT_state.safetensors
+  - models/omnicloudmask/model.yaml
   - src/prithvi_payload
   - src/cloud_detection
   - cloud_detection/configs/cloud_detector.yaml
@@ -32,6 +33,5 @@ exclude:
   - "**/__pycache__/**"
 not_yet_implemented:
   - raw_balkan_1_reconstruction
-  - real_balkan_1_cloud_mask_validation
   - real_balkan_1_crop_validation
   - physical_downlink_transport

@@ -256,7 +256,11 @@ def inspect_scene(
         warnings.append("Acquisition time is missing")
 
     if sensor == "sentinel-2":
-        cloud_status = "READY" if not missing_rgb and has_nir_broad else "MISSING_B08"
+        cloud_status = (
+            "READY"
+            if not missing_rgb and (has_nir_broad or has_nir_narrow)
+            else "MISSING_NIR"
+        )
         if not missing_rgb and has_nir_narrow:
             crop_status = "READY"
         elif not missing_rgb and has_nir_broad:
@@ -264,7 +268,11 @@ def inspect_scene(
         else:
             crop_status = "MISSING_REQUIRED_BANDS"
     else:
-        cloud_status = "BALKAN_1_CLOUD_ADAPTER_REQUIRED"
+        cloud_status = (
+            "READY"
+            if not missing_rgb and (has_nir_broad or has_nir_narrow)
+            else "MISSING_REQUIRED_BANDS"
+        )
         if missing_rgb or not (has_nir_broad or has_nir_narrow):
             crop_status = "MISSING_REQUIRED_BANDS"
         elif allow_provisional_balkan_crop:
@@ -279,7 +287,14 @@ def inspect_scene(
         else:
             crop_status = "BALKAN_1_SPECTRAL_HARMONISATION_REQUIRED"
 
-    cloud_order = ("NIR_BROAD", "RED", "GREEN", "BLUE")
+    # The supplied Sentinel adapter prefers B8A. Retain B08 as a fallback and
+    # use Balkan-1's native NIR channel through the same four-band contract.
+    cloud_nir_role = (
+        "NIR_NARROW"
+        if sensor == "sentinel-2" and has_nir_narrow
+        else "NIR_BROAD" if has_nir_broad else "NIR_NARROW"
+    )
+    cloud_order = (cloud_nir_role, "RED", "GREEN", "BLUE")
     crop_order = ("BLUE", "GREEN", "RED", "NIR_NARROW")
     cloud_indices = (
         [mapping[role]["index"] for role in cloud_order]

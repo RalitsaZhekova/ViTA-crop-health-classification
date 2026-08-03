@@ -133,7 +133,14 @@ class PayloadRuntime:
     def _warm_models(self) -> None:
         if self.cloud_runtime is None or self.crop_model is None:
             raise RuntimeError("Models must be loaded before warmup")
-        cloud_tile = np.zeros((4, 512, 512), dtype=np.float32)
+        # Use non-uniform valid values so OmniCloudMask executes both ensemble
+        # members during warmup instead of taking the all-nodata fast path.
+        cloud_axis = np.linspace(0.05, 0.95, 1000, dtype=np.float32)
+        cloud_tile = np.empty((4, 1000, 1000), dtype=np.float32)
+        cloud_tile[0] = cloud_axis[:, None]
+        cloud_tile[1] = cloud_axis[None, :]
+        cloud_tile[2] = cloud_axis[::-1, None]
+        cloud_tile[3] = cloud_axis[None, ::-1]
         self.cloud_runtime.backend.predict(cloud_tile)
         crop_tile = torch.zeros((1, 4, 1, 224, 224), dtype=torch.float32)
         self.crop_model.predict(

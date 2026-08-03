@@ -1,73 +1,63 @@
 # Cloud detection and masking boundary
 
-The complete reviewed CloudSEN12 pipeline is integrated as an isolated payload
-component. It can classify and post-process a co-registered Sentinel-2 L1C
-GeoTIFF without loading or calling crop inference.
+The payload uses the reviewed ViTA Cloud Detector baseline: OmniCloudMask
+`1.7.1`, model V4. The backend is isolated behind the existing four-class cloud
+interface, so crop inference, condition scoring, downlink packaging and the
+ground API retain their previous contracts.
 
-Current input:
+## Inputs
 
-- array layout `[bands, height, width]`;
-- exact band order `[B08, B04, B03, B02]`;
-- Sentinel-2 L1C top-of-atmosphere digital numbers scaled by 10,000, or
-  pre-scaled TOA reflectance with an explicit scale of 1;
-- all-band zero and non-finite pixels reported separately as invalid input.
+- pipeline array layout: `[bands, height, width]`;
+- retained cloud-stage order: `[NIR, Red, Green, Blue]`;
+- native OmniCloudMask order inside the adapter: `[Red, Green, NIR]`;
+- Sentinel-2 prefers `B8A` and falls back to `B08` when needed;
+- Balkan-1 uses L1ORT bands `Red=3`, `Green=2`, `NIR=4`; PAN is retained but
+  not sent to the cloud model;
+- finite, strictly positive Red/Green/NIR pixels define the valid model
+  footprint.
 
-Current output:
+OmniCloudMask dynamically normalizes each patch, so the reflectance divisor
+does not set the model distribution. The pipeline still requires a verified
+scale because later crop and vegetation-index stages depend on calibrated
+values.
+
+The supplied Balkan benchmark is defined at 10 m. The executor therefore
+reprojects Balkan L1ORT bands independently to a temporary 10 m UTM analysis
+grid, runs the V4 ensemble with its baseline 1000 px / 300 px overlap settings,
+and maps categorical masks back to the untouched source grid. Source imagery is
+never rewritten and the temporary grid is never downlinked.
+
+## Outputs
 
 - semantic classes: clear, thick cloud, thin cloud and cloud shadow;
-- uncalibrated class confidence scores;
-- georeferenced class-score and semantic GeoTIFFs;
-- invalid-input and binary unusable-pixel maps;
+- normalized model-confidence scores;
+- georeferenced semantic, invalid-input and operational unusable masks;
 - cloud, shadow, usable and unusable percentages;
 - `PROCESS`, `PROCESS_CLEAR_AREAS` or `REJECT` decision;
 - JSON metadata and a headless preview PNG.
 
 By default, thick cloud, thin cloud, cloud shadow and invalid input are
-unusable. Small detections are removed and remaining unusable areas are
-dilated according to `payload/cloud_detection/configs/cloud_detector.yaml`.
-
-## Integrated scene route
-
-`prithvi_payload.pipeline` now connects scene intake to cloud detection for a
-single preprocessed GeoTIFF. It reorders declared source bands without creating
-a full-scene intermediate array and writes semantic, unusable and invalid-input
-masks window by window. The older `cloud-detect` command remains available for
-the original exact four-band Sentinel-2 contract.
-
-For Balkan-1, a five-band `RED, GREEN, BLUE, NIR, PAN` product is required. PAN
-is retained but not sent to CloudSEN12. Reflectance-calibrated input is accepted;
-raw 12-bit DN input is blocked unless a verified calibration scale is supplied.
-Cloud results remain provisional until tested against real Balkan-1 imagery.
+unusable. Existing small-region filtering and dilation remain configured in
+`payload/cloud_detection/configs/cloud_detector.yaml`.
 
 ## Crop integration
 
-The manual `prithvi_payload.pipeline` route applies the operational unusable
-mask to Prithvi crop inference. Original finite pixels remain unchanged during
-model execution to avoid introducing artificial masked regions that were not in
-the training distribution. Invalid/nodata values are made numerically safe, and
-all unusable probability, binary and confidence outputs are written as nodata.
-Crop inference is skipped before the model is loaded when cloud coverage is at
-or above the configured 60% gate.
+The operational unusable mask remains the authoritative exclusion input to
+Prithvi. Masked probability, binary and confidence pixels are written as
+nodata, and the existing 60% cloud gate can stop crop inference before the crop
+model is loaded.
 
-Cloud classification uses Sentinel-2 `B08`; the crop model uses `B8A`. These
-must not be silently substituted. Sentinel-2 crop runs therefore require both
-bands in the preprocessed scene. Balkan execution tests may use the explicit
-`--allow-provisional-balkan-crop` adapter, which records broad-NIR transfer as
-unvalidated and is blocked by default. A scientifically valid mission route
-still requires a spectrally validated conversion for the one available NIR.
+Sentinel cloud inference prefers `B8A`, which is also the crop model's native
+NIR input. Balkan crop execution still requires
+`--allow-provisional-balkan-crop`: OmniCloudMask is Balkan-validated, but the
+Prithvi Balkan NIR transfer remains execution-only and unvalidated.
 
-Before Balkan-1 use, the classifier must be validated for its 1.5 m resolution,
-spectral response and 12-bit calibration. Shared RGB/NIR labels alone do not
-establish compatibility.
-
-See `UPSTREAM.md` for provenance, validation limits and the non-commercial
-weights licence.
-
-## Run the original standalone detector
+## Download verified model files
 
 ```powershell
-$env:PYTHONPATH="payload/src;shared/src"
-.\.venv\Scripts\python.exe -m cloud_detection.cli `
-  --input path\to\sentinel2_l1c.tif `
-  --output outputs\cloud_detection
+.\.venv\Scripts\python.exe payload\scripts\download_cloud_weights.py
 ```
+
+The two `.safetensors` files are ignored by Git and verified against component
+and ensemble SHA-256 values before model loading. See `UPSTREAM.md` for exact
+provenance, benchmark scope and licensing.

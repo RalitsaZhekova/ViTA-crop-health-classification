@@ -15,7 +15,7 @@ LABEL org.opencontainers.image.title="ViTA payload service" \
       org.opencontainers.image.revision="${VCS_REF}" \
       org.opencontainers.image.created="${BUILD_DATE}" \
       vita.crop-model.sha256="c948977bffdaeb89ecf4f4d069db13c7ed81d4f3403eec9e257c45c235b1484e" \
-      vita.cloud-model.sha256="37205adce72fbbb65a3cfa8f47676c84ebf9b1555a27a3838d584072c954b22d"
+      vita.cloud-model.sha256="ab8f039866d6714b249f850779b9523b5f6afb55ee891077a71db0fdebc9b529"
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -25,7 +25,7 @@ ENV PYTHONUNBUFFERED=1 \
     VITA_OUTBOX_DIR=/data/outbox \
     VITA_LOGS_DIR=/data/logs \
     PRITHVI_MODEL_DIR=/workspace/vita/payload/models \
-    CLOUDSEN12_MODEL_DIR=/workspace/vita/payload/models/cloudsen12 \
+    OMNICLOUDMASK_MODEL_DIR=/workspace/vita/payload/models/omnicloudmask \
     MPLCONFIGDIR=/data/logs/matplotlib
 
 WORKDIR /workspace/vita

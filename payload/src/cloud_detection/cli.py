@@ -16,7 +16,7 @@ DEFAULT_CONFIG = (
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run pretrained CloudSEN12 cloud detection on a four-band GeoTIFF."
+        description="Run pretrained OmniCloudMask V4 on a four-band GeoTIFF."
     )
     parser.add_argument("--input", required=True, help="Input Sentinel-2 L1C GeoTIFF.")
     parser.add_argument(

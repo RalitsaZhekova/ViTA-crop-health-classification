@@ -1,15 +1,11 @@
-# Cloud model
+# Archived CloudSEN12 model
 
-Run the download helper from the repository root:
+This directory retains the former `dtacs4bands.pt` checkpoint for rollback and
+comparison only. The checkpoint is ignored by Git and is **not selected by any
+runtime, preflight, container, or deployment configuration**.
 
-```powershell
-.\.venv\Scripts\python.exe payload\scripts\download_cloud_weights.py
-```
+The active cloud model is the pinned OmniCloudMask V4 ensemble documented in
+`payload/models/omnicloudmask/README.md`.
 
-It downloads `dtacs4bands.pt` through the pinned official package and verifies
-SHA-256 `37205adce72fbbb65a3cfa8f47676c84ebf9b1555a27a3838d584072c954b22d`.
-The large checkpoint is ignored by Git but included in the local prototype
-payload manifest.
-
-The current weights are non-commercial. See
-`payload/cloud_masking/UPSTREAM.md` before distribution or deployment.
+The archived CloudSEN12 weights are non-commercial. Do not distribute or deploy
+them without reviewing their CC-BY-NC-4.0 terms.

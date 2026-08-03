@@ -7,11 +7,11 @@ from pathlib import Path
 
 import numpy as np
 
-from .backend import CloudBackend, CloudSEN12Backend
+from .backend import CloudBackend, OmniCloudMaskBackend
 from .config import load_config
 from .io import read_geotiff, write_mask
 from .postprocessing import postprocess
-from .preprocessing import normalize_reflectance
+from .preprocessing import normalize_reflectance, strict_valid_mask
 from .preview import save_preview
 from .tiling import reconstruct, split_tiles
 from .types import CloudDetectionResult
@@ -22,14 +22,18 @@ class CloudDetectionPipeline:
         self.cfg = config
         model_cfg = config["model"]
         weights_folder = os.environ.get(
-            "CLOUDSEN12_MODEL_DIR",
+            "OMNICLOUDMASK_MODEL_DIR",
             model_cfg["weights_folder"],
         )
-        self.backend = backend or CloudSEN12Backend(
+        self.backend = backend or OmniCloudMaskBackend(
             name=model_cfg["name"],
             weights_folder=weights_folder,
             device=model_cfg.get("device", "auto"),
             expected_sha256=model_cfg.get("expected_sha256"),
+            inference_dtype=model_cfg.get("inference_dtype", "fp32"),
+            patch_size=int(model_cfg.get("patch_size", 1000)),
+            patch_overlap=int(model_cfg.get("patch_overlap", 300)),
+            batch_size=int(model_cfg.get("batch_size", 1)),
         )
 
     @classmethod
@@ -148,6 +152,9 @@ class CloudDetectionPipeline:
             input_cfg.get("clip_max"),
             input_cfg.get("nodata_value"),
         )
+        if bool(input_cfg.get("strict_positive_rgn", True)):
+            invalid |= ~strict_valid_mask(image[[1, 2, 0]])
+            image[:, invalid] = 0.0
         result = self.predict_array(image, invalid)
 
         root = Path(output_root)
