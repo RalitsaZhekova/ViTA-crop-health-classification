@@ -14,6 +14,7 @@ from scripts.balkan1.process_l1a import (
     _metadata_from_extraction_log,
     _phase_shift,
     _remap_strip,
+    _remap_strip_cuda,
 )
 from scripts.balkan1.validate_l1a import _radiometric_diagnostic
 
@@ -67,6 +68,42 @@ def test_dark_reference_uses_real_calibration_columns_and_removes_plane() -> Non
     np.testing.assert_allclose(model.left_dn[0], [100, 101, 102, 103, 104])
     np.testing.assert_allclose(model.right_dn[0], [120, 122, 124, 126, 128])
     np.testing.assert_allclose(corrected, 50, atol=1)
+
+
+def test_cuda_remap_matches_cpu_dark_correction() -> None:
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    raw = _raw_detector_fixture()
+    profile = {
+        "driver": "GTiff",
+        "height": raw.shape[1],
+        "width": raw.shape[2],
+        "count": 1,
+        "dtype": "uint16",
+    }
+    arguments = {
+        "band_number": 1,
+        "inverse_matrix": np.array([[1, 0, 0], [0, 1, 0]], dtype=np.float64),
+        "border": 10,
+        "output_width": 20,
+        "output_height": raw.shape[1],
+        "y_start": 0,
+        "strip_height": raw.shape[1],
+        "column_correction": np.zeros(20, dtype=np.float32),
+    }
+    with MemoryFile() as memory, warnings.catch_warnings():
+        warnings.simplefilter("ignore", NotGeoreferencedWarning)
+        with memory.open(**profile) as dataset:
+            dataset.write(raw)
+            model = _estimate_dark_reference(dataset, 8, None)
+            cpu = _remap_strip(dataset, dark_reference=model, **arguments)
+            cuda, cuda_seconds = _remap_strip_cuda(
+                dataset, dark_reference=model, **arguments
+            )
+
+    np.testing.assert_allclose(cuda, cpu, atol=1e-3)
+    assert cuda_seconds > 0
 
 
 def test_dark_surface_interpolates_missing_rows_and_constant_override() -> None:

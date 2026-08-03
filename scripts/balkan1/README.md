@@ -127,6 +127,18 @@ Build one minimum L1A product:
 .venv\Scripts\python.exe scripts\balkan1\process_l1a.py 3036
 ```
 
+Run the dense dark correction, fixed-pattern correction, affine resampling and
+validity-mask resampling on CUDA while retaining bounded CPU raster I/O and
+feature-based control:
+
+```powershell
+.venv\Scripts\python.exe scripts\balkan1\process_l1a.py 3036 --device cuda
+```
+
+CUDA is opt-in and fails closed when unavailable. The L1A manifest records the
+GPU identity, CUDA version, peak allocation, accelerated operations and phase
+timings. The default remains CPU so existing workflows are unchanged.
+
 Regenerate only the comparison image with a brighter or darker display gamma
 without rewriting the L1A TIFF:
 
@@ -193,6 +205,17 @@ or modify either source TIFF.
 
 ## Stage a bounded proof chip
 
+Review every delivered L1ORT at bounded resolution before selecting a proof
+window:
+
+```powershell
+.venv\Scripts\python.exe scripts\balkan1\visualize_collection.py
+```
+
+The ignored contact sheet shows true-color and NIR false-color panels. Its
+NDVI threshold is only a vegetation-coverage aid for human scene selection; it
+is not a crop prediction or accuracy result.
+
 Full L1ORT products are roughly gigabyte-scale. Create an ignored, bounded chip
 for fast pipeline and target-acceleration tests:
 
@@ -204,8 +227,10 @@ for fast pipeline and target-acceleration tests:
 
 The default output is `testing/inputs/balkan1/3036_L1ORT_sample.tif`. The script
 preserves georeferencing, writes explicit band descriptions and records the
-source window and output SHA-256 in an ignored manifest. Use `--window X Y W H`
-to select a reviewed region. It refuses to write proof imagery below `payload/`.
+source window and output SHA-256 in an ignored manifest. It also writes a
+true-color, NIR false-color and NDVI review PNG beside the chip; this is a
+selection aid, not model output. Use `--window X Y W H` to select a reviewed
+region. It refuses to write proof imagery below `payload/`.
 
 ## Run the payload stages
 
@@ -241,3 +266,11 @@ The run metadata records the adapter as `EXECUTION_ONLY_UNVALIDATED`, the cloud
 and crop device, synchronized model timing and warnings. This can demonstrate
 that the software path runs and uses an accelerator; it is not Balkan crop or
 cloud accuracy evidence.
+
+For an acquisition-lineage execution proof, first build the real raw-derived
+L1A with `--device cuda`, then stage a reviewed chip from the paired delivered
+L1ORT bearing the same scene ID and run the payload command above. Preserve the
+L0R/L1A manifest, L1ORT chip manifest and payload `result.json` together. The
+L1A proves reconstruction and registration; the paired L1ORT supplies the
+reflectance/geolocation that the models require. Do not silently substitute
+uncalibrated L1A DN as reflectance.

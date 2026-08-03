@@ -9,6 +9,7 @@ import json
 import os
 import re
 import tempfile
+import time
 import uuid
 import warnings
 from dataclasses import dataclass
@@ -857,6 +858,120 @@ def _remap_strip(
     return remapped
 
 
+def _remap_strip_cuda(
+    source: rasterio.DatasetReader,
+    band_number: int,
+    inverse_matrix: np.ndarray,
+    border: int,
+    output_width: int,
+    output_height: int,
+    y_start: int,
+    strip_height: int,
+    dark_reference: DarkReferenceModel,
+    column_correction: np.ndarray,
+) -> tuple[np.ndarray, float]:
+    """Correct and resample one strip on CUDA while keeping raster I/O bounded."""
+
+    import torch
+    from torch.nn import functional as functional
+
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA preprocessing was requested but CUDA is unavailable")
+    y_stop = min(output_height, y_start + strip_height)
+    output_corners = np.asarray(
+        [
+            [0, y_start],
+            [output_width - 1, y_start],
+            [0, y_stop - 1],
+            [output_width - 1, y_stop - 1],
+        ],
+        dtype=np.float64,
+    )
+    source_corners = cv2.transform(output_corners[:, None, :], inverse_matrix)[:, 0, :]
+    x_min = max(0, int(np.floor(np.min(source_corners[:, 0]))) - 2)
+    x_max = min(output_width, int(np.ceil(np.max(source_corners[:, 0]))) + 3)
+    y_min = max(0, int(np.floor(np.min(source_corners[:, 1]))) - 2)
+    y_max = min(output_height, int(np.ceil(np.max(source_corners[:, 1]))) + 3)
+    if x_min >= x_max or y_min >= y_max:
+        return np.zeros((y_stop - y_start, output_width), dtype=np.float32), 0.0
+
+    source_band = source.read(
+        band_number,
+        window=Window(border + x_min, y_min, x_max - x_min, y_max - y_min),
+        out_dtype="float32",
+    )
+    source_valid = source_band > 0
+    device = torch.device("cuda")
+    torch.cuda.synchronize(device)
+    started = time.perf_counter()
+    with torch.inference_mode():
+        values = torch.from_numpy(source_band).to(device=device).unsqueeze(0).unsqueeze(0)
+        valid = (
+            torch.from_numpy(source_valid.astype(np.float32))
+            .to(device=device)
+            .unsqueeze(0)
+            .unsqueeze(0)
+        )
+        left = torch.from_numpy(
+            dark_reference.left_dn[band_number - 1, y_min:y_max]
+        ).to(device=device)
+        right = torch.from_numpy(
+            dark_reference.right_dn[band_number - 1, y_min:y_max]
+        ).to(device=device)
+        detector_x = border + torch.arange(
+            x_min, x_max, device=device, dtype=torch.float32
+        )
+        alpha = (detector_x - dark_reference.left_detector_x) / (
+            dark_reference.right_detector_x - dark_reference.left_detector_x
+        )
+        dark = left[:, None] + (right - left)[:, None] * alpha[None, :]
+        correction = torch.from_numpy(column_correction[x_min:x_max]).to(device=device)
+        values = torch.clamp(values - dark[None, None] - correction[None, None, None], min=0)
+
+        output_x = torch.arange(output_width, device=device, dtype=torch.float32)[None, :]
+        output_y = torch.arange(y_start, y_stop, device=device, dtype=torch.float32)[:, None]
+        map_x = (
+            inverse_matrix[0, 0] * output_x
+            + inverse_matrix[0, 1] * output_y
+            + inverse_matrix[0, 2]
+            - x_min
+        )
+        map_y = (
+            inverse_matrix[1, 0] * output_x
+            + inverse_matrix[1, 1] * output_y
+            + inverse_matrix[1, 2]
+            - y_min
+        )
+        normalised_x = 2 * map_x / max(1, x_max - x_min - 1) - 1
+        normalised_y = 2 * map_y / max(1, y_max - y_min - 1) - 1
+        grid = torch.stack(
+            (
+                normalised_x.expand(y_stop - y_start, output_width),
+                normalised_y.expand(y_stop - y_start, output_width),
+            ),
+            dim=-1,
+        ).unsqueeze(0)
+        remapped = functional.grid_sample(
+            values,
+            grid,
+            mode="bilinear",
+            padding_mode="zeros",
+            align_corners=True,
+        )
+        remapped_valid = functional.grid_sample(
+            valid,
+            grid,
+            mode="nearest",
+            padding_mode="zeros",
+            align_corners=True,
+        )
+        remapped = remapped.masked_fill(remapped_valid < 0.5, 0)
+        output = remapped[0, 0].cpu().numpy()
+    torch.cuda.synchronize(device)
+    cuda_wall_seconds = time.perf_counter() - started
+    return output, cuda_wall_seconds
+
+
 def _write_l1a(
     source: rasterio.DatasetReader,
     output: Path,
@@ -865,8 +980,9 @@ def _write_l1a(
     matrices: list[np.ndarray],
     column_corrections: list[np.ndarray],
     strip_height: int,
+    device: str,
     overwrite: bool,
-) -> None:
+) -> dict[str, object]:
     if output.exists() and not overwrite:
         raise FileExistsError(f"Output exists; pass --overwrite to replace it: {output}")
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -886,12 +1002,16 @@ def _write_l1a(
         "predictor": 3,
         "BIGTIFF": "YES",
     }
+    write_started = time.perf_counter()
+    cuda_remap_seconds = 0.0
+    strip_count = 0
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", NotGeoreferencedWarning)
             with rasterio.open(temporary, "w", **profile) as destination:
                 destination.update_tags(
                     PROCESSING_LEVEL="L1A_MINIMUM_SENSOR_SPACE",
+                    PROCESSING_DEVICE=device.upper(),
                     RADIOMETRIC_UNITS="scene-destriped relative DN",
                     RADIOMETRIC_STATUS="NOT_RADIANCE_NOT_REFLECTANCE",
                     GEOLOCATION_STATUS="UNREFERENCED_NOT_ORTHORECTIFIED",
@@ -904,18 +1024,34 @@ def _write_l1a(
                 for band_index, band_name in enumerate(BAND_NAMES):
                     inverse = cv2.invertAffineTransform(matrices[band_index])
                     for y_start in range(0, source.height, strip_height):
-                        strip = _remap_strip(
-                            source,
-                            band_index + 1,
-                            inverse,
-                            border,
-                            valid_width,
-                            source.height,
-                            y_start,
-                            strip_height,
-                            dark_reference,
-                            column_corrections[band_index],
-                        )
+                        if device == "cuda":
+                            strip, cuda_seconds = _remap_strip_cuda(
+                                source,
+                                band_index + 1,
+                                inverse,
+                                border,
+                                valid_width,
+                                source.height,
+                                y_start,
+                                strip_height,
+                                dark_reference,
+                                column_corrections[band_index],
+                            )
+                            cuda_remap_seconds += cuda_seconds
+                        else:
+                            strip = _remap_strip(
+                                source,
+                                band_index + 1,
+                                inverse,
+                                border,
+                                valid_width,
+                                source.height,
+                                y_start,
+                                strip_height,
+                                dark_reference,
+                                column_corrections[band_index],
+                            )
+                        strip_count += 1
                         destination.write(
                             strip,
                             band_index + 1,
@@ -937,6 +1073,36 @@ def _write_l1a(
     finally:
         if temporary.exists():
             temporary.unlink()
+    runtime: dict[str, object] = {
+        "device": device,
+        "seconds": time.perf_counter() - write_started,
+        "strip_count": strip_count,
+        "strip_height": strip_height,
+        "cuda_dense_correction_and_resampling_seconds": (
+            cuda_remap_seconds if device == "cuda" else None
+        ),
+        "cuda_accelerated_operations": (
+            [
+                "dark-reference subtraction",
+                "column fixed-pattern correction",
+                "affine bilinear resampling",
+                "validity-mask resampling",
+            ]
+            if device == "cuda"
+            else []
+        ),
+    }
+    if device == "cuda":
+        import torch
+
+        runtime.update(
+            {
+                "cuda_version": torch.version.cuda,
+                "gpu": torch.cuda.get_device_name(0),
+                "peak_gpu_memory_bytes": torch.cuda.max_memory_allocated(0),
+            }
+        )
+    return runtime
 
 
 def _stretch(image: np.ndarray, gamma: float) -> np.ndarray:
@@ -1072,6 +1238,15 @@ def main() -> None:
     parser.add_argument("--registration-downsample", type=int, default=8)
     parser.add_argument("--strip-height", type=int, default=512)
     parser.add_argument(
+        "--device",
+        choices=("cpu", "cuda"),
+        default="cpu",
+        help=(
+            "Dense correction/resampling device. CUDA is explicit and fails closed when "
+            "unavailable; feature control and GeoTIFF I/O remain on CPU."
+        ),
+    )
+    parser.add_argument(
         "--black-level-dn",
         type=float,
         help=(
@@ -1160,22 +1335,41 @@ def main() -> None:
     sensor_configuration = metadata.get("SensorConfiguration", {})
     dark_offset = float(sensor_configuration.get("DarkOffset", 0))
 
+    processing_started = time.perf_counter()
+    phase_seconds: dict[str, float] = {}
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", NotGeoreferencedWarning)
         with rasterio.open(raw_path) as source:
+            phase_started = time.perf_counter()
             dark_reference = _estimate_dark_reference(
                 source,
                 calibration_border,
                 args.black_level_dn,
             )
+            phase_seconds["dark_reference_estimation"] = (
+                time.perf_counter() - phase_started
+            )
+            phase_started = time.perf_counter()
             preview, scale_x, scale_y = _registration_preview(
                 source, border, args.registration_downsample
             )
             matrices, registration = _estimate_registration(preview, scale_x, scale_y)
+            phase_seconds["registration_estimation"] = time.perf_counter() - phase_started
+            phase_started = time.perf_counter()
             corrections, correction_diagnostics = _column_corrections(
                 source, border, dark_reference
             )
-            _write_l1a(
+            phase_seconds["column_profile_estimation"] = (
+                time.perf_counter() - phase_started
+            )
+            if args.device == "cuda":
+                import torch
+
+                if not torch.cuda.is_available():
+                    raise RuntimeError(
+                        "--device cuda was requested but torch.cuda.is_available() is false"
+                    )
+            write_runtime = _write_l1a(
                 source,
                 output,
                 border,
@@ -1183,9 +1377,12 @@ def main() -> None:
                 matrices,
                 corrections,
                 args.strip_height,
+                args.device,
                 args.overwrite,
             )
+    core_processing_seconds = time.perf_counter() - processing_started
 
+    qa_started = time.perf_counter()
     _write_preview(
         raw_path,
         output,
@@ -1195,6 +1392,7 @@ def main() -> None:
     post_write_registration = _post_write_registration(
         output, args.registration_downsample
     )
+    qa_seconds = time.perf_counter() - qa_started
     l1a_manifest = {
         "schema_version": 2,
         "scene_id": args.scene_id,
@@ -1231,6 +1429,12 @@ def main() -> None:
             "preview_downsample": args.registration_downsample,
             "bands": registration,
             "post_write_validation": post_write_registration,
+        },
+        "runtime": {
+            "core_processing_seconds": core_processing_seconds,
+            "qa_preview_and_validation_seconds": qa_seconds,
+            "phase_seconds": phase_seconds,
+            "dense_product_write": write_runtime,
         },
         "comparison_preview": str(preview_path),
         "comparison_preview_tone_mapping": {

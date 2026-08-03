@@ -5,11 +5,21 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
+import matplotlib
+import numpy as np
 import rasterio
 from rasterio.windows import Window, transform
+
+os.environ.setdefault(
+    "MPLCONFIGDIR", str(Path(tempfile.gettempdir()) / "prithvi_payload_matplotlib")
+)
+matplotlib.use("Agg")
+from matplotlib import pyplot as plt  # noqa: E402
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_INPUT_ROOT = REPOSITORY_ROOT / "testing" / "inputs" / "balkan1"
@@ -66,6 +76,64 @@ def _profile(source: rasterio.DatasetReader, window: Window) -> dict[str, Any]:
         profile.pop("blockxsize", None)
         profile.pop("blockysize", None)
     return profile
+
+
+def _stretch(channels: np.ndarray, valid: np.ndarray) -> np.ndarray:
+    output = np.zeros_like(channels, dtype=np.float32)
+    for index, channel in enumerate(channels):
+        samples = channel[valid & np.isfinite(channel)]
+        if samples.size == 0:
+            continue
+        lower, upper = np.percentile(samples, (2, 98))
+        if upper > lower:
+            output[index] = np.clip((channel - lower) / (upper - lower), 0, 1)
+    return np.moveaxis(output, 0, -1)
+
+
+def _write_preview(values: np.ndarray, output: Path, scene_name: str) -> dict[str, Any]:
+    valid = np.all(np.isfinite(values[:4]), axis=0) & np.any(values[:4] != 0, axis=0)
+    rgb = _stretch(values[[2, 1, 0]].astype(np.float32), valid)
+    false_color = _stretch(values[[3, 2, 1]].astype(np.float32), valid)
+    denominator = values[3].astype(np.float32) + values[2]
+    ndvi = np.divide(
+        values[3] - values[2],
+        denominator,
+        out=np.zeros(values.shape[1:], dtype=np.float32),
+        where=valid & (np.abs(denominator) > 1e-8),
+    )
+    rgb[~valid] = 0
+    false_color[~valid] = 0
+    ndvi_display = np.ma.masked_where(~valid, ndvi)
+    figure, axes = plt.subplots(1, 3, figsize=(18, 6))
+    panels = (
+        (rgb, "True color · Red/Green/Blue"),
+        (false_color, "Vegetation false color · NIR/Red/Green"),
+    )
+    for axis, (image, title) in zip(axes[:2], panels, strict=True):
+        axis.imshow(image)
+        axis.set_title(title)
+        axis.axis("off")
+    ndvi_image = axes[2].imshow(ndvi_display, cmap="RdYlGn", vmin=-0.2, vmax=0.8)
+    axes[2].set_title("NDVI review layer")
+    axes[2].axis("off")
+    figure.colorbar(ndvi_image, ax=axes[2], fraction=0.046, pad=0.04)
+    figure.suptitle(
+        f"Balkan-1 staged proof input · {scene_name}\n"
+        "Independent display stretch; this is not model output",
+        fontsize=16,
+    )
+    figure.tight_layout()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(output, dpi=150, facecolor="white")
+    plt.close(figure)
+    samples = ndvi[valid]
+    return {
+        "path": str(output),
+        "sha256": _sha256(output),
+        "ndvi_valid_pixel_median": float(np.median(samples)) if samples.size else None,
+        "ndvi_valid_pixel_p90": float(np.percentile(samples, 90)) if samples.size else None,
+        "interpretation": "visual selection aid only; not a crop-model prediction",
+    }
 
 
 def main() -> None:
@@ -136,6 +204,8 @@ def main() -> None:
             "band_count": source.count,
         }
 
+    preview_path = output.with_suffix(".preview.png")
+    preview = _write_preview(values, preview_path, output.stem)
     manifest = {
         "schema_version": 1,
         "purpose": "Balkan-1 execution and acceleration proof input",
@@ -152,6 +222,7 @@ def main() -> None:
             "path": str(output),
             "bytes": output.stat().st_size,
             "sha256": _sha256(output),
+            "preview": preview,
         },
     }
     manifest_path = output.with_suffix(".manifest.json")
