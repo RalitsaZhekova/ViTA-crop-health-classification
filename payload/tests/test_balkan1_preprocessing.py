@@ -98,9 +98,7 @@ def test_cuda_remap_matches_cpu_dark_correction() -> None:
             dataset.write(raw)
             model = _estimate_dark_reference(dataset, 8, None)
             cpu = _remap_strip(dataset, dark_reference=model, **arguments)
-            cuda, cuda_seconds = _remap_strip_cuda(
-                dataset, dark_reference=model, **arguments
-            )
+            cuda, cuda_seconds = _remap_strip_cuda(dataset, dark_reference=model, **arguments)
 
     np.testing.assert_allclose(cuda, cpu, atol=1e-3)
     assert cuda_seconds > 0

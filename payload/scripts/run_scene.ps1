@@ -10,7 +10,6 @@ param(
     [string]$SceneId,
     [string[]]$BandOrder,
     [string]$CropCalibration,
-    [switch]$AllowProvisionalBalkanCrop,
     [string]$Output,
     [ValidateSet("intake", "cloud", "crop", "condition", "downlink")]
     [string]$StopAfter = "cloud",
@@ -62,9 +61,6 @@ if ($BandOrder) {
 if ($CropCalibration) {
     $resolvedCropCalibration = (Resolve-Path -LiteralPath $CropCalibration).Path
     $pipelineArguments += @("--crop-calibration", $resolvedCropCalibration)
-}
-if ($AllowProvisionalBalkanCrop) {
-    $pipelineArguments += "--allow-provisional-balkan-crop"
 }
 if ($RegionId) {
     $pipelineArguments += @("--region-id", $RegionId)

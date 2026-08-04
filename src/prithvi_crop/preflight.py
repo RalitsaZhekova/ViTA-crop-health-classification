@@ -59,19 +59,14 @@ def run_preflight(
         "cudnn": torch.backends.cudnn.version(),
         "gpu": torch.cuda.get_device_name(0),
         "gpu_memory_gib": round(device.total_memory / 1024**3, 2),
-        "compute_capability": ".".join(
-            str(value) for value in torch.cuda.get_device_capability(0)
-        ),
+        "compute_capability": ".".join(str(value) for value in torch.cuda.get_device_capability(0)),
         "batch_size": data_args["batch_size"],
         "num_workers": data_args["num_workers"],
-        "frames_per_example": (
-            1 if data_args.get("single_frame", False) else 3
-        ),
+        "frames_per_example": (1 if data_args.get("single_frame", False) else 3),
         "precision": trainer["precision"],
         "gradient_accumulation": trainer.get("accumulate_grad_batches", 1),
         "logical_split_sizes": {
-            name: split_report[name]
-            for name in ("training", "validation", "test")
+            name: split_report[name] for name in ("training", "validation", "test")
         },
         "logical_split_policy": split_report["policy"],
         "cross_split_chip_id_overlap": split_report["cross_split_chip_id_overlap"],
@@ -80,10 +75,7 @@ def run_preflight(
         "class_distribution": split_report["class_pixel_counts"]["training"],
         "class_distribution_scope": "logical training split only",
         "output_directory": trainer["default_root_dir"],
-        "pretrained_source": (
-            "https://huggingface.co/ibm-nasa-geospatial/"
-            "Prithvi-EO-2.0-100M-TL"
-        ),
+        "pretrained_source": ("https://huggingface.co/ibm-nasa-geospatial/Prithvi-EO-2.0-100M-TL"),
         "pretrained_cache": str(_hugging_face_cache()),
     }
     if data_args.get("european_data_root") is not None:
@@ -95,9 +87,7 @@ def run_preflight(
         summary["european_data_root"] = str(european_root)
         summary["european_fraction"] = data_args["european_fraction"]
         summary["european_folds"] = data_args["european_folds"]
-        summary["european_metadata_patches"] = european_report[
-            "metadata_patches"
-        ]
+        summary["european_metadata_patches"] = european_report["metadata_patches"]
         summary["european_extra_images_ignored"] = european_report[
             "extra_unlabelled_images_ignored"
         ]
@@ -106,9 +96,7 @@ def run_preflight(
     if initial_checkpoint is not None:
         checkpoint_path = Path(initial_checkpoint)
         if not checkpoint_path.is_file():
-            raise FileNotFoundError(
-                f"Initial checkpoint not found: {checkpoint_path}"
-            )
+            raise FileNotFoundError(f"Initial checkpoint not found: {checkpoint_path}")
         summary["initial_checkpoint"] = str(checkpoint_path)
         summary["initial_checkpoint_bytes"] = checkpoint_path.stat().st_size
 

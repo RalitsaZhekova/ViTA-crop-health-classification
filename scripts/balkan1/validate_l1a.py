@@ -42,15 +42,12 @@ def _display_u8(image: np.ndarray) -> np.ndarray:
     low, high = np.percentile(image[valid], (1, 99))
     if high <= low:
         high = low + 1
-    return np.round(np.clip((image - low) / (high - low), 0, 1) * 255).astype(
-        np.uint8
-    )
+    return np.round(np.clip((image - low) / (high - low), 0, 1) * 255).astype(np.uint8)
 
 
 def _rgb_display(image: np.ndarray, gamma: float) -> np.ndarray:
     channels = [
-        (_display_u8(image[index]).astype(np.float32) / 255) ** gamma
-        for index in (2, 1, 0)
+        (_display_u8(image[index]).astype(np.float32) / 255) ** gamma for index in (2, 1, 0)
     ]
     return np.stack(channels, axis=-1)
 
@@ -67,18 +64,12 @@ def _reference_homography(
     target_keypoints, target_descriptors = sift.detectAndCompute(target, None)
     if moving_descriptors is None or target_descriptors is None:
         raise RuntimeError("Reference validation could not find real Red-band features")
-    pairs = cv2.BFMatcher(cv2.NORM_L2).knnMatch(
-        moving_descriptors, target_descriptors, k=2
-    )
+    pairs = cv2.BFMatcher(cv2.NORM_L2).knnMatch(moving_descriptors, target_descriptors, k=2)
     good = [first for first, second in pairs if first.distance < 0.75 * second.distance]
     if len(good) < 100:
         raise RuntimeError(f"Only {len(good)} L1A-to-L1ORT feature matches were found")
-    source_points = np.float32(
-        [moving_keypoints[match.queryIdx].pt for match in good]
-    )
-    target_points = np.float32(
-        [target_keypoints[match.trainIdx].pt for match in good]
-    )
+    source_points = np.float32([moving_keypoints[match.queryIdx].pt for match in good])
+    target_points = np.float32([target_keypoints[match.trainIdx].pt for match in good])
     homography, inlier_mask = cv2.findHomography(
         source_points,
         target_points,
@@ -92,12 +83,8 @@ def _reference_homography(
     inliers = inlier_mask.ravel().astype(bool)
     inlier_count = int(np.count_nonzero(inliers))
     if inlier_count < 100 or inlier_count / len(good) < 0.7:
-        raise RuntimeError(
-            f"Reference registration rejected: {inlier_count}/{len(good)} inliers"
-        )
-    predicted = cv2.perspectiveTransform(
-        source_points[inliers, None, :], homography
-    )[:, 0, :]
+        raise RuntimeError(f"Reference registration rejected: {inlier_count}/{len(good)} inliers")
+    predicted = cv2.perspectiveTransform(source_points[inliers, None, :], homography)[:, 0, :]
     residual = target_points[inliers] - predicted
     rmse = float(np.sqrt(np.mean(np.sum(residual**2, axis=1))))
     return homography, {
@@ -244,12 +231,9 @@ def main() -> None:
 
     data_root = args.data_root.resolve()
     l1a_path = (
-        args.l1a
-        or data_root / "derived" / "l1a" / f"{args.scene_id}_L1A_MIN.tif"
+        args.l1a or data_root / "derived" / "l1a" / f"{args.scene_id}_L1A_MIN.tif"
     ).resolve()
-    reference_path = (
-        data_root / "preprocessed" / f"{args.scene_id}_L1ORT.tif"
-    ).resolve()
+    reference_path = (data_root / "preprocessed" / f"{args.scene_id}_L1ORT.tif").resolve()
     for path in (l1a_path, reference_path):
         if not path.is_file():
             parser.error(f"required validation input does not exist: {path}")
@@ -271,12 +255,9 @@ def main() -> None:
         }
         for index, band_name in enumerate(BAND_NAMES)
     ]
-    minimum_correlation = min(
-        float(item["pearson_correlation"]) for item in radiometric
-    )
+    minimum_correlation = min(float(item["pearson_correlation"]) for item in radiometric)
     maximum_range_normalized_rmse = max(
-        float(item["rmse_fraction_of_reference_p01_p99_range"])
-        for item in radiometric
+        float(item["rmse_fraction_of_reference_p01_p99_range"]) for item in radiometric
     )
     acceptance = {
         "status": (
@@ -286,9 +267,7 @@ def main() -> None:
         ),
         "minimum_band_correlation": minimum_correlation,
         "minimum_band_correlation_threshold": 0.8,
-        "maximum_band_rmse_fraction_of_reference_range": (
-            maximum_range_normalized_rmse
-        ),
+        "maximum_band_rmse_fraction_of_reference_range": (maximum_range_normalized_rmse),
         "maximum_band_rmse_fraction_threshold": 0.12,
         "scope": "overview similarity QA; not an absolute-calibration certificate",
     }

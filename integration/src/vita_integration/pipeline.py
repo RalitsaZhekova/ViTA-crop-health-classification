@@ -118,9 +118,7 @@ def run_sentinel_end_to_end(
             "condition": {
                 "label": condition_report["condition"]["label"],
                 "score": condition_report["condition"]["condition_score"],
-                "evidence_quality_label": condition_report["condition"][
-                    "evidence_quality_label"
-                ],
+                "evidence_quality_label": condition_report["condition"]["evidence_quality_label"],
                 "analysis_percentage": condition_report["quality"]["analysis_percentage"],
             },
             "downlink": payload_result["summary"]["downlink"],

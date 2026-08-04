@@ -55,12 +55,7 @@ def calculate_target_grid(
     top = math.ceil(max(ys) / OUTPUT_RESOLUTION_METRES) * OUTPUT_RESOLUTION_METRES
     width = int(round((right - left) / OUTPUT_RESOLUTION_METRES))
     height = int(round((top - bottom) / OUTPUT_RESOLUTION_METRES))
-    if (
-        width <= 0
-        or height <= 0
-        or width > MAX_OUTPUT_DIMENSION
-        or height > MAX_OUTPUT_DIMENSION
-    ):
+    if width <= 0 or height <= 0 or width > MAX_OUTPUT_DIMENSION or height > MAX_OUTPUT_DIMENSION:
         raise AcquisitionError(
             "REGION_TOO_LARGE",
             "Requested region cannot be represented on the fixed 10-metre grid",
@@ -84,7 +79,5 @@ def calculate_target_grid(
         width=width,
         height=height,
         bounds=(left, bottom, right, top),
-        estimated_uncompressed_bytes=(
-            width * height * OUTPUT_BAND_COUNT * OUTPUT_BYTES_PER_SAMPLE
-        ),
+        estimated_uncompressed_bytes=(width * height * OUTPUT_BAND_COUNT * OUTPUT_BYTES_PER_SAMPLE),
     )

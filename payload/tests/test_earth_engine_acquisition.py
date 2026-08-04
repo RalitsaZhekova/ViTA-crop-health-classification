@@ -350,9 +350,7 @@ def test_transient_download_request_failure_retries_safely(
     raw = tmp_path / "raw.tif"
     _write_raw_tiff(raw, grid)
     image = _EventuallyAvailableImage()
-    provider = EarthEngineAcquisitionProvider(
-        session=_Session([_Response(200, raw.read_bytes())])
-    )
+    provider = EarthEngineAcquisitionProvider(session=_Session([_Response(200, raw.read_bytes())]))
     monkeypatch.setattr("prithvi_payload.acquisition.earth_engine.time.sleep", lambda _: None)
 
     provider._stream_candidate(image, {}, tmp_path / "download.partial")

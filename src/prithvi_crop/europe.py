@@ -19,11 +19,11 @@ from torch.utils.data import Dataset
 # Only unambiguous mappings receive fine-grained labels. Other agricultural
 # labels remain useful through binary crop/non-crop supervision.
 PASTIS_FINE_CLASS_MAP = {
-    2: 7,   # soft winter wheat -> Winter Wheat
-    3: 2,   # corn -> Corn
+    2: 7,  # soft winter wheat -> Winter Wheat
+    3: 2,  # corn -> Corn
     11: 7,  # winter durum wheat -> Winter Wheat
     15: 3,  # soybeans -> Soybeans
-    18: 11, # sorghum -> Sorghum
+    18: 11,  # sorghum -> Sorghum
 }
 
 PROJECT_NON_CROP_CLASSES = (0, 1, 4, 5, 6)
@@ -82,8 +82,7 @@ def select_seasonal_dates(
     if len(raw_dates) < len(target_doys):
         raise ValueError("Not enough PASTIS observations for three seasonal dates")
     parsed = [
-        date(int(str(value)[:4]), int(str(value)[4:6]), int(str(value)[6:8]))
-        for value in raw_dates
+        date(int(str(value)[:4]), int(str(value)[4:6]), int(str(value)[6:8])) for value in raw_dates
     ]
     targets = [
         date(target_year, 1, 1) + timedelta(days=int(day_of_year) - 1)
@@ -172,9 +171,7 @@ class PastisReplayDataset(Dataset):
         metadata["Fold"] = metadata["Fold"].astype(int)
         metadata = metadata[metadata["Fold"].isin(folds)].copy()
         metadata["_rank"] = metadata["ID_PATCH"].map(
-            lambda value: hashlib.sha256(
-                f"{seed}:{int(value)}".encode()
-            ).digest()
+            lambda value: hashlib.sha256(f"{seed}:{int(value)}".encode()).digest()
         )
         metadata.sort_values("_rank", inplace=True)
         if max_samples is not None:

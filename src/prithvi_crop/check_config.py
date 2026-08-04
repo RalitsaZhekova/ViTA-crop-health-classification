@@ -22,11 +22,7 @@ def _all_strings(value: Any) -> list[str]:
     if isinstance(value, str):
         return [value]
     if isinstance(value, dict):
-        return [
-            item
-            for nested in value.values()
-            for item in _all_strings(nested)
-        ]
+        return [item for nested in value.values() for item in _all_strings(nested)]
     if isinstance(value, list):
         return [item for nested in value for item in _all_strings(nested)]
     return []
@@ -87,8 +83,7 @@ def check_config(config_path: Path) -> dict[str, Any]:
     checkpoint_adapter = model_args.get("initial_checkpoint_adapter")
     if initial_checkpoint is not None:
         _require(
-            isinstance(initial_checkpoint, str)
-            and initial_checkpoint.endswith(".ckpt"),
+            isinstance(initial_checkpoint, str) and initial_checkpoint.endswith(".ckpt"),
             "initial_checkpoint must reference a .ckpt file",
         )
         _must_be_under_outputs(
@@ -99,8 +94,7 @@ def check_config(config_path: Path) -> dict[str, Any]:
         mandatory_dihedral = [
             transform
             for transform in transforms
-            if transform.get("class_path")
-            == "prithvi_crop.transforms.RandomNonIdentityDihedral"
+            if transform.get("class_path") == "prithvi_crop.transforms.RandomNonIdentityDihedral"
         ]
         _require(
             len(mandatory_dihedral) == 1
@@ -127,14 +121,11 @@ def check_config(config_path: Path) -> dict[str, Any]:
         unflatten = [
             transform
             for transform in transforms
-            if transform.get("class_path", "").endswith(
-                "UnflattenTemporalFromChannels"
-            )
+            if transform.get("class_path", "").endswith("UnflattenTemporalFromChannels")
         ]
         _require(
             len(unflatten) == 1
-            and unflatten[0].get("init_args", {}).get("n_timesteps")
-            == expected_frames,
+            and unflatten[0].get("init_args", {}).get("n_timesteps") == expected_frames,
             f"{split} transform must restore exactly {expected_frames} frame(s)",
         )
     _require(
@@ -211,8 +202,7 @@ def check_config(config_path: Path) -> dict[str, Any]:
     else:
         expected_monitor = "val/Deployment_Score" if single_frame else "val/Macro_F1"
     _require(
-        checkpoint_args.get("monitor") == expected_monitor
-        and checkpoint_args.get("mode") == "max",
+        checkpoint_args.get("monitor") == expected_monitor and checkpoint_args.get("mode") == "max",
         f"Checkpoint selection must maximize {expected_monitor}",
     )
 
@@ -246,15 +236,12 @@ def check_config(config_path: Path) -> dict[str, Any]:
         )
         european_fraction = data_args.get("european_fraction")
         _require(
-            isinstance(european_fraction, (int, float))
-            and 0 < european_fraction <= 0.2,
+            isinstance(european_fraction, (int, float)) and 0 < european_fraction <= 0.2,
             "European replay must be no more than 20% of training samples",
         )
         folds = data_args.get("european_folds")
         _require(
-            isinstance(folds, list)
-            and folds
-            and set(folds).issubset({1, 2, 3, 4}),
+            isinstance(folds, list) and folds and set(folds).issubset({1, 2, 3, 4}),
             "European training must reserve PASTIS fold 5",
         )
         if binary_only:

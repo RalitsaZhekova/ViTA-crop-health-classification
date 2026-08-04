@@ -121,12 +121,17 @@ class PayloadJobService:
                     error=None,
                 )
             except AcquisitionError as error:
-                state = "rejected" if error.code in {
-                    "EARTH_ENGINE_NO_SCENE",
-                    "EARTH_ENGINE_NO_TARGET_CLOUD_SCENE",
-                    "REGION_TOO_LARGE",
-                    "PAYLOAD_NO_SCENE_IN_TARGET_CLOUD_RANGE",
-                } else "failed"
+                state = (
+                    "rejected"
+                    if error.code
+                    in {
+                        "EARTH_ENGINE_NO_SCENE",
+                        "EARTH_ENGINE_NO_TARGET_CLOUD_SCENE",
+                        "REGION_TOO_LARGE",
+                        "PAYLOAD_NO_SCENE_IN_TARGET_CLOUD_RANGE",
+                    }
+                    else "failed"
+                )
                 fields: dict[str, Any] = {"error": error.safe_record()}
                 if isinstance(error.details.get("candidate_attempts"), list):
                     fields["candidate_attempts"] = error.details["candidate_attempts"]

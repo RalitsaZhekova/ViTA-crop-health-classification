@@ -47,9 +47,7 @@ def prepare(archive: Path, destination: Path) -> dict[str, int | str]:
         raise FileNotFoundError(archive)
     checksum = file_md5(archive)
     if checksum != PASTIS_MD5:
-        raise RuntimeError(
-            f"PASTIS checksum mismatch: expected {PASTIS_MD5}, got {checksum}"
-        )
+        raise RuntimeError(f"PASTIS checksum mismatch: expected {PASTIS_MD5}, got {checksum}")
 
     extracted = 0
     with zipfile.ZipFile(archive) as source:
@@ -71,9 +69,7 @@ def prepare(archive: Path, destination: Path) -> dict[str, int | str]:
         "extracted_members": extracted,
         "image_patches": int(validation["required_images"]),
         "mask_patches": int(validation["required_targets"]),
-        "extra_unlabelled_images_ignored": int(
-            validation["extra_unlabelled_images_ignored"]
-        ),
+        "extra_unlabelled_images_ignored": int(validation["extra_unlabelled_images_ignored"]),
         "output": str(root.resolve()),
     }
     (destination / "manifest.json").write_text(

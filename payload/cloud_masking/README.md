@@ -48,9 +48,10 @@ nodata, and the existing 60% cloud gate can stop crop inference before the crop
 model is loaded.
 
 Sentinel cloud inference prefers `B8A`, which is also the crop model's native
-NIR input. Balkan crop execution still requires
-`--allow-provisional-balkan-crop`: OmniCloudMask is Balkan-validated, but the
-Prithvi Balkan NIR transfer remains execution-only and unvalidated.
+NIR input. Balkan crop execution requires a source-bound calibration sidecar
+that passes the held-out Sentinel-equivalence gates. The runtime rejects a
+missing, stale or mismatched sidecar instead of passing broad-NIR pixels
+directly to the narrow-NIR Prithvi input.
 
 ## Download verified model files
 

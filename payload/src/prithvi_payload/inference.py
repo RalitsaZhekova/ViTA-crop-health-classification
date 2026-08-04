@@ -64,8 +64,7 @@ def _model_state(checkpoint: dict[str, Any]) -> dict[str, Tensor]:
             if name.startswith("model.")
         }
     elif checkpoint and all(
-        isinstance(name, str) and isinstance(value, Tensor)
-        for name, value in checkpoint.items()
+        isinstance(name, str) and isinstance(value, Tensor) for name, value in checkpoint.items()
     ):
         model_state = checkpoint
     else:
@@ -153,13 +152,9 @@ class PayloadCropModel:
             )
         batch_size = image.shape[0]
         if temporal_coords.shape != (batch_size, TIME_STEPS, 2):
-            raise ValueError(
-                "temporal_coords must have shape [batch, time, 2] as year/day-of-year"
-            )
+            raise ValueError("temporal_coords must have shape [batch, time, 2] as year/day-of-year")
         if location_coords.shape != (batch_size, 2):
-            raise ValueError(
-                "location_coords must have shape [batch, 2] as latitude/longitude"
-            )
+            raise ValueError("location_coords must have shape [batch, 2] as latitude/longitude")
 
     def predict(
         self,
@@ -195,9 +190,7 @@ class PayloadCropModel:
             ).output
             probabilities = logits.softmax(dim=1)
             crop_probability = probabilities[:, 1]
-            crop_binary = (
-                crop_probability >= CROP_CLASSIFICATION_THRESHOLD
-            ).to(dtype=torch.uint8)
+            crop_binary = (crop_probability >= CROP_CLASSIFICATION_THRESHOLD).to(dtype=torch.uint8)
             crop_confidence = torch.maximum(crop_probability, 1 - crop_probability)
         return InferenceOutput(
             crop_probability=crop_probability,

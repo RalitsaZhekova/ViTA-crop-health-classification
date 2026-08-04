@@ -37,9 +37,7 @@ def split_tiles(
     pad_height = max(0, size - height)
     pad_width = max(0, size - width)
     effective_mode = (
-        "edge"
-        if padding_mode == "reflect" and (height == 1 or width == 1)
-        else padding_mode
+        "edge" if padding_mode == "reflect" and (height == 1 or width == 1) else padding_mode
     )
     padded = np.pad(
         image,
@@ -81,8 +79,8 @@ def reconstruct(
             raise ValueError(f"Expected tile scores {expected_shape}, found {scores.shape}.")
         y_end = window.y + window.size
         x_end = window.x + window.size
-        accumulator[:, window.y:y_end, window.x:x_end] += scores
-        observations[window.y:y_end, window.x:x_end] += 1.0
+        accumulator[:, window.y : y_end, window.x : x_end] += scores
+        observations[window.y : y_end, window.x : x_end] += 1.0
 
     accumulator /= np.maximum(observations[None, :, :], 1.0)
     height, width = original_shape

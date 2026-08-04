@@ -205,8 +205,7 @@ def order_candidates(
             )
         )
     return [
-        replace(candidate, candidate_rank=index)
-        for index, candidate in enumerate(candidates, 1)
+        replace(candidate, candidate_rank=index) for index, candidate in enumerate(candidates, 1)
     ]
 
 

@@ -3,9 +3,7 @@
 ```python
 from cloud_detection.pipeline import CloudDetectionPipeline
 
-pipeline = CloudDetectionPipeline.from_yaml(
-    "payload/cloud_detection/configs/cloud_detector.yaml"
-)
+pipeline = CloudDetectionPipeline.from_yaml("payload/cloud_detection/configs/cloud_detector.yaml")
 result = pipeline.predict_file("scene.tif", "outputs")
 
 clear_pixels = result.unusable_mask == 0

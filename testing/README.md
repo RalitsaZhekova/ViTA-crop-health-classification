@@ -57,13 +57,13 @@ Sentinel-2 route:
   testing\inputs\balkan1\your_L1ORT_sample.tif `
   --acquired-at 2026-07-27T12:00:00Z `
   --reflectance-scale 1 `
-  --allow-provisional-crop `
   --output testing\runs\your_balkan_run
 ```
 
 Sentinel-2 and Balkan-1 inputs and results coexist under separate sensor/run
-folders. Sensor selection is per scene; the Balkan execution-only opt-in does
-not alter Sentinel-2 band resolution or model inputs.
+folders. Sensor selection is per scene, so the calibrated Balkan route does not
+alter Sentinel-2 band resolution or model inputs. Balkan crop inference requires
+an adjacent validated `*.crop_calibration.json` sidecar.
 
 Run the complete local payload-to-ground demonstration:
 

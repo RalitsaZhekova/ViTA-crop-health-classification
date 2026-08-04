@@ -120,7 +120,7 @@
     "No expert cloud ground truth was used in this execution acceptance run.",
     "The single-scene condition label is a spectral screening priority, not a disease, cause, yield or agronomic diagnosis.",
     "The demonstration constructs and verifies the package locally; it does not test radio transfer, scheduling, retry/resume or ground acknowledgement.",
-    "The selected cloud route now prefers B8A for Sentinel-2; Balkan cloud validation is recorded separately in payload/verification.json, while Balkan crop transfer remains unvalidated.",
+    "The selected cloud route prefers B8A for Sentinel-2. Balkan cloud validation and source-bound crop-input calibration evidence are recorded separately in payload/verification.json; independent Balkan crop-label accuracy remains outside this acceptance record.",
     "This specific historical acceptance record used no Balkan-1 imagery or payload computer.",
     "The selected OmniCloudMask code and V4 weights are recorded as MIT licensed; upstream notices and attribution must be preserved.",
     "Production authentication, authorization, rate limiting and multi-tenant isolation are not part of this local MVP."

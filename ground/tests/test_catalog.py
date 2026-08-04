@@ -24,8 +24,8 @@ def _write_manifest(path: Path, manifest: dict) -> None:
     metadata_bytes = -1
     while True:
         manifest["package"]["metadata_bytes"] = max(metadata_bytes, 0)
-        manifest["package"]["total_bytes"] = (
-            manifest["package"]["asset_bytes"] + max(metadata_bytes, 0)
+        manifest["package"]["total_bytes"] = manifest["package"]["asset_bytes"] + max(
+            metadata_bytes, 0
         )
         encoded = (
             json.dumps(manifest, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n"

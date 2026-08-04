@@ -43,9 +43,7 @@ def deterministic_partition(
 
     ranked = sorted(
         range(len(chip_ids)),
-        key=lambda index: hashlib.sha256(
-            f"{seed}:{chip_ids[index]}".encode()
-        ).digest(),
+        key=lambda index: hashlib.sha256(f"{seed}:{chip_ids[index]}".encode()).digest(),
     )
     validation_count = max(1, min(len(chip_ids) - 1, round(len(chip_ids) * validation_fraction)))
     validation_indices = sorted(ranked[:validation_count])
@@ -62,9 +60,7 @@ def select_temporal_bands(
 ) -> np.ndarray:
     """Select requested bands independently from every temporal observation."""
     if image.ndim != 3 or image.shape[0] % all_band_count:
-        raise ValueError(
-            "Expected a [time*bands,height,width] raster with a complete band set"
-        )
+        raise ValueError("Expected a [time*bands,height,width] raster with a complete band set")
     temporal = rearrange(
         image,
         "(time channels) height width -> time height width channels",
@@ -206,9 +202,7 @@ class CropTypeDataModule(MultiTemporalCropClassificationDataModule):
         if european_data_root is None and european_fraction != 0:
             raise ValueError("european_fraction requires european_data_root")
         if european_data_root is not None and not 0 < european_fraction < 1:
-            raise ValueError(
-                "european_fraction must be strictly between 0 and 1"
-            )
+            raise ValueError("european_fraction must be strictly between 0 and 1")
         self.european_data_root = european_data_root
         self.european_fraction = european_fraction
         self.european_folds = tuple(european_folds)

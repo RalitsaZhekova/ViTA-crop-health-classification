@@ -18,10 +18,7 @@ def _available_scenes(raw_root: Path) -> list[str]:
         for path in raw_root.iterdir()
         if path.is_dir()
         and (path / f"{path.name}_Raw.tif").is_file()
-        and (
-            (path / f"{path.name}.json").is_file()
-            or any(path.glob("log_extract*.txt"))
-        )
+        and ((path / f"{path.name}.json").is_file() or any(path.glob("log_extract*.txt")))
     )
 
 

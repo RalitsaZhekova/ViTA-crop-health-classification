@@ -59,9 +59,7 @@ def build_cloud_stage_plan(
         errors.append("Cloud route has an unexpected logical band order")
 
     supplied_scale = _positive_scale(reflectance_scale)
-    inferred_scale = _positive_scale(
-        intake.get("radiometry", {}).get("cloud_reflectance_divisor")
-    )
+    inferred_scale = _positive_scale(intake.get("radiometry", {}).get("cloud_reflectance_divisor"))
     selected_scale = supplied_scale if supplied_scale is not None else inferred_scale
     if supplied_scale is not None:
         scale_source = "explicit_override"
@@ -70,9 +68,7 @@ def build_cloud_stage_plan(
     else:
         scale_source = "unresolved"
     if selected_scale is None:
-        errors.append(
-            "Reflectance calibration is unresolved; supply a verified reflectance scale"
-        )
+        errors.append("Reflectance calibration is unresolved; supply a verified reflectance scale")
 
     if sensor == "sentinel-2":
         compatibility = "OMNICLOUDMASK_SENTINEL_2"
@@ -88,9 +84,7 @@ def build_cloud_stage_plan(
             ]
         )
         if supplied_scale is not None:
-            warnings.append(
-                "The explicit scale must come from Balkan-1 calibration metadata"
-            )
+            warnings.append("The explicit scale must come from Balkan-1 calibration metadata")
 
     return {
         "schema_version": CLOUD_STAGE_SCHEMA_VERSION,

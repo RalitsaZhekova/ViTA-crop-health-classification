@@ -27,33 +27,22 @@ def _mask_id(path: Path) -> str:
 
 def _is_macos_metadata(member_name: str) -> bool:
     """Return whether a tar member is Finder metadata, not dataset content."""
-    return any(
-        part == "__MACOSX" or part.startswith("._")
-        for part in Path(member_name).parts
-    )
+    return any(part == "__MACOSX" or part.startswith("._") for part in Path(member_name).parts)
 
 
 def _safe_extract(archive: Path, destination: Path) -> None:
     """Extract a regular-file/directory tar archive while blocking traversal."""
     destination = destination.resolve()
     with tarfile.open(archive, mode="r:gz") as tar:
-        members = [
-            member
-            for member in tar.getmembers()
-            if not _is_macos_metadata(member.name)
-        ]
+        members = [member for member in tar.getmembers() if not _is_macos_metadata(member.name)]
         for member in members:
             target = (destination / member.name).resolve()
             if destination != target and destination not in target.parents:
                 raise RuntimeError(f"Unsafe archive member: {member.name}")
             if member.issym() or member.islnk():
-                raise RuntimeError(
-                    f"Links are not allowed in dataset archive: {member.name}"
-                )
+                raise RuntimeError(f"Links are not allowed in dataset archive: {member.name}")
             if not (member.isfile() or member.isdir()):
-                raise RuntimeError(
-                    f"Unsupported special file in dataset archive: {member.name}"
-                )
+                raise RuntimeError(f"Unsupported special file in dataset archive: {member.name}")
         tar.extractall(destination, members=members, filter="data")
 
 
@@ -82,9 +71,7 @@ def _read_split_ids(root: Path, split: str) -> set[str]:
     if not split_file.is_file():
         return set()
     return {
-        line.strip()
-        for line in split_file.read_text(encoding="utf-8").splitlines()
-        if line.strip()
+        line.strip() for line in split_file.read_text(encoding="utf-8").splitlines() if line.strip()
     }
 
 
@@ -106,9 +93,7 @@ def _install_extracted_split(
     extracted = staging_root / f"{split}_chips"
     destination = root / f"{split}_chips"
     if not extracted.is_dir():
-        raise RuntimeError(
-            f"Archive extracted but expected directory was not found: {extracted}"
-        )
+        raise RuntimeError(f"Archive extracted but expected directory was not found: {extracted}")
 
     expected_ids = _read_split_ids(root, split)
     image_ids = {_image_id(path) for path in extracted.glob("*_merged.tif")}
@@ -188,9 +173,7 @@ def prepare_dataset(
             _safe_extract(archive, staging_root)
             _install_extracted_split(staging_root, root, split)
             if not _split_complete(root, split):
-                raise RuntimeError(
-                    f"{split} split failed the post-install completeness check"
-                )
+                raise RuntimeError(f"{split} split failed the post-install completeness check")
         finally:
             if staging_root.exists():
                 shutil.rmtree(staging_root)

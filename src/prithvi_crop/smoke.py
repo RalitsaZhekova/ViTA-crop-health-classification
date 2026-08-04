@@ -13,9 +13,7 @@ from prithvi_crop.runtime import build_data_module, build_task, load_config
 
 def _to_device(batch: dict, device: torch.device) -> dict:
     return {
-        key: value.to(device, non_blocking=True)
-        if isinstance(value, torch.Tensor)
-        else value
+        key: value.to(device, non_blocking=True) if isinstance(value, torch.Tensor) else value
         for key, value in batch.items()
     }
 
@@ -31,12 +29,8 @@ def run_smoke(config_path: Path, batch_size: int | None = None) -> None:
     module = build_data_module(config, batch_size=smoke_batch_size, num_workers=0)
     module.setup("fit")
     batch = next(iter(module.train_dataloader()))
-    expected_frames = int(
-        config["model"]["init_args"]["model_args"]["backbone_num_frames"]
-    )
-    expected_classes = int(
-        config["model"]["init_args"]["model_args"]["num_classes"]
-    )
+    expected_frames = int(config["model"]["init_args"]["model_args"]["backbone_num_frames"])
+    expected_classes = int(config["model"]["init_args"]["model_args"]["num_classes"])
     binary_only = bool(config["model"]["init_args"].get("binary_only", False))
     expected_shape = (smoke_batch_size, 4, expected_frames, 224, 224)
     if tuple(batch["image"].shape) != expected_shape:
@@ -62,9 +56,7 @@ def run_smoke(config_path: Path, batch_size: int | None = None) -> None:
         if parameter.numel()
     }
     trainable = [
-        (name, parameter)
-        for name, parameter in task.named_parameters()
-        if parameter.requires_grad
+        (name, parameter) for name, parameter in task.named_parameters() if parameter.requires_grad
     ]
     if not trainable:
         raise RuntimeError("No downstream parameters are trainable")
@@ -93,11 +85,7 @@ def run_smoke(config_path: Path, batch_size: int | None = None) -> None:
             224,
         ):
             raise RuntimeError(f"Unexpected logits shape: {tuple(output.output.shape)}")
-        target = (
-            task._binary_batch(batch)["mask"]
-            if binary_only
-            else batch["mask"]
-        )
+        target = task._binary_batch(batch)["mask"] if binary_only else batch["mask"]
         loss = task.criterion(output.output, target)
     loss.backward()
 
@@ -114,9 +102,7 @@ def run_smoke(config_path: Path, batch_size: int | None = None) -> None:
     torch.cuda.synchronize(device)
 
     changed_trainable = [
-        name
-        for name, parameter in trainable
-        if parameter._version != trainable_versions[name]
+        name for name, parameter in trainable if parameter._version != trainable_versions[name]
     ]
     if not changed_trainable:
         raise RuntimeError("Optimizer step did not update downstream parameters")

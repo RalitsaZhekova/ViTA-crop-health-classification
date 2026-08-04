@@ -117,9 +117,7 @@ def test_sentinel_end_to_end_builds_verified_compact_downlink(tmp_path: Path) ->
         "rgb_preview",
         "condition_overlay",
     }
-    assert payload["stage_metadata"]["intake"]["model_band_routes"][
-        "cloud_detection"
-    ] == {
+    assert payload["stage_metadata"]["intake"]["model_band_routes"]["cloud_detection"] == {
         "expected_logical_order": ["NIR_NARROW", "RED", "GREEN", "BLUE"],
         "source_band_indices": [5, 1, 2, 3],
     }
@@ -173,9 +171,7 @@ def test_sentinel_end_to_end_builds_verified_compact_downlink(tmp_path: Path) ->
     assert downlink["package"]["total_bytes"] == sum(
         path.stat().st_size for path in downlink_root.iterdir()
     )
-    assert result["summary"]["downlink"]["total_bytes"] == downlink["package"][
-        "total_bytes"
-    ]
+    assert result["summary"]["downlink"]["total_bytes"] == downlink["package"]["total_bytes"]
 
 
 def test_sentinel_end_to_end_records_cloud_gate_stop(tmp_path: Path) -> None:

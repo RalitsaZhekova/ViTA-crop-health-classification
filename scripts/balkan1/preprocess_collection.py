@@ -94,9 +94,7 @@ def main() -> None:
 
     data_root = args.data_root.resolve()
     raw_root = (args.raw_root or data_root / "raw").resolve()
-    preprocessed_root = (
-        args.preprocessed_root or data_root / "preprocessed"
-    ).resolve()
+    preprocessed_root = (args.preprocessed_root or data_root / "preprocessed").resolve()
     if not raw_root.is_dir():
         parser.error(f"Raw root does not exist: {raw_root}")
     preprocessed_root.mkdir(parents=True, exist_ok=True)
@@ -139,9 +137,7 @@ def main() -> None:
             continue
         subprocess.run(command, cwd=REPOSITORY_ROOT, check=True)
         if not output.is_file():
-            raise RuntimeError(
-                f"Preprocessor exited successfully but did not create {output}"
-            )
+            raise RuntimeError(f"Preprocessor exited successfully but did not create {output}")
         completed.append(output)
 
     if args.dry_run:

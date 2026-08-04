@@ -14,7 +14,6 @@ include:
   - src/cloud_detection
   - cloud_detection/configs/cloud_detector.yaml
   - cloud_detection/scripts
-  - cloud_masking/classifier.yaml
   - cloud_masking/UPSTREAM.md
   - requirements.txt
   - ../shared/src/prithvi_shared
@@ -32,6 +31,6 @@ exclude:
   - "**/experiment_logs/**"
   - "**/__pycache__/**"
 not_yet_implemented:
-  - raw_balkan_1_reconstruction
+  - production_balkan_1_l1b_l1c_reconstruction
   - real_balkan_1_crop_validation
   - physical_downlink_transport

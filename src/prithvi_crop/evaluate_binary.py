@@ -57,9 +57,7 @@ def _best(records: list[dict[str, Any]], metric: str) -> dict[str, Any]:
 
 def _to_device(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
     return {
-        key: value.to(device, non_blocking=True)
-        if isinstance(value, torch.Tensor)
-        else value
+        key: value.to(device, non_blocking=True) if isinstance(value, torch.Tensor) else value
         for key, value in batch.items()
     }
 
@@ -122,29 +120,18 @@ def evaluate_binary_validation(
             )
             targets = binary_targets_from_fine_targets(normalized["mask"])
             valid = targets != -1
-            positive_scores.append(
-                probabilities[valid & (targets == 1)].float().cpu().numpy()
-            )
-            negative_scores.append(
-                probabilities[valid & (targets == 0)].float().cpu().numpy()
-            )
+            positive_scores.append(probabilities[valid & (targets == 1)].float().cpu().numpy())
+            negative_scores.append(probabilities[valid & (targets == 0)].float().cpu().numpy())
             if batch_index % 5 == 0 or batch_index == len(loader):
                 print(f"Evaluated batches: {batch_index}/{len(loader)}", flush=True)
 
     elapsed = time.perf_counter() - started
     positive = np.concatenate(positive_scores)
     negative = np.concatenate(negative_scores)
-    thresholds = np.unique(
-        np.concatenate((np.linspace(0.05, 0.95, 181), np.asarray([0.5])))
-    )
-    records = [
-        _threshold_metrics(positive, negative, float(threshold))
-        for threshold in thresholds
-    ]
+    thresholds = np.unique(np.concatenate((np.linspace(0.05, 0.95, 181), np.asarray([0.5]))))
+    records = [_threshold_metrics(positive, negative, float(threshold)) for threshold in thresholds]
     constrained = [
-        record
-        for record in records
-        if record["false_crop_rate"] <= target_false_crop_rate
+        record for record in records if record["false_crop_rate"] <= target_false_crop_rate
     ]
     safe = (
         max(
@@ -204,9 +191,7 @@ def main() -> None:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path(
-            "outputs/prithvi_4band_europe_replay/binary_validation_metrics.json"
-        ),
+        default=Path("outputs/prithvi_4band_europe_replay/binary_validation_metrics.json"),
     )
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--num-workers", type=int, default=4)

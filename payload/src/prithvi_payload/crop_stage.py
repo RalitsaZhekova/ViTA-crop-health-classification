@@ -8,15 +8,21 @@ from typing import Any
 
 from prithvi_shared import (
     CROP_CLASSIFICATION_THRESHOLD,
+    HEALTH_ANALYSIS_CROP_THRESHOLD,
     INPUT_HEIGHT,
     MODEL_BANDS,
     SELECTED_CHECKPOINT_NAME,
     SELECTED_CHECKPOINT_SHA256,
 )
 
+from prithvi_payload.balkan_crop_calibration import (
+    ADAPTER_MODE,
+    BALKAN_CROP_CLASSIFICATION_THRESHOLD,
+    BALKAN_HEALTH_ANALYSIS_CROP_THRESHOLD,
+)
+
 CROP_STAGE_SCHEMA_VERSION = "0.1-draft"
 DEFAULT_MAX_CLOUD_PERCENTAGE = 60.0
-CALIBRATED_BALKAN_ADAPTER = "BALKAN_1_SENTINEL_MONOTONIC_V1"
 
 
 def _temporal_coordinate(acquired_at: str | None) -> list[float] | None:
@@ -49,25 +55,13 @@ def build_crop_stage_plan(
     calibrated_balkan = (
         intake.get("sensor") == "balkan-1"
         and isinstance(spectral_adapter, dict)
-        and spectral_adapter.get("mode") == CALIBRATED_BALKAN_ADAPTER
+        and spectral_adapter.get("mode") == ADAPTER_MODE
     )
 
-    if gate_passed and crop_input_readiness not in {"READY", "READY_PROVISIONAL"}:
+    if gate_passed and crop_input_readiness != "READY":
         errors.append(
             "Crop input is not spectrally ready; the selected model requires "
             "BLUE, GREEN, RED and NIR_NARROW"
-        )
-    if gate_passed and crop_input_readiness == "READY_PROVISIONAL":
-        if (
-            not isinstance(spectral_adapter, dict)
-            or spectral_adapter.get("validation_status") != "EXECUTION_ONLY_UNVALIDATED"
-        ):
-            errors.append("Provisional crop readiness is missing its spectral adapter record")
-        warnings.extend(
-            [
-                "Balkan-1 crop inference uses an unvalidated NIR transfer",
-                "Results demonstrate software execution only, not crop accuracy",
-            ]
         )
     if gate_passed and calibrated_balkan:
         if spectral_adapter.get("validation_status") != "VALIDATED_SENTINEL_EQUIVALENCE":
@@ -111,6 +105,15 @@ def build_crop_stage_plan(
     else:
         readiness = "READY"
 
+    if calibrated_balkan:
+        crop_probability_threshold = BALKAN_CROP_CLASSIFICATION_THRESHOLD
+        health_analysis_crop_threshold = BALKAN_HEALTH_ANALYSIS_CROP_THRESHOLD
+        threshold_source = "balkan_1_operational_calibration"
+    else:
+        crop_probability_threshold = CROP_CLASSIFICATION_THRESHOLD
+        health_analysis_crop_threshold = HEALTH_ANALYSIS_CROP_THRESHOLD
+        threshold_source = "selected_model_internal_validation"
+
     return {
         "schema_version": CROP_STAGE_SCHEMA_VERSION,
         "stage": "crop_classification",
@@ -122,11 +125,7 @@ def build_crop_stage_plan(
         "compatibility": (
             "CALIBRATED_BALKAN_1_SENTINEL_EQUIVALENCE"
             if calibrated_balkan
-            else (
-                "PROVISIONAL_EXECUTION_ONLY"
-                if crop_input_readiness == "READY_PROVISIONAL"
-                else "VALIDATED_MODEL_INPUT_CONTRACT"
-            )
+            else "VALIDATED_MODEL_INPUT_CONTRACT"
         ),
         "gate": {
             "metric": "cloud_percentage",
@@ -147,7 +146,9 @@ def build_crop_stage_plan(
         "model": {
             "artifact": SELECTED_CHECKPOINT_NAME,
             "sha256": SELECTED_CHECKPOINT_SHA256,
-            "crop_probability_threshold": CROP_CLASSIFICATION_THRESHOLD,
+            "crop_probability_threshold": crop_probability_threshold,
+            "health_analysis_crop_threshold": health_analysis_crop_threshold,
+            "threshold_source": threshold_source,
             "output_classes": ["non_crop", "crop"],
         },
         "execution": {

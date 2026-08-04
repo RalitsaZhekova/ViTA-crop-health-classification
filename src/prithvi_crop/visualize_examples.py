@@ -28,9 +28,7 @@ from prithvi_crop.constants import CLASS_NAMES
 from prithvi_crop.runtime import build_data_module, build_task, load_config
 
 MODEL_CHECKPOINT_NAME = "epoch=02-macro_f1=0.5062.ckpt"
-MODEL_CHECKPOINT_SHA256 = (
-    "49383194174c56b66f3b7fa67254a42135db6ad64172e873c43d65d1afae6a65"
-)
+MODEL_CHECKPOINT_SHA256 = "49383194174c56b66f3b7fa67254a42135db6ad64172e873c43d65d1afae6a65"
 SELECTIONS = (
     ("Lower-range example", 0.20),
     ("Median example", 0.50),
@@ -77,9 +75,7 @@ class ValidationExample:
 
 def _to_device(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
     return {
-        key: value.to(device, non_blocking=True)
-        if isinstance(value, torch.Tensor)
-        else value
+        key: value.to(device, non_blocking=True) if isinstance(value, torch.Tensor) else value
         for key, value in batch.items()
     }
 
@@ -115,10 +111,7 @@ def _batch_accuracies(
 ) -> list[float]:
     valid = target != ignore_index
     correct = (prediction == target) & valid
-    return (
-        correct.flatten(1).sum(dim=1)
-        / valid.flatten(1).sum(dim=1).clamp_min(1)
-    ).cpu().tolist()
+    return (correct.flatten(1).sum(dim=1) / valid.flatten(1).sum(dim=1).clamp_min(1)).cpu().tolist()
 
 
 def _load_selected_examples(
@@ -138,9 +131,7 @@ def _load_selected_examples(
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint}")
     actual_checksum = _sha256(checkpoint)
     if actual_checksum != MODEL_CHECKPOINT_SHA256:
-        raise ValueError(
-            f"Pinned checkpoint checksum mismatch: {actual_checksum}"
-        )
+        raise ValueError(f"Pinned checkpoint checksum mismatch: {actual_checksum}")
 
     config = load_config(config_path)
     data_module = build_data_module(
@@ -190,8 +181,7 @@ def _load_selected_examples(
             )
             if batch_index % 5 == 0 or batch_index == len(loader):
                 print(
-                    f"Scored validation batches: "
-                    f"{batch_index}/{len(loader)}",
+                    f"Scored validation batches: {batch_index}/{len(loader)}",
                     flush=True,
                 )
 
@@ -228,17 +218,12 @@ def _load_selected_examples(
                     rgb_dates=tuple(_rgb(sample["image"], index) for index in range(3)),
                     fine_target=sample["mask"].numpy(),
                     fine_prediction=logits.argmax(dim=1)[0].cpu().numpy(),
-                    binary_target=(
-                        binary_targets_from_fine_targets(sample["mask"]).numpy()
-                    ),
+                    binary_target=(binary_targets_from_fine_targets(sample["mask"]).numpy()),
                     binary_prediction=(
                         binary_predictions_from_fine_logits(logits)[0].cpu().numpy()
                     ),
                     crop_probability=(
-                        crop_probability_from_fine_logits(logits)[0]
-                        .float()
-                        .cpu()
-                        .numpy()
+                        crop_probability_from_fine_logits(logits)[0].float().cpu().numpy()
                     ),
                 )
             )
@@ -553,10 +538,7 @@ def main() -> None:
     parser.add_argument(
         "--checkpoint",
         type=Path,
-        default=Path(
-            "outputs/prithvi_4band_europe_replay/checkpoints/"
-            f"{MODEL_CHECKPOINT_NAME}"
-        ),
+        default=Path(f"outputs/prithvi_4band_europe_replay/checkpoints/{MODEL_CHECKPOINT_NAME}"),
     )
     parser.add_argument(
         "--output-directory",

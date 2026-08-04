@@ -394,7 +394,8 @@ def build_downlink_bundle(
             rgb_indices,
             out_shape=(3, preview_height, preview_width),
             resampling=Resampling.bilinear,
-        ).astype(np.float32)
+            out_dtype="float32",
+        )
         rgb /= float(reflectance_scale)
         balkan_channelwise_display = payload.get("sensor") == "balkan-1"
         Image.fromarray(_stretch_rgb(rgb, channelwise=balkan_channelwise_display)).save(

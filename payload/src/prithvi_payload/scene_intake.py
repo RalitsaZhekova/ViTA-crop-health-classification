@@ -126,14 +126,11 @@ def inspect_scene(
     acquired_at: str | None = None,
     scene_id: str | None = None,
     band_order: Sequence[str] | None = None,
-    allow_provisional_balkan_crop: bool = False,
     crop_calibration_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Inspect a scene without loading the full raster into memory."""
     if sensor not in SUPPORTED_SENSORS:
         raise ValueError(f"sensor must be one of {SUPPORTED_SENSORS}")
-    if allow_provisional_balkan_crop and sensor != "balkan-1":
-        raise ValueError("The provisional Balkan crop adapter is only valid for balkan-1")
     explicit_band_order = None if band_order is None else list(band_order)
     if explicit_band_order is not None and any(
         not isinstance(item, str) or not item.strip() for item in explicit_band_order
@@ -311,15 +308,6 @@ def inspect_scene(
             crop_status = "MISSING_REQUIRED_BANDS"
         elif crop_calibration is not None:
             crop_status = "READY"
-        elif allow_provisional_balkan_crop:
-            crop_status = "READY_PROVISIONAL"
-            warnings.extend(
-                [
-                    "Balkan-1 NIR transfer into the crop model is enabled for execution "
-                    "testing only",
-                    "Balkan-1 crop output is not accuracy or sensor-compatibility evidence",
-                ]
-            )
         else:
             crop_status = "BALKAN_1_SPECTRAL_HARMONISATION_REQUIRED"
 
@@ -374,20 +362,6 @@ def inspect_scene(
                 "validation": crop_calibration["validation"],
                 "reference": crop_calibration["reference"],
             }
-    elif sensor == "balkan-1" and allow_provisional_balkan_crop:
-        if native_crop_indices is not None:
-            crop_source_roles = list(crop_order)
-        elif crop_approximate_indices is not None:
-            crop_indices = crop_approximate_indices
-            crop_source_roles = ["BLUE", "GREEN", "RED", "NIR_BROAD"]
-        if crop_indices is not None:
-            spectral_adapter = {
-                "mode": "PROVISIONAL_BALKAN_1_NIR_TRANSFER",
-                "source_nir_role": crop_source_roles[-1],
-                "model_nir_role": "NIR_NARROW",
-                "validation_status": "EXECUTION_ONLY_UNVALIDATED",
-            }
-
     resolved_scene_id = _validate_scene_id(scene_id or raster_path.stem)
     return {
         "schema_version": SCHEMA_VERSION,
@@ -404,7 +378,6 @@ def inspect_scene(
             ),
             "pan_used_by_current_models": False,
             "band_order_source": band_order_source,
-            "provisional_crop_adapter_enabled": allow_provisional_balkan_crop,
             "crop_calibration_path": (
                 str(requested_calibration_path.resolve())
                 if sensor == "balkan-1" and requested_calibration_path.is_file()
@@ -453,11 +426,6 @@ def main() -> None:
         help="Explicit source-band labels, one per raster band",
     )
     parser.add_argument("--crop-calibration", type=Path)
-    parser.add_argument(
-        "--allow-provisional-balkan-crop",
-        action="store_true",
-        help="Enable unvalidated Balkan NIR transfer for execution testing only",
-    )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     report = inspect_scene(
@@ -466,7 +434,6 @@ def main() -> None:
         acquired_at=args.acquired_at,
         scene_id=args.scene_id,
         band_order=args.band_order,
-        allow_provisional_balkan_crop=args.allow_provisional_balkan_crop,
         crop_calibration_path=args.crop_calibration,
     )
     rendered = json.dumps(report, indent=2, sort_keys=True)

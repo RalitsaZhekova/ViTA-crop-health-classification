@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,6 +20,7 @@ from rasterio.enums import Resampling
 from rasterio.warp import reproject
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+GDAL_WARP_THREADS = max(1, min(4, os.cpu_count() or 1))
 sys.path.insert(0, str(REPOSITORY_ROOT / "payload" / "src"))
 
 from prithvi_payload.balkan_crop_calibration import (  # noqa: E402
@@ -95,7 +97,7 @@ def _read_pair(
     with rasterio.open(reference_path) as reference:
         if reference.crs is None:
             raise ValueError("Sentinel reference has no CRS")
-        reference_values = reference.read(reference_indices).astype(np.float32)
+        reference_values = reference.read(reference_indices, out_dtype="float32")
         reference_valid = np.isfinite(reference_values).all(axis=0)
         if reference.nodata is not None:
             reference_valid &= ~np.any(reference_values == reference.nodata, axis=0)
@@ -119,7 +121,7 @@ def _read_pair(
                     dst_nodata=np.nan,
                     resampling=Resampling.average,
                     init_dest_nodata=True,
-                    num_threads=2,
+                    num_threads=GDAL_WARP_THREADS,
                 )
     source_values *= np.float32(source_scale)
     valid = reference_valid & np.isfinite(source_values).all(axis=0)

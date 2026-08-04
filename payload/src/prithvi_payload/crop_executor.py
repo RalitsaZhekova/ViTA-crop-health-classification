@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import tempfile
 import time
 from contextlib import ExitStack
@@ -18,7 +19,7 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.colors import ListedColormap, to_rgba
 from matplotlib.figure import Figure
 from matplotlib.patches import Patch
-from prithvi_shared import CROP_CLASSIFICATION_THRESHOLD, NORMALIZATION_MEANS
+from prithvi_shared import NORMALIZATION_MEANS
 from rasterio.crs import CRS
 from rasterio.enums import Resampling
 from rasterio.warp import (
@@ -40,6 +41,7 @@ from prithvi_payload.inference import PayloadCropModel
 
 FLOAT_NODATA = -9999.0
 BYTE_NODATA = 255
+GDAL_WARP_THREADS = max(1, min(4, os.cpu_count() or 1))
 
 
 def _tile_blend_weights(tile_size: int, halo: int) -> np.ndarray:
@@ -103,7 +105,7 @@ def _read_padded(
         read_x_end - read_x_start,
         read_y_end - read_y_start,
     )
-    values = dataset.read(indices, window=window)
+    values = dataset.read(indices, window=window, out_dtype="float32")
     top = read_y_start - requested_y
     left = read_x_start - requested_x
     bottom = requested_y + tile_size - read_y_end
@@ -140,6 +142,9 @@ def _probability_profile(source: rasterio.DatasetReader) -> dict[str, Any]:
         dtype="float32",
         nodata=FLOAT_NODATA,
         compress="deflate",
+        predictor=3,
+        zlevel=1,
+        num_threads="ALL_CPUS",
         BIGTIFF="IF_SAFER",
     )
     return profile
@@ -152,6 +157,9 @@ def _binary_profile(source: rasterio.DatasetReader) -> dict[str, Any]:
         dtype="uint8",
         nodata=BYTE_NODATA,
         compress="deflate",
+        predictor=2,
+        zlevel=1,
+        num_threads="ALL_CPUS",
         BIGTIFF="IF_SAFER",
     )
     return profile
@@ -203,12 +211,20 @@ def _crop_legend(binary: np.ndarray) -> list[Patch]:
     ]
 
 
+def _crop_threshold(plan: dict[str, Any]) -> float:
+    value = plan.get("model", {}).get("crop_probability_threshold")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
+        raise ValueError("Crop plan has an invalid probability threshold")
+    return float(value)
+
+
 def _save_preview(
     path: Path,
     rgb: np.ndarray,
     unusable: np.ndarray,
     probability: np.ndarray,
     binary: np.ndarray,
+    crop_threshold: float,
 ) -> None:
     figure = Figure(figsize=(14, 11), constrained_layout=True)
     FigureCanvasAgg(figure)
@@ -242,7 +258,7 @@ def _save_preview(
         vmax=2.5,
         interpolation="nearest",
     )
-    axes[3].set_title(f"Exact crop mask at p ≥ {CROP_CLASSIFICATION_THRESHOLD:.2f}")
+    axes[3].set_title(f"Exact crop mask at p ≥ {crop_threshold:.2f}")
     for axis in axes:
         axis.axis("off")
     figure.legend(
@@ -298,6 +314,7 @@ def _execute_native_crop_stage(
     tile_size = int(plan["execution"]["tile_size"])
     halo = int(plan["execution"]["halo"])
     batch_size = int(plan["execution"]["batch_size"])
+    crop_threshold = _crop_threshold(plan)
     core_size = tile_size - 2 * halo
     if core_size <= 0:
         raise ValueError("Crop tile halo leaves no writable core")
@@ -453,7 +470,7 @@ def _execute_native_crop_stage(
                     x=x,
                     tile_size=tile_size,
                     halo=halo,
-                ).astype(np.float32, copy=False)
+                )
                 image = raw_tile * np.float32(multiplier)
                 invalid = ~np.isfinite(image).all(axis=0)
                 if source.nodata is not None:
@@ -494,7 +511,7 @@ def _execute_native_crop_stage(
                 out=np.zeros_like(sums),
                 where=has_prediction,
             )
-            binary = (probability >= CROP_CLASSIFICATION_THRESHOLD).astype(np.uint8)
+            binary = (probability >= crop_threshold).astype(np.uint8)
             confidence = np.maximum(probability, 1.0 - probability)
             usable = ~unusable & has_prediction
             usable_count += int(np.count_nonzero(usable))
@@ -547,6 +564,7 @@ def _execute_native_crop_stage(
         unusable_preview,
         probability_preview,
         binary_preview,
+        crop_threshold,
     )
 
     total_pixels = width * height
@@ -654,6 +672,9 @@ def _materialize_calibrated_analysis(
             dtype="float32",
             nodata=0.0,
             compress="deflate",
+            predictor=3,
+            zlevel=1,
+            num_threads="ALL_CPUS",
             tiled=True,
             blockxsize=256,
             blockysize=256,
@@ -672,7 +693,7 @@ def _materialize_calibrated_analysis(
                     dst_nodata=0.0,
                     resampling=Resampling.average,
                     init_dest_nodata=True,
-                    num_threads=2,
+                    num_threads=GDAL_WARP_THREADS,
                 )
                 destination.set_band_description(
                     output_index,
@@ -688,7 +709,13 @@ def _materialize_calibrated_analysis(
                 destination.write(values, window=window)
 
         mask_profile = analysis_profile.copy()
-        mask_profile.update(count=1, dtype="uint8", nodata=1, compress="deflate")
+        mask_profile.update(
+            count=1,
+            dtype="uint8",
+            nodata=1,
+            compress="deflate",
+            predictor=2,
+        )
         with rasterio.open(analysis_unusable_path, "w", **mask_profile) as destination:
             reproject(
                 source=rasterio.band(unusable, 1),
@@ -701,7 +728,7 @@ def _materialize_calibrated_analysis(
                 dst_nodata=1,
                 resampling=Resampling.max,
                 init_dest_nodata=True,
-                num_threads=2,
+                num_threads=GDAL_WARP_THREADS,
             )
             destination.set_band_description(1, "0 usable, non-zero unusable")
     return {
@@ -737,6 +764,7 @@ def _publish_calibrated_results(
 
     analysis_probability_path = Path(analysis_metadata["output_files"]["crop_probability"])
     indices = list(plan["input"]["source_band_indices_1_based"])
+    crop_threshold = _crop_threshold(plan)
     usable_count = 0
     crop_count = 0
     probability_total = 0.0
@@ -758,7 +786,7 @@ def _publish_calibrated_results(
                 dst_nodata=FLOAT_NODATA,
                 resampling=Resampling.bilinear,
                 init_dest_nodata=True,
-                num_threads=2,
+                num_threads=GDAL_WARP_THREADS,
             )
             output.set_band_description(1, "crop probability; -9999 unusable")
         with (
@@ -779,7 +807,7 @@ def _publish_calibrated_results(
                     & (probability >= 0.0)
                     & (probability <= 1.0)
                 )
-                binary = (probability >= CROP_CLASSIFICATION_THRESHOLD).astype(np.uint8)
+                binary = (probability >= crop_threshold).astype(np.uint8)
                 confidence = np.maximum(probability, 1.0 - probability)
                 usable_count += int(np.count_nonzero(usable))
                 crop_count += int(np.count_nonzero(binary[usable] == 1))
@@ -827,6 +855,7 @@ def _publish_calibrated_results(
         unusable_preview,
         probability_preview,
         binary_preview,
+        crop_threshold,
     )
 
     total_pixels = width * height

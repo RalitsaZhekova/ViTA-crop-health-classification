@@ -46,9 +46,7 @@ class CloudDetectionPipeline:
         config = load_config(config_path)
         weights_folder = Path(config["model"]["weights_folder"])
         if not weights_folder.is_absolute():
-            config["model"]["weights_folder"] = str(
-                (config_path.parent / weights_folder).resolve()
-            )
+            config["model"]["weights_folder"] = str((config_path.parent / weights_folder).resolve())
         return cls(config, backend)
 
     def predict_array(
@@ -107,13 +105,9 @@ class CloudDetectionPipeline:
         usable_percentage = 100.0 - unusable_percentage
 
         decision_cfg = self.cfg["decision"]
-        if unusable_percentage >= float(
-            decision_cfg["reject_min_unusable_percentage"]
-        ):
+        if unusable_percentage >= float(decision_cfg["reject_min_unusable_percentage"]):
             decision = "REJECT"
-        elif unusable_percentage > float(
-            decision_cfg["process_max_unusable_percentage"]
-        ):
+        elif unusable_percentage > float(decision_cfg["process_max_unusable_percentage"]):
             decision = "PROCESS_CLEAR_AREAS"
         else:
             decision = "PROCESS"

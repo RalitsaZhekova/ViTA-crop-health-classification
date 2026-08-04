@@ -49,16 +49,10 @@ def _mask_id(path: Path) -> str:
 
 
 def _read_ids(path: Path) -> list[str]:
-    ids = [
-        line.strip()
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
+    ids = [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
     duplicates = [item for item, count in Counter(ids).items() if count > 1]
     if duplicates:
-        raise RuntimeError(
-            f"{path} contains duplicate IDs; examples: {sorted(duplicates)[:5]}"
-        )
+        raise RuntimeError(f"{path} contains duplicate IDs; examples: {sorted(duplicates)[:5]}")
     return ids
 
 
@@ -93,9 +87,7 @@ def _check_band_descriptions(
         raise RuntimeError(f"Only some raster bands are described: {path}")
     normalized = tuple(_normalize_band_description(item) for item in present)
     if normalized != RASTER_BAND_ORDER:
-        raise RuntimeError(
-            f"Unexpected band descriptions/order in {path}: {normalized}"
-        )
+        raise RuntimeError(f"Unexpected band descriptions/order in {path}: {normalized}")
     return True
 
 
@@ -148,14 +140,8 @@ def _compute_array_stats(
         minimum = math.nan
         maximum = math.nan
 
-    label_tensor = torch.from_numpy(np.ascontiguousarray(label.astype(np.int64))).to(
-        device
-    )
-    counts = (
-        torch.bincount(label_tensor.flatten(), minlength=NUM_CLASSES + 1)
-        .cpu()
-        .numpy()
-    )
+    label_tensor = torch.from_numpy(np.ascontiguousarray(label.astype(np.int64))).to(device)
+    counts = torch.bincount(label_tensor.flatten(), minlength=NUM_CLASSES + 1).cpu().numpy()
     return invalid, minimum, maximum, counts
 
 
@@ -211,9 +197,7 @@ def _validate_split(
         mask_path = mask_paths[chip_id]
         with rasterio.open(image_path) as image_source:
             if image_source.count != len(RASTER_BAND_ORDER):
-                raise RuntimeError(
-                    f"Expected 18 bands, got {image_source.count}: {image_path}"
-                )
+                raise RuntimeError(f"Expected 18 bands, got {image_source.count}: {image_path}")
             if (image_source.height, image_source.width) != EXPECTED_IMAGE_SIZE:
                 raise RuntimeError(
                     f"Expected 224x224, got {image_source.height}x"
@@ -222,9 +206,7 @@ def _validate_split(
             if image_source.crs is None:
                 raise RuntimeError(f"Image has no CRS: {image_path}")
             if image_source.crs.to_string().upper() != EXPECTED_CRS:
-                raise RuntimeError(
-                    f"Expected {EXPECTED_CRS}, got {image_source.crs}: {image_path}"
-                )
+                raise RuntimeError(f"Expected {EXPECTED_CRS}, got {image_source.crs}: {image_path}")
             descriptions_present += int(
                 _check_band_descriptions(image_source.descriptions, image_path)
             )
@@ -258,9 +240,7 @@ def _validate_split(
             label = np.asarray(masked_label)
 
         if label.min() < 0 or label.max() > NUM_CLASSES:
-            raise RuntimeError(
-                f"Unexpected label range {label.min()}..{label.max()}: {mask_path}"
-            )
+            raise RuntimeError(f"Unexpected label range {label.min()}..{label.max()}: {mask_path}")
         invalid, minimum, maximum, counts = _compute_array_stats(
             image,
             label,
@@ -328,11 +308,7 @@ def _validate_metadata(
         & (parsed_dates[date_columns[1]] < parsed_dates[date_columns[2]])
     ).all():
         raise RuntimeError("Acquisition dates are not strictly chronological")
-    years = {
-        int(year)
-        for column in date_columns
-        for year in parsed_dates[column].dt.year.unique()
-    }
+    years = {int(year) for column in date_columns for year in parsed_dates[column].dt.year.unique()}
     if years != {2022}:
         raise RuntimeError(f"Expected only 2022 acquisition dates, got {sorted(years)}")
     return frame
@@ -362,10 +338,7 @@ def _find_cross_split_overlaps(
 def _named_label_counts(counts: np.ndarray) -> dict[str, int]:
     return {
         "No Data": int(counts[0]),
-        **{
-            name: int(counts[index + 1])
-            for index, name in enumerate(CLASS_NAMES)
-        },
+        **{name: int(counts[index + 1]) for index, name in enumerate(CLASS_NAMES)},
     }
 
 
@@ -429,9 +402,7 @@ def _validate_terratorch_batches(root: Path, batch_size: int) -> dict[str, Any]:
                 f"Expected {split_name} image shape {expected}, got {tuple(image.shape)}"
             )
         if tuple(mask.shape) != (batch_size, 224, 224):
-            raise RuntimeError(
-                f"Unexpected {split_name} mask shape: {tuple(mask.shape)}"
-            )
+            raise RuntimeError(f"Unexpected {split_name} mask shape: {tuple(mask.shape)}")
         if tuple(batch["temporal_coords"].shape) != (batch_size, 3, 2):
             raise RuntimeError(
                 f"Unexpected temporal metadata shape: {batch['temporal_coords'].shape}"
@@ -486,12 +457,10 @@ def validate_dataset(
         "training",
         device,
     )
-    validation, validation_geometries, validation_ids, validation_chip_counts = (
-        _validate_split(
+    validation, validation_geometries, validation_ids, validation_chip_counts = _validate_split(
         root,
         "validation",
         device,
-        )
     )
     if training_ids & validation_ids:
         raise RuntimeError("Official training and validation manifests share chip IDs")
@@ -505,17 +474,13 @@ def validate_dataset(
         )
     if training.chips + validation.chips != EXPECTED_TOTAL_CHIPS:
         raise RuntimeError(
-            f"Expected {EXPECTED_TOTAL_CHIPS} total chips, got "
-            f"{training.chips + validation.chips}"
+            f"Expected {EXPECTED_TOTAL_CHIPS} total chips, got {training.chips + validation.chips}"
         )
 
-    overlaps = _find_cross_split_overlaps(
-        training_geometries + validation_geometries
-    )
+    overlaps = _find_cross_split_overlaps(training_geometries + validation_geometries)
     if overlaps:
         raise RuntimeError(
-            "Spatial footprints overlap across official splits; examples: "
-            f"{overlaps[:5]}"
+            f"Spatial footprints overlap across official splits; examples: {overlaps[:5]}"
         )
 
     training_manifest = _read_ids(root / "training_data.txt")
@@ -526,10 +491,7 @@ def validate_dataset(
     )
     logical_ids = {
         "training": {training_manifest[index] for index in train_indices},
-        "validation": {
-            training_manifest[index]
-            for index in internal_validation_indices
-        },
+        "validation": {training_manifest[index] for index in internal_validation_indices},
         "test": validation_ids,
     }
     if (
@@ -542,13 +504,9 @@ def validate_dataset(
     logical_geometries = []
     internal_validation_ids = logical_ids["validation"]
     for geometry in training_geometries:
-        logical_split = (
-            "validation" if geometry[1] in internal_validation_ids else "training"
-        )
+        logical_split = "validation" if geometry[1] in internal_validation_ids else "training"
         logical_geometries.append((logical_split, *geometry[1:]))
-    logical_geometries.extend(
-        ("test", *geometry[1:]) for geometry in validation_geometries
-    )
+    logical_geometries.extend(("test", *geometry[1:]) for geometry in validation_geometries)
     logical_overlaps = _find_cross_split_overlaps(logical_geometries)
     if logical_overlaps:
         raise RuntimeError(
@@ -563,18 +521,12 @@ def validate_dataset(
         "validation": _named_label_counts(
             _sum_chip_counts(logical_ids["validation"], training_chip_counts)
         ),
-        "test": _named_label_counts(
-            _sum_chip_counts(logical_ids["test"], validation_chip_counts)
-        ),
+        "test": _named_label_counts(_sum_chip_counts(logical_ids["test"], validation_chip_counts)),
     }
     metadata = _validate_metadata(root, training_ids | validation_ids)
-    total_labels = np.asarray(training.label_counts) + np.asarray(
-        validation.label_counts
-    )
+    total_labels = np.asarray(training.label_counts) + np.asarray(validation.label_counts)
     missing_classes = [
-        CLASS_NAMES[index]
-        for index, count in enumerate(total_labels[1:])
-        if count == 0
+        CLASS_NAMES[index] for index, count in enumerate(total_labels[1:]) if count == 0
     ]
     if missing_classes:
         raise RuntimeError(f"Classes with no labelled pixels: {missing_classes}")

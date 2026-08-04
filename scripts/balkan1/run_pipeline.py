@@ -41,14 +41,6 @@ def main() -> None:
     parser.add_argument("--region-id")
     parser.add_argument("--max-crop-cloud-percentage", type=float, default=60.0)
     parser.add_argument("--condition-tile-size", type=int, default=512)
-    parser.add_argument(
-        "--allow-provisional-crop",
-        action="store_true",
-        help=(
-            "Explicitly transfer Balkan NIR into the narrow-NIR crop input for software "
-            "execution testing; this is not accuracy evidence"
-        ),
-    )
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
@@ -63,12 +55,11 @@ def main() -> None:
         if args.crop_calibration
         else input_path.with_name(f"{input_path.stem}.crop_calibration.json")
     )
-    if requested_crop and not calibration_path.is_file() and not args.allow_provisional_crop:
+    if requested_crop and not calibration_path.is_file():
         parser.error(
             "Balkan-1 crop classification requires a validated calibration sidecar. "
             "Create the adjacent *.crop_calibration.json file with calibrate_crop_input.py, "
-            "pass --crop-calibration, or use --allow-provisional-crop only for an "
-            "explicitly unvalidated software execution test."
+            "or pass --crop-calibration."
         )
     if requested_crop and not args.acquired_at:
         parser.error("--acquired-at is required for crop inference")
@@ -117,8 +108,6 @@ def main() -> None:
         command.extend(("--reflectance-scale", str(args.reflectance_scale)))
     if args.crop_calibration:
         command.extend(("--crop-calibration", str(calibration_path)))
-    if args.allow_provisional_crop:
-        command.append("--allow-provisional-balkan-crop")
     if args.overwrite:
         command.append("--overwrite")
 
@@ -147,11 +136,7 @@ def main() -> None:
         "scientific_status": (
             "validated_balkan_to_sentinel_crop_calibration"
             if crop_compatibility == "CALIBRATED_BALKAN_1_SENTINEL_EQUIVALENCE"
-            else (
-                "unvalidated_balkan_sensor_transfer"
-                if crop_compatibility == "PROVISIONAL_EXECUTION_ONLY"
-                else "provisional_cloud_transfer"
-            )
+            else "validated_model_input_contract"
         ),
         "cloud": result.get("summary", {}).get("cloud"),
         "crop": result.get("summary", {}).get("crop"),

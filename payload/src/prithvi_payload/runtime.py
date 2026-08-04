@@ -73,8 +73,7 @@ def _safe_attempt(
         "reason_rejected_for_demonstration": (
             None
             if accepted
-            else rejection_reason
-            or "payload cloud percentage outside requested target range"
+            else rejection_reason or "payload cloud percentage outside requested target range"
         ),
     }
 
@@ -107,9 +106,7 @@ class PayloadRuntime:
         self.crop_model = crop_model
         self.cloud_config_path = Path(cloud_config_path)
         self.cuda_required = (
-            os.environ.get("CUDA_REQUIRED", "1") == "1"
-            if cuda_required is None
-            else cuda_required
+            os.environ.get("CUDA_REQUIRED", "1") == "1" if cuda_required is None else cuda_required
         )
         self.initialized = False
         self._initialize_lock = threading.Lock()
@@ -215,9 +212,7 @@ class PayloadRuntime:
                 earth_engine_acquisition_seconds += time.perf_counter() - acquisition_started
                 last_acquisition_error = error
                 provider_reason = error.details.get("provider_reason")
-                reason_suffix = (
-                    f"; {provider_reason}" if isinstance(provider_reason, str) else ""
-                )
+                reason_suffix = f"; {provider_reason}" if isinstance(provider_reason, str) else ""
                 attempt = _safe_attempt(
                     candidate_scene_id=candidate.system_index,
                     acquired_at=candidate.acquired_at,
@@ -327,9 +322,7 @@ class PayloadRuntime:
             artifact_checksums = {
                 filename: _sha256(downlink_root / filename) for filename in sorted(entries)
             }
-            cloud_runtime = payload.get("stage_metadata", {}).get("cloud", {}).get(
-                "runtime", {}
-            )
+            cloud_runtime = payload.get("stage_metadata", {}).get("cloud", {}).get("runtime", {})
             completed_stages = completed.get("stage_metadata", {})
             crop_runtime = completed_stages.get("crop", {}).get("runtime", {})
             condition_runtime = completed_stages.get("condition", {}).get("runtime", {})
@@ -343,21 +336,11 @@ class PayloadRuntime:
                 "geotiff_validation_seconds": acquired.timing.get(
                     "geotiff_validation_seconds", 0.0
                 ),
-                "cloud_inference_seconds": _stage_seconds(
-                    cloud_runtime, "inference_seconds"
-                ),
-                "mask_processing_seconds": _stage_seconds(
-                    cloud_runtime, "mask_processing_seconds"
-                ),
-                "crop_inference_seconds": _stage_seconds(
-                    crop_runtime, "inference_seconds"
-                ),
-                "condition_calculation_seconds": _stage_seconds(
-                    condition_runtime, "seconds"
-                ),
-                "downlink_packaging_seconds": _stage_seconds(
-                    downlink_runtime, "seconds"
-                ),
+                "cloud_inference_seconds": _stage_seconds(cloud_runtime, "inference_seconds"),
+                "mask_processing_seconds": _stage_seconds(cloud_runtime, "mask_processing_seconds"),
+                "crop_inference_seconds": _stage_seconds(crop_runtime, "inference_seconds"),
+                "condition_calculation_seconds": _stage_seconds(condition_runtime, "seconds"),
+                "downlink_packaging_seconds": _stage_seconds(downlink_runtime, "seconds"),
             }
             timing["warm_science_seconds"] = sum(
                 timing[name]
@@ -369,9 +352,7 @@ class PayloadRuntime:
                     "downlink_packaging_seconds",
                 )
             )
-            timing["total_payload_processing_seconds"] = (
-                time.perf_counter() - payload_started
-            )
+            timing["total_payload_processing_seconds"] = time.perf_counter() - payload_started
             return {
                 "selected_scene": acquired.provider_scene_id,
                 "metadata_cloud_percentage": acquired.metadata_cloud_percent,

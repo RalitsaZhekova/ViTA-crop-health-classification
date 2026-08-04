@@ -74,9 +74,9 @@ def validate_pastis(
     if inspect_arrays:
         dates_by_id = {
             int(patch_id): _dates_count(dates)
-            for patch_id, dates in metadata[
-                ["ID_PATCH", "dates-S2"]
-            ].itertuples(index=False, name=None)
+            for patch_id, dates in metadata[["ID_PATCH", "dates-S2"]].itertuples(
+                index=False, name=None
+            )
         }
         for patch_id in sorted(required_ids):
             image = np.load(image_paths[patch_id], mmap_mode="r")
@@ -85,24 +85,18 @@ def validate_pastis(
                 or image.shape[1] != EXPECTED_BANDS
                 or image.shape[2:] != EXPECTED_SIZE
             ):
-                raise ValueError(
-                    f"Unexpected image shape for patch {patch_id}: {image.shape}"
-                )
+                raise ValueError(f"Unexpected image shape for patch {patch_id}: {image.shape}")
             if image.shape[0] != dates_by_id[patch_id]:
                 raise ValueError(
                     f"Image/date count mismatch for patch {patch_id}: "
                     f"{image.shape[0]} versus {dates_by_id[patch_id]}"
                 )
             if not np.issubdtype(image.dtype, np.integer):
-                raise ValueError(
-                    f"Unexpected image dtype for patch {patch_id}: {image.dtype}"
-                )
+                raise ValueError(f"Unexpected image dtype for patch {patch_id}: {image.dtype}")
 
             target = np.load(target_paths[patch_id], mmap_mode="r")
             if target.shape != (3, *EXPECTED_SIZE):
-                raise ValueError(
-                    f"Unexpected target shape for patch {patch_id}: {target.shape}"
-                )
+                raise ValueError(f"Unexpected target shape for patch {patch_id}: {target.shape}")
             semantic = np.asarray(target[0])
             if semantic.min() < 0 or semantic.max() > 19:
                 raise ValueError(f"Unknown semantic label in patch {patch_id}")
@@ -138,9 +132,7 @@ def main() -> None:
     parser.add_argument(
         "--report",
         type=Path,
-        default=Path(
-            "outputs/prithvi_4band_europe_replay/data_readiness.json"
-        ),
+        default=Path("outputs/prithvi_4band_europe_replay/data_readiness.json"),
     )
     parser.add_argument(
         "--skip-array-inspection",

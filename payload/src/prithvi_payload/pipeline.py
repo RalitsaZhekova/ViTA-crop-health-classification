@@ -44,7 +44,6 @@ def run_scene(
     acquired_at: str | None = None,
     scene_id: str | None = None,
     band_order: Sequence[str] | None = None,
-    allow_provisional_balkan_crop: bool = False,
     crop_calibration_path: str | Path | None = None,
     reflectance_scale: float | None = None,
     stop_after: str = "cloud",
@@ -75,7 +74,6 @@ def run_scene(
         acquired_at=acquired_at,
         scene_id=scene_id,
         band_order=band_order,
-        allow_provisional_balkan_crop=allow_provisional_balkan_crop,
         crop_calibration_path=crop_calibration_path,
     )
     resolved_scene_id = intake["scene_id"]
@@ -361,11 +359,6 @@ def main() -> None:
         nargs="+",
         help="Explicit source-band labels, one per raster band",
     )
-    parser.add_argument(
-        "--allow-provisional-balkan-crop",
-        action="store_true",
-        help="Enable unvalidated Balkan NIR transfer for execution testing only",
-    )
     parser.add_argument("--crop-calibration", type=Path)
     parser.add_argument("--reflectance-scale", type=float)
     parser.add_argument(
@@ -397,7 +390,6 @@ def main() -> None:
         acquired_at=args.acquired_at,
         scene_id=args.scene_id,
         band_order=args.band_order,
-        allow_provisional_balkan_crop=args.allow_provisional_balkan_crop,
         crop_calibration_path=args.crop_calibration,
         reflectance_scale=args.reflectance_scale,
         stop_after=args.stop_after,

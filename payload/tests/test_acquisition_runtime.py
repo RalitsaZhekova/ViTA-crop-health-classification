@@ -201,9 +201,7 @@ def test_payload_cloud_rejection_then_acceptance_reuses_selected_cloud_stage(
 
     assert provider.acquired_ids == ["scene-1", "scene-2"]
     assert len(cloud_calls) == 2
-    assert continuation_calls == [
-        tmp_path / "job/acquisition/scene-2/payload/result.json"
-    ]
+    assert continuation_calls == [tmp_path / "job/acquisition/scene-2/payload/result.json"]
     assert result["selected_scene"] == "scene-2"
     assert result["payload_cloud_percentage"] == 24.0
     assert result["artifacts"] == ["scene.json", "scene.webp", "condition.png"]
@@ -218,8 +216,7 @@ def test_payload_cloud_rejection_then_acceptance_reuses_selected_cloud_stage(
         "packaging",
     }
     assert any(
-        fields.get("safe_payload_measured_cloud_percentage") == 24.0
-        for _, fields in statuses
+        fields.get("safe_payload_measured_cloud_percentage") == 24.0 for _, fields in statuses
     )
     rejected_record = json.loads(
         (tmp_path / "job/acquisition/scene-1/acquisition_record.json").read_text()
@@ -295,9 +292,10 @@ def test_download_request_failure_stops_with_safe_provider_reason(tmp_path: Path
     assert caught.value.code == "EARTH_ENGINE_DOWNLOAD_REQUEST_FAILED"
     assert caught.value.details["provider_reason"] == "invalid_request"
     assert len(caught.value.details["candidate_attempts"]) == 1
-    assert "invalid_request" in caught.value.details["candidate_attempts"][0][
-        "reason_rejected_for_demonstration"
-    ]
+    assert (
+        "invalid_request"
+        in caught.value.details["candidate_attempts"][0]["reason_rejected_for_demonstration"]
+    )
 
 
 def test_all_download_failures_are_not_reported_as_cloud_range_rejection(
@@ -353,9 +351,7 @@ def test_persistent_runtime_initializes_and_warms_models_once(
         crop_loads += 1
         return crop_model
 
-    monkeypatch.setattr(
-        "prithvi_payload.runtime.CloudDetectionPipeline.from_yaml", load_cloud
-    )
+    monkeypatch.setattr("prithvi_payload.runtime.CloudDetectionPipeline.from_yaml", load_cloud)
     monkeypatch.setattr("prithvi_payload.runtime.PayloadCropModel.load", load_crop)
     runtime = PayloadRuntime(provider=provider, cuda_required=False)  # type: ignore[arg-type]
 

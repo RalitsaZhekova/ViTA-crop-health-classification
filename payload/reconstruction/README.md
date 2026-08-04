@@ -1,9 +1,10 @@
 # Balkan-1 reconstruction boundary
 
-This component will convert raw, separately delivered Balkan-1 bands into one
-co-registered scene. Real raw TIFFs, attitude/position logs, imager metadata and
-external L1ORT reference products are now available locally, but the reviewed
-reconstruction implementation has not yet been added to this component.
+The local workflow converts raw, separately delivered Balkan-1 bands into one
+co-registered minimum L1A scene with `scripts/balkan1/process_l1a.py`. It uses
+the delivered imagery and navigation evidence and does not invent calibration
+or orbit data. Production L1B/L1C still requires the missing mission
+calibration, terrain and atmospheric inputs documented below.
 
 ## Required input
 
@@ -31,8 +32,9 @@ The output is handed to radiometric calibration, cloud masking and tiled model
 inference. Health calculations do not run on the payload reconstruction stage.
 
 Local imagery stays under ignored `data/balkan1/` storage or at an external
-path. Preprocessing implementations are checked in under
-`scripts/balkan1/preprocessors/`, and the launchers in `scripts/balkan1/` pass a
-completed GeoTIFF to the existing payload pipeline without copying source
-imagery into `payload/`. Existing L1ORT products need an explicit reviewed band
-order because their GeoTIFF descriptions are empty.
+path. Production workflow code is checked in under `scripts/balkan1/`, while
+the optional `scripts/balkan1/preprocessors/` extension point is reserved for
+additional real mission-backed implementations. The launchers pass a completed
+GeoTIFF to the existing payload pipeline without copying source imagery into
+`payload/`. Existing L1ORT products need an explicit reviewed band order because
+their GeoTIFF descriptions are empty.

@@ -57,8 +57,9 @@ The payload intake validates:
 
 The current Sentinel adapter prefers B8A for OmniCloudMask and also uses B8A for
 the selected crop model, while retaining B08 fallback compatibility. Balkan-1
-uses its native NIR band for the cloud model; its crop transfer remains
-explicitly provisional.
+uses its native NIR band for the cloud model. Crop inference is enabled only
+through a source-bound calibration sidecar that passes the held-out
+Sentinel-equivalence checks.
 
 ### Cloud and unusable mask
 
@@ -98,11 +99,14 @@ is:
 
 ```text
 binary crop
-AND crop probability >= 0.645
+AND crop probability >= sensor-scoped health threshold
 AND usable
 AND finite source data
 AND calibrated reflectance range
 ```
+
+The crop plan records the threshold used: `0.645` for the validated Sentinel-2
+route and `0.30` for the calibrated Balkan-1 operational route.
 
 Calculated measurements include:
 

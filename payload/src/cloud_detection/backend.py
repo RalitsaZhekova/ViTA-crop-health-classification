@@ -19,12 +19,8 @@ OMNICLOUDMASK_MODEL_FILES = {
         "7f6e4202e17ee73efa4aba7abb5c34f4f90a9f7eb42480820714994dff2db660"
     ),
 }
-OMNICLOUDMASK_ENSEMBLE_SHA256 = (
-    "ab8f039866d6714b249f850779b9523b5f6afb55ee891077a71db0fdebc9b529"
-)
-DEFAULT_WEIGHTS_FOLDER = (
-    Path(__file__).resolve().parents[2] / "models" / "omnicloudmask"
-)
+OMNICLOUDMASK_ENSEMBLE_SHA256 = "ab8f039866d6714b249f850779b9523b5f6afb55ee891077a71db0fdebc9b529"
+DEFAULT_WEIGHTS_FOLDER = Path(__file__).resolve().parents[2] / "models" / "omnicloudmask"
 
 
 class BackendError(RuntimeError):
@@ -132,10 +128,7 @@ class OmniCloudMaskBackend:
         self.weights_folder = Path(weights_folder)
 
         actual_ensemble_sha256 = ensemble_sha256(self.weights_folder)
-        if (
-            expected_sha256 is not None
-            and actual_ensemble_sha256 != expected_sha256
-        ):
+        if expected_sha256 is not None and actual_ensemble_sha256 != expected_sha256:
             raise BackendError(
                 "OmniCloudMask ensemble checksum mismatch: "
                 f"expected {expected_sha256}, got {actual_ensemble_sha256}."
@@ -204,9 +197,7 @@ class OmniCloudMaskBackend:
         scores = np.asarray(scores, dtype=np.float32)
         expected_shape = (4, *tile.shape[1:])
         if scores.shape != expected_shape or not np.isfinite(scores).all():
-            raise BackendError(
-                f"Unexpected OmniCloudMask output shape or values: {scores.shape}."
-            )
+            raise BackendError(f"Unexpected OmniCloudMask output shape or values: {scores.shape}.")
         # OmniCloudMask clips each softmax channel to [0.001, 0.999], so its
         # exported channels sum to approximately 1.004. Re-normalize without
         # changing argmax classes to preserve this pipeline's score contract.

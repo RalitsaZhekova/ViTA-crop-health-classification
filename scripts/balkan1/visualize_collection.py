@@ -18,11 +18,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SOURCE = REPOSITORY_ROOT / "data" / "balkan1" / "preprocessed"
 DEFAULT_OUTPUT = (
-    REPOSITORY_ROOT
-    / "testing"
-    / "runs"
-    / "balkan1_collection_review"
-    / "collection_overview.png"
+    REPOSITORY_ROOT / "testing" / "runs" / "balkan1_collection_review" / "collection_overview.png"
 )
 
 
@@ -50,7 +46,8 @@ def _overview(path: Path, size: int) -> tuple[np.ndarray, np.ndarray, dict[str, 
             (1, 2, 3, 4),
             out_shape=(4, height, width),
             resampling=Resampling.average,
-        ).astype(np.float32)
+            out_dtype="float32",
+        )
         valid = np.all(np.isfinite(values), axis=0) & np.any(values != 0, axis=0)
         denominator = values[3] + values[2]
         ndvi = np.divide(
@@ -70,9 +67,7 @@ def _overview(path: Path, size: int) -> tuple[np.ndarray, np.ndarray, dict[str, 
             "bounds": list(source.bounds),
             "valid_pixels": valid_pixels,
             "vegetation_percentage": (
-                100 * int(np.count_nonzero(vegetation)) / valid_pixels
-                if valid_pixels
-                else 0.0
+                100 * int(np.count_nonzero(vegetation)) / valid_pixels if valid_pixels else 0.0
             ),
             "selection_note": (
                 "NDVI >= 0.25 is only a vegetation review aid; it is not a crop label"

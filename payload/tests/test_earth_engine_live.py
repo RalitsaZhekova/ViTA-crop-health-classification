@@ -78,20 +78,20 @@ def test_live_cloud_demonstration_uses_existing_payload_pipeline(tmp_path: Path)
         "condition.png",
     }
     manifest = json.loads((downlink / "scene.json").read_text(encoding="utf-8"))
-    assert manifest["source"]["earth_engine_metadata_cloud_percentage"] == (
-        result["metadata_cloud_percentage"]
+    assert (
+        manifest["source"]["earth_engine_metadata_cloud_percentage"]
+        == (result["metadata_cloud_percentage"])
     )
-    assert manifest["source"]["payload_measured_cloud_percentage"] == (
-        result["payload_cloud_percentage"]
+    assert (
+        manifest["source"]["payload_measured_cloud_percentage"]
+        == (result["payload_cloud_percentage"])
     )
 
     payload_root = downlink.parent
     unusable_path = next(payload_root.glob("cloud_masks/*_unusable.tif"))
     semantic_path = next(payload_root.glob("cloud_masks/*_semantic.tif"))
     crop_path = next(payload_root.glob("crop_maps/*_binary.tif"))
-    valid_crop_path = next(
-        payload_root.glob("condition_analysis/condition/*_valid_crop.tif")
-    )
+    valid_crop_path = next(payload_root.glob("condition_analysis/condition/*_valid_crop.tif"))
     with (
         rasterio.open(unusable_path) as unusable_source,
         rasterio.open(semantic_path) as semantic_source,

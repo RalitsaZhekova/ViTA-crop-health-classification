@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import tempfile
 import time
 from contextlib import ExitStack
@@ -22,6 +23,8 @@ from rasterio.enums import Resampling
 from rasterio.warp import calculate_default_transform, reproject, transform_bounds
 from rasterio.windows import Window as RasterWindow
 
+GDAL_WARP_THREADS = max(1, min(4, os.cpu_count() or 1))
+
 
 def _percentage(count: int, total: int) -> float:
     return 100.0 * count / total if total else 0.0
@@ -35,6 +38,8 @@ def _output_profile(source: dict[str, Any]) -> dict[str, Any]:
         dtype="uint8",
         nodata=255,
         compress="deflate",
+        zlevel=1,
+        num_threads="ALL_CPUS",
         BIGTIFF="IF_SAFER",
     )
     return profile
@@ -76,7 +81,7 @@ def _reproject_mask_to_source(
             dst_nodata=255,
             resampling=Resampling.nearest,
             init_dest_nodata=True,
-            num_threads=2,
+            num_threads=GDAL_WARP_THREADS,
         )
         destination.set_band_description(1, description)
 
@@ -194,9 +199,7 @@ def execute_cloud_stage(
         analysis_unusable_path = unusable_path
         analysis_invalid_path = invalid_path
         if plan["sensor"] == "balkan-1":
-            target_resolution = float(
-                config["input"].get("balkan_target_resolution_m", 10.0)
-            )
+            target_resolution = float(config["input"].get("balkan_target_resolution_m", 10.0))
             if target_resolution <= 0:
                 raise ValueError("Balkan cloud target resolution must be positive")
             target_crs = _utm_crs(source.crs, source.bounds)
@@ -242,16 +245,14 @@ def execute_cloud_stage(
                         dst_crs=target_crs,
                         dst_nodata=nodata_value,
                         resampling=Resampling.bilinear,
-                        num_threads=2,
+                        num_threads=GDAL_WARP_THREADS,
                         init_dest_nodata=True,
                     )
                     analysis_output.set_band_description(
                         output_index,
                         plan["input"]["logical_band_order"][output_index - 1],
                     )
-            analysis_grid_preparation_seconds = (
-                time.perf_counter() - preparation_started
-            )
+            analysis_grid_preparation_seconds = time.perf_counter() - preparation_started
             analysis_source = resources.enter_context(rasterio.open(analysis_input_path))
             analysis_indices = [1, 2, 3, 4]
             analysis_semantic_path = temporary_directory / "semantic.tif"
@@ -286,9 +287,7 @@ def execute_cloud_stage(
 
             use_full_analysis_grid = plan["sensor"] == "balkan-1"
             if use_full_analysis_grid:
-                maximum_pixels = int(
-                    config["input"].get("balkan_max_analysis_pixels", 25_000_000)
-                )
+                maximum_pixels = int(config["input"].get("balkan_max_analysis_pixels", 25_000_000))
                 if analysis_width * analysis_height > maximum_pixels:
                     raise ValueError(
                         "Balkan 10 m cloud-analysis grid exceeds the reviewed "
@@ -312,8 +311,7 @@ def execute_cloud_stage(
                 inference_seconds += time.perf_counter() - inference_started
                 if prediction.scores.shape != (4, analysis_height, analysis_width):
                     raise ValueError(
-                        "Cloud backend returned unexpected score shape: "
-                        f"{prediction.scores.shape}"
+                        f"Cloud backend returned unexpected score shape: {prediction.scores.shape}"
                     )
                 score_kind = prediction.score_kind
                 semantic = prediction.scores.argmax(axis=0).astype(np.uint8)
@@ -359,9 +357,7 @@ def execute_cloud_stage(
                             image[:, invalid] = 0.0
                         _synchronize_cuda(backend)
                         inference_started = time.perf_counter()
-                        prediction = backend.predict(
-                            image.astype(np.float32, copy=False)
-                        )
+                        prediction = backend.predict(image.astype(np.float32, copy=False))
                         _synchronize_cuda(backend)
                         inference_seconds += time.perf_counter() - inference_started
                         if prediction.scores.shape != (4, tile_size, tile_size):
@@ -374,9 +370,7 @@ def execute_cloud_stage(
                         elif score_kind != prediction.score_kind:
                             raise ValueError("Cloud backend returned mixed score kinds")
 
-                        semantic_tile = prediction.scores.argmax(axis=0).astype(
-                            np.uint8
-                        )
+                        semantic_tile = prediction.scores.argmax(axis=0).astype(np.uint8)
                         mask_started = time.perf_counter()
                         unusable_tile = postprocess(
                             semantic_tile,
@@ -406,9 +400,7 @@ def execute_cloud_stage(
                         unusable_output.write(
                             unusable_core.astype(np.uint8), 1, window=output_window
                         )
-                        invalid_output.write(
-                            invalid_core.astype(np.uint8), 1, window=output_window
-                        )
+                        invalid_output.write(invalid_core.astype(np.uint8), 1, window=output_window)
                         tile_count += 1
 
         if analysis_grid_mode != "source_grid":
@@ -441,18 +433,12 @@ def execute_cloud_stage(
         name: float(class_counts[class_index] / valid_pixels) if valid_pixels else 0.0
         for name, class_index in classes.items()
     }
-    class_percentages = {
-        name: 100.0 * fraction for name, fraction in class_fractions.items()
-    }
+    class_percentages = {name: 100.0 * fraction for name, fraction in class_fractions.items()}
     unusable_percentage = _percentage(unusable_count, analysis_total_pixels)
     decision_config = config["decision"]
-    if unusable_percentage >= float(
-        decision_config["reject_min_unusable_percentage"]
-    ):
+    if unusable_percentage >= float(decision_config["reject_min_unusable_percentage"]):
         decision = "REJECT"
-    elif unusable_percentage > float(
-        decision_config["process_max_unusable_percentage"]
-    ):
+    elif unusable_percentage > float(decision_config["process_max_unusable_percentage"]):
         decision = "PROCESS_CLEAR_AREAS"
     else:
         decision = "PROCESS"

@@ -57,9 +57,7 @@ def test_ground_client_uploads_exact_three_file_bundle(tmp_path: Path) -> None:
 def test_ground_client_rejects_extra_file(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path / "bundle")
     (bundle / "debug.tif").write_bytes(b"not routine downlink")
-    client = GroundClient(
-        "http://127.0.0.1:8000", session=_Session(_Response(201, {"scene": {}}))
-    )
+    client = GroundClient("http://127.0.0.1:8000", session=_Session(_Response(201, {"scene": {}})))
     with pytest.raises(GroundClientError, match="exactly"):
         client.ingest_bundle(bundle)
 

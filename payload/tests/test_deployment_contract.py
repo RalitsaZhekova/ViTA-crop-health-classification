@@ -68,7 +68,7 @@ def test_payload_image_has_fixed_boundary_and_no_credentials() -> None:
     assert "prithvi_payload.container_preflight --models-only" in dockerfile
     assert "vita-stack-guard.py compare" in dockerfile
     assert "--constraint /tmp/vita-payload-constraints.txt" in dockerfile
-    assert 'ARG VITA_TARGET_PLATFORM' in dockerfile
+    assert "ARG VITA_TARGET_PLATFORM" in dockerfile
     for checksum in MODEL_HASHES:
         assert checksum in dockerfile
 

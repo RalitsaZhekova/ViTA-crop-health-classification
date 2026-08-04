@@ -126,9 +126,7 @@ def _metadata_from_extraction_log(path: Path) -> dict[str, object]:
     scene.update(line_tables)
     time_sync = [
         {"ImagerTime": int(match.group(1)), "PPS": True}
-        for match in re.finditer(
-            r"\{'ImagerTime':\s*(\d+),\s*'PPS':\s*True\}", text
-        )
+        for match in re.finditer(r"\{'ImagerTime':\s*(\d+),\s*'PPS':\s*True\}", text)
     ]
     utc_anchors = [
         {
@@ -142,21 +140,15 @@ def _metadata_from_extraction_log(path: Path) -> dict[str, object]:
     ]
     metadata: dict[str, object] = {
         "PlatformID": _extract_integer(text, r"PlatformID\s*=\s*(\d+)", "PlatformID"),
-        "InstrumentID": _extract_integer(
-            text, r"InstrumentID\s*=\s*(\d+)", "InstrumentID"
-        ),
+        "InstrumentID": _extract_integer(text, r"InstrumentID\s*=\s*(\d+)", "InstrumentID"),
         "PacketVersion": _extract_integer_list(text, "PacketVersion"),
         "SessionClosed": bool(re.search(r"Closed\s*=\s*True|SessionEnd", text)),
         "ImagerConfiguration": {
-            "LinePeriod": _extract_integer(
-                text, r"LinePeriod\s*=\s*([\d,]+)", "LinePeriod"
-            ),
+            "LinePeriod": _extract_integer(text, r"LinePeriod\s*=\s*([\d,]+)", "LinePeriod"),
             "SpectralBands": _extract_integer(
                 text, r"SpectralBands\s*=\s*([\d,]+)", "SpectralBands"
             ),
-            "ExposureTime": _extract_integer(
-                text, r"ExposureTime\s*=\s*([\d,]+)", "ExposureTime"
-            ),
+            "ExposureTime": _extract_integer(text, r"ExposureTime\s*=\s*([\d,]+)", "ExposureTime"),
             "BandSetup": _extract_integer_list(text, "BandSetup"),
             "BandStartRow": _extract_integer_list(text, "BandStartRow"),
             "BandCWL": _extract_integer_list(text, "BandCWL"),
@@ -164,9 +156,7 @@ def _metadata_from_extraction_log(path: Path) -> dict[str, object]:
         "SensorConfiguration": {
             "PGAGain": _extract_integer(text, r"PGAGain\s*=\s*(-?\d+)", "PGAGain"),
             "ADCGain": _extract_integer(text, r"ADCGain\s*=\s*(-?\d+)", "ADCGain"),
-            "DarkOffset": _extract_integer(
-                text, r"DarkOffset\s*=\s*(-?\d+)", "DarkOffset"
-            ),
+            "DarkOffset": _extract_integer(text, r"DarkOffset\s*=\s*(-?\d+)", "DarkOffset"),
         },
         "Scenes": [scene],
         "Timesync": time_sync,
@@ -346,9 +336,7 @@ def _phase_shift(
     moving: np.ndarray,
     target: np.ndarray,
 ) -> tuple[np.ndarray, float]:
-    window = cv2.createHanningWindow(
-        (moving.shape[1], moving.shape[0]), cv2.CV_32F
-    )
+    window = cv2.createHanningWindow((moving.shape[1], moving.shape[0]), cv2.CV_32F)
     shift, response = cv2.phaseCorrelate(
         _phase_feature(moving),
         _phase_feature(target),
@@ -384,9 +372,7 @@ def _phase_bridge_registration(
         [[1, 0, bridge_shift[0]], [0, 1, bridge_shift[1]], [0, 0, 1]],
         dtype=np.float64,
     )
-    preview_matrix = (np.vstack([bridge_to_reference, [0, 0, 1]]) @ source_to_bridge)[
-        :2
-    ]
+    preview_matrix = (np.vstack([bridge_to_reference, [0, 0, 1]]) @ source_to_bridge)[:2]
     warped = cv2.warpAffine(
         image,
         preview_matrix,
@@ -395,9 +381,7 @@ def _phase_bridge_registration(
         borderMode=cv2.BORDER_REFLECT,
     )
     residual_shift, residual_response = _phase_shift(warped, reference)
-    residual_applied = bool(
-        residual_response >= 0.05 and np.max(np.abs(residual_shift)) <= 4
-    )
+    residual_applied = bool(residual_response >= 0.05 and np.max(np.abs(residual_shift)) <= 4)
     if residual_applied:
         preview_matrix[:, 2] += residual_shift
     return preview_matrix, {
@@ -450,16 +434,12 @@ def _estimate_registration(
         pairs = matcher.knnMatch(descriptors, reference_descriptors, k=2)
         good = [first for first, second in pairs if first.distance < 0.72 * second.distance]
         source_points = np.float32([keypoints[match.queryIdx].pt for match in good])
-        target_points = np.float32(
-            [reference_keypoints[match.trainIdx].pt for match in good]
-        )
+        target_points = np.float32([reference_keypoints[match.trainIdx].pt for match in good])
 
         if len(good) < 100:
             pan_preview_matrix = preview_matrices[4]
             if band_index != 3 or pan_preview_matrix is None:
-                raise RuntimeError(
-                    f"Only {len(good)} cross-band matches found for {band_name}"
-                )
+                raise RuntimeError(f"Only {len(good)} cross-band matches found for {band_name}")
             preview_matrix, phase_bridge = _phase_bridge_registration(
                 image,
                 prepared[4],
@@ -492,12 +472,8 @@ def _estimate_registration(
                         [(image.shape[1] - 1) / 2, (image.shape[0] - 1) / 2],
                     ]
                 )
-                weak_control = cv2.transform(control_points[:, None, :], weak_matrix)[
-                    :, 0, :
-                ]
-                phase_control = cv2.transform(
-                    control_points[:, None, :], preview_matrix
-                )[:, 0, :]
+                weak_control = cv2.transform(control_points[:, None, :], weak_matrix)[:, 0, :]
+                phase_control = cv2.transform(control_points[:, None, :], preview_matrix)[:, 0, :]
                 maximum_model_disagreement = float(
                     np.max(np.linalg.norm(weak_control - phase_control, axis=1))
                 )
@@ -547,9 +523,7 @@ def _estimate_registration(
             continue
 
         source_points = np.float32([keypoints[match.queryIdx].pt for match in good])
-        target_points = np.float32(
-            [reference_keypoints[match.trainIdx].pt for match in good]
-        )
+        target_points = np.float32([reference_keypoints[match.trainIdx].pt for match in good])
         preview_matrix, inlier_mask = cv2.estimateAffinePartial2D(
             source_points,
             target_points,
@@ -578,17 +552,15 @@ def _estimate_registration(
             borderMode=cv2.BORDER_REFLECT,
         )
         phase_shift_array, phase_response = _phase_shift(warped, reference)
-        predicted_before_phase = cv2.transform(
-            source_points[inliers, None, :], preview_matrix
-        )[:, 0, :]
+        predicted_before_phase = cv2.transform(source_points[inliers, None, :], preview_matrix)[
+            :, 0, :
+        ]
         residual_before_phase = target_points[inliers] - predicted_before_phase
         preview_rmse_before_phase = float(
             np.sqrt(np.mean(np.sum(residual_before_phase**2, axis=1)))
         )
         candidate_residual = residual_before_phase - phase_shift_array
-        preview_rmse_after_phase = float(
-            np.sqrt(np.mean(np.sum(candidate_residual**2, axis=1)))
-        )
+        preview_rmse_after_phase = float(np.sqrt(np.mean(np.sum(candidate_residual**2, axis=1))))
         phase_applied = bool(
             phase_response >= 0.05
             and np.max(np.abs(phase_shift_array)) <= 8
@@ -652,9 +624,7 @@ def _estimate_dark_reference(
     """Measure per-line dark bias from the real left/right calibration pixels."""
 
     if constant_override_dn is not None:
-        values = np.full(
-            (source.count, source.height), constant_override_dn, dtype=np.float32
-        )
+        values = np.full((source.count, source.height), constant_override_dn, dtype=np.float32)
         diagnostics: list[dict[str, float | str]] = [
             {
                 "band": band_name,
@@ -766,18 +736,14 @@ def _column_corrections(
     corrections: list[np.ndarray] = []
     diagnostics: list[dict[str, float]] = []
     detector_x = border + np.arange(valid_width, dtype=np.float32)
-    sampled_y = (
-        (np.arange(sample_rows, dtype=np.float32) + 0.5)
-        * (source.height / sample_rows)
-        - 0.5
-    )
+    sampled_y = (np.arange(sample_rows, dtype=np.float32) + 0.5) * (
+        source.height / sample_rows
+    ) - 0.5
     for band_index, band in enumerate(sampled):
         dark = _dark_surface(dark_reference, band_index, detector_x, sampled_y)
         corrected = np.maximum(band - dark, 0)
         profile = np.median(corrected, axis=0)
-        smooth = cv2.GaussianBlur(
-            profile.reshape(1, -1), (0, 0), sigmaX=64, sigmaY=0
-        ).reshape(-1)
+        smooth = cv2.GaussianBlur(profile.reshape(1, -1), (0, 0), sigmaX=64, sigmaY=0).reshape(-1)
         high_frequency = profile - smooth
         limit = float(np.percentile(np.abs(high_frequency), 99.5))
         high_frequency = np.clip(high_frequency, -limit, limit).astype(np.float32)
@@ -912,15 +878,13 @@ def _remap_strip_cuda(
             .unsqueeze(0)
             .unsqueeze(0)
         )
-        left = torch.from_numpy(
-            dark_reference.left_dn[band_number - 1, y_min:y_max]
-        ).to(device=device)
-        right = torch.from_numpy(
-            dark_reference.right_dn[band_number - 1, y_min:y_max]
-        ).to(device=device)
-        detector_x = border + torch.arange(
-            x_min, x_max, device=device, dtype=torch.float32
+        left = torch.from_numpy(dark_reference.left_dn[band_number - 1, y_min:y_max]).to(
+            device=device
         )
+        right = torch.from_numpy(dark_reference.right_dn[band_number - 1, y_min:y_max]).to(
+            device=device
+        )
+        detector_x = border + torch.arange(x_min, x_max, device=device, dtype=torch.float32)
         alpha = (detector_x - dark_reference.left_detector_x) / (
             dark_reference.right_detector_x - dark_reference.left_detector_x
         )
@@ -1283,8 +1247,7 @@ def main() -> None:
     )
     processing_log = data_root / "preprocessed" / f"log_{args.scene_id}.txt"
     output = (
-        args.output
-        or data_root / "derived" / "l1a" / f"{args.scene_id}_L1A_MIN.tif"
+        args.output or data_root / "derived" / "l1a" / f"{args.scene_id}_L1A_MIN.tif"
     ).resolve()
     for required in (scene_dir, raw_path, metadata_path):
         if not required.exists():
@@ -1346,9 +1309,7 @@ def main() -> None:
                 calibration_border,
                 args.black_level_dn,
             )
-            phase_seconds["dark_reference_estimation"] = (
-                time.perf_counter() - phase_started
-            )
+            phase_seconds["dark_reference_estimation"] = time.perf_counter() - phase_started
             phase_started = time.perf_counter()
             preview, scale_x, scale_y = _registration_preview(
                 source, border, args.registration_downsample
@@ -1359,9 +1320,7 @@ def main() -> None:
             corrections, correction_diagnostics = _column_corrections(
                 source, border, dark_reference
             )
-            phase_seconds["column_profile_estimation"] = (
-                time.perf_counter() - phase_started
-            )
+            phase_seconds["column_profile_estimation"] = time.perf_counter() - phase_started
             if args.device == "cuda":
                 import torch
 
@@ -1389,9 +1348,7 @@ def main() -> None:
         preview_path,
         args.preview_gamma,
     )
-    post_write_registration = _post_write_registration(
-        output, args.registration_downsample
-    )
+    post_write_registration = _post_write_registration(output, args.registration_downsample)
     qa_seconds = time.perf_counter() - qa_started
     l1a_manifest = {
         "schema_version": 2,

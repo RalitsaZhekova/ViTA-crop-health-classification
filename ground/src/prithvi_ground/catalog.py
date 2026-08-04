@@ -159,9 +159,7 @@ def _validate_source(value: Any) -> None:
         raise BundleValidationError("Earth Engine source provenance contains unknown fields")
     if source.get("collection") != "COPERNICUS/S2_SR_HARMONIZED":
         raise BundleValidationError("source.collection is unsupported")
-    if not isinstance(source.get("provider_scene_id"), str) or not source[
-        "provider_scene_id"
-    ]:
+    if not isinstance(source.get("provider_scene_id"), str) or not source["provider_scene_id"]:
         raise BundleValidationError("source.provider_scene_id is invalid")
     if source.get("product_id") is not None and not isinstance(source["product_id"], str):
         raise BundleValidationError("source.product_id is invalid")
@@ -180,10 +178,7 @@ def _validate_source(value: Any) -> None:
     if (
         not isinstance(transform, list)
         or len(transform) != 6
-        or any(
-            not isinstance(item, (int, float)) or not math.isfinite(item)
-            for item in transform
-        )
+        or any(not isinstance(item, (int, float)) or not math.isfinite(item) for item in transform)
     ):
         raise BundleValidationError("source.source_transform is invalid")
     if source.get("source_scale") != 10_000:

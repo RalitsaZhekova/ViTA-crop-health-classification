@@ -20,8 +20,7 @@ def binary_logits_from_fine_logits(logits: Tensor) -> Tensor:
     required_classes = max(*PROJECT_NON_CROP_CLASSES, *PROJECT_CROP_CLASSES) + 1
     if logits.shape[1] < required_classes:
         raise ValueError(
-            f"Expected at least {required_classes} fine-grained classes, "
-            f"got {logits.shape[1]}"
+            f"Expected at least {required_classes} fine-grained classes, got {logits.shape[1]}"
         )
     return torch.stack(
         (
@@ -45,9 +44,7 @@ def binary_predictions_from_fine_logits(
     """Return 1 for crop and 0 for non-crop at a calibrated threshold."""
     if not 0 < crop_threshold < 1:
         raise ValueError("crop_threshold must be strictly between 0 and 1")
-    return (
-        crop_probability_from_fine_logits(logits) >= crop_threshold
-    ).to(dtype=torch.long)
+    return (crop_probability_from_fine_logits(logits) >= crop_threshold).to(dtype=torch.long)
 
 
 def binary_targets_from_fine_targets(

@@ -151,9 +151,12 @@ by `scripts/balkan1/calibrate_crop_input.py`. The sidecar is tied to the source
 SHA-256, contains monotonic band-response curves and must pass held-out spatial
 correlation gates. At inference, only a temporary 10 m calibrated raster is
 sent to Prithvi; outputs are returned to the original full-resolution grid.
-Sentinel reference imagery is not a runtime or payload dependency. The existing
-`--allow-provisional-balkan-crop` path remains available only for explicitly
-unvalidated software execution tests.
+Sentinel reference imagery is not a runtime or payload dependency. If the
+source-bound sidecar is absent or fails validation, the crop stage fails closed.
+The crop plan records sensor-scoped decision thresholds: Sentinel-2 retains the
+held-out internal-validation thresholds (`0.49` classification, `0.645` health),
+while the calibrated Balkan-1 route uses its current operational `0.30` values.
+This separation prevents Balkan tuning from changing Sentinel results.
 
 Run only from an explicit command:
 

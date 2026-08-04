@@ -15,10 +15,7 @@ def postprocess(
     if semantic.ndim != 2 or invalid.shape != semantic.shape:
         raise ValueError("Semantic and invalid masks must have matching two-dimensional shapes.")
 
-    unusable = (
-        (semantic == int(classes["thick_cloud"]))
-        | (semantic == int(classes["thin_cloud"]))
-    )
+    unusable = (semantic == int(classes["thick_cloud"])) | (semantic == int(classes["thin_cloud"]))
     if bool(config["include_shadow_as_unusable"]):
         unusable |= semantic == int(classes["cloud_shadow"])
 

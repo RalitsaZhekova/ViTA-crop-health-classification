@@ -53,10 +53,7 @@ def _safe_class_labels(class_names: list[str] | None, num_classes: int) -> list[
     names = class_names or list(CLASS_NAMES)
     if len(names) != num_classes:
         raise ValueError(f"Expected {num_classes} class names, got {len(names)}")
-    return [
-        name.lower().replace(" / ", "_").replace(" ", "_").replace("/", "_")
-        for name in names
-    ]
+    return [name.lower().replace(" / ", "_").replace(" ", "_").replace("/", "_") for name in names]
 
 
 def _adapt_three_frame_state_dict(
@@ -249,9 +246,7 @@ class CropSegmentationTask(SemanticSegmentationTask):
         adapter: str | None = None,
     ) -> None:
         if not checkpoint_path.is_file():
-            raise FileNotFoundError(
-                f"Initial checkpoint not found: {checkpoint_path}"
-            )
+            raise FileNotFoundError(f"Initial checkpoint not found: {checkpoint_path}")
         checkpoint = torch.load(
             checkpoint_path,
             map_location="cpu",
@@ -574,9 +569,7 @@ class CropSegmentationTask(SemanticSegmentationTask):
                 key: float(value.detach().cpu())
                 for key, value in self.test_metrics[index].compute().items()
             }
-            metrics["test/loss"] = float(
-                self.test_loss_metrics[index].compute().detach().cpu()
-            )
+            metrics["test/loss"] = float(self.test_loss_metrics[index].compute().detach().cpu())
             confusion = self.test_confusion_matrices[index].compute().detach().cpu()
             support = confusion.sum(dim=1)
             for class_index, class_name in enumerate(CLASS_NAMES):

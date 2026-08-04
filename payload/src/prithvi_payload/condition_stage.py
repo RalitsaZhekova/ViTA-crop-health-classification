@@ -16,6 +16,7 @@ from typing import Any
 
 import numpy as np
 import rasterio
+from prithvi_shared import HEALTH_ANALYSIS_CROP_THRESHOLD
 from prithvi_shared.condition import (
     CONDITION_ALGORITHM_VERSION,
     SCORED_INDEX_NAMES,
@@ -234,11 +235,13 @@ def _raster_profile(
         nodata=nodata,
         compress="deflate",
         predictor=3 if dtype == "float32" else 2,
+        zlevel=1,
+        num_threads="ALL_CPUS",
         BIGTIFF="IF_SAFER",
     )
     if source.width >= 16 and source.height >= 16:
-        block_width = min(256, (source.width // 16) * 16)
-        block_height = min(256, (source.height // 16) * 16)
+        block_width = min(512, (source.width // 16) * 16)
+        block_height = min(512, (source.height // 16) * 16)
         profile.update(
             tiled=True,
             blockxsize=block_width,
@@ -362,7 +365,8 @@ def _save_quicklook(
             rgb_indices,
             out_shape=(3, height, width),
             resampling=Resampling.bilinear,
-        ).astype(np.float32)
+            out_dtype="float32",
+        )
         rgb /= reflectance_scale
     with (
         rasterio.open(condition_path) as condition_source,
@@ -483,6 +487,17 @@ def run_payload_condition(
         raise ValueError("Payload result is missing intake or cloud-plan metadata")
     if not isinstance(crop_plan, dict):
         raise ValueError("Payload crop-plan metadata is invalid")
+    health_crop_threshold = crop_plan.get("model", {}).get(
+        "health_analysis_crop_threshold",
+        HEALTH_ANALYSIS_CROP_THRESHOLD,
+    )
+    if (
+        isinstance(health_crop_threshold, bool)
+        or not isinstance(health_crop_threshold, (int, float))
+        or not 0 <= health_crop_threshold <= 1
+    ):
+        raise ValueError("Payload crop plan has an invalid health-analysis threshold")
+    health_crop_threshold = float(health_crop_threshold)
     acquired_at = intake.get("acquired_at")
     if not isinstance(acquired_at, str) or not acquired_at:
         raise ValueError("Payload result is missing acquisition time")
@@ -569,6 +584,7 @@ def run_payload_condition(
     candidate_crop_pixels = 0
     window_count = 0
 
+    first_pass_started = time.perf_counter()
     with ExitStack() as stack:
         source = stack.enter_context(rasterio.open(source_path))
         unusable_source = stack.enter_context(rasterio.open(unusable_path))
@@ -603,7 +619,11 @@ def run_payload_condition(
         windows = _iter_windows(source.width, source.height, tile_size)
         for window in windows:
             pixel_ids = _window_pixel_ids(window, source.width)
-            raw_bands = source.read(band_indices, window=window).astype(np.float32)
+            raw_bands = source.read(
+                band_indices,
+                window=window,
+                out_dtype="float32",
+            )
             if calibration is not None:
                 model_values = apply_calibration(
                     raw_bands * np.float32(calibration["source_scale_to_model_units"]),
@@ -618,12 +638,17 @@ def run_payload_condition(
             )
             crop_binary = crop_source.read(1, window=window)
             unusable = unusable_source.read(1, window=window)
-            crop_probability = probability_source.read(1, window=window).astype(np.float32)
+            crop_probability = probability_source.read(
+                1,
+                window=window,
+                out_dtype="float32",
+            )
             candidate_crop_pixels += int(np.count_nonzero((crop_binary == 1) & (unusable == 0)))
             requested_mask = build_analysis_mask(
                 crop_binary,
                 unusable,
                 crop_probability=crop_probability,
+                minimum_crop_probability=health_crop_threshold,
                 nodata=~source_valid,
             )
             health_layers = calculate_health_layers(
@@ -662,7 +687,9 @@ def run_payload_condition(
         transform = list(source.transform)[:6]
         bounds = [float(value) for value in source.bounds]
         resolution = [abs(float(source.res[0])), abs(float(source.res[1]))]
+    first_pass_seconds = time.perf_counter() - first_pass_started
 
+    robust_statistics_started = time.perf_counter()
     total_pixels = width * height
     condition_summary = condition_accumulator.summary()
     analysis_pixels = int(condition_summary["valid_pixels"])
@@ -680,16 +707,22 @@ def run_payload_condition(
         with rasterio.open(condition_score_path) as condition_source:
             for window in _iter_windows(width, height, tile_size):
                 pixel_ids = _window_pixel_ids(window, width)
-                score = condition_source.read(1, window=window).astype(np.float32)
+                score = condition_source.read(
+                    1,
+                    window=window,
+                    out_dtype="float32",
+                )
                 score[score == FLOAT_NODATA] = np.nan
                 deviation_accumulator.update(
                     np.abs(score - float(median_score)),
                     sample_ids=pixel_ids,
                 )
         median_absolute_deviation = float(deviation_accumulator.summary()["median"])
+    robust_statistics_seconds = time.perf_counter() - robust_statistics_started
 
     relative_anomaly_pixels = 0
     low_vigor_pixels = 0
+    spatial_pass_started = time.perf_counter()
     with ExitStack() as stack:
         condition_source = stack.enter_context(rasterio.open(condition_score_path))
         float_profile = _raster_profile(condition_source, dtype="float32", nodata=FLOAT_NODATA)
@@ -706,7 +739,11 @@ def run_payload_condition(
         alert_output.set_band_description(1, "0 no alert, 1 spectral condition alert")
 
         for window in _iter_windows(width, height, tile_size):
-            score = condition_source.read(1, window=window).astype(np.float32)
+            score = condition_source.read(
+                1,
+                window=window,
+                out_dtype="float32",
+            )
             valid = np.isfinite(score) & (score != FLOAT_NODATA)
             if sufficient:
                 spatial = calculate_spatial_condition_layers(
@@ -735,6 +772,7 @@ def run_payload_condition(
                 relative_output.write(zeros, 1, window=window)
                 low_output.write(zeros, 1, window=window)
                 alert_output.write(zeros, 1, window=window)
+    spatial_pass_seconds = time.perf_counter() - spatial_pass_started
 
     component_medians = {
         name: component_accumulators[name].summary()["median"] for name in SCORED_INDEX_NAMES
@@ -752,6 +790,7 @@ def run_payload_condition(
         config=cfg,
     )
 
+    preview_started = time.perf_counter()
     _save_quicklook(
         quicklook_path,
         source_path=source_path,
@@ -765,6 +804,7 @@ def run_payload_condition(
         label=assessment.label,
         score=assessment.condition_score,
     )
+    preview_seconds = time.perf_counter() - preview_started
 
     assets = {
         **{name: health_paths[name] for name in HEALTH_LAYER_NAMES},
@@ -802,6 +842,7 @@ def run_payload_condition(
             "analysis_pixels": analysis_pixels,
             "analysis_percentage": analysis_percentage,
             "mean_crop_probability": probability_summary["mean"],
+            "minimum_crop_probability": health_crop_threshold,
         },
         "metrics": {
             name: accumulator.summary() for name, accumulator in sorted(metric_accumulators.items())
@@ -839,6 +880,10 @@ def run_payload_condition(
             "tile_size": tile_size,
             "first_pass_windows": window_count,
             "passes": 3 if sufficient else 2,
+            "first_pass_seconds": first_pass_seconds,
+            "robust_statistics_seconds": robust_statistics_seconds,
+            "spatial_pass_seconds": spatial_pass_seconds,
+            "preview_seconds": preview_seconds,
         },
         "warnings": warnings,
     }

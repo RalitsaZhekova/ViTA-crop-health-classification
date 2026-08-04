@@ -26,9 +26,7 @@ def load_config(config_path: Path) -> dict[str, Any]:
 def _build_transform(items: list[dict[str, Any]]) -> A.Compose:
     classes = {
         "FlattenTemporalIntoChannels": FlattenTemporalIntoChannels,
-        "terratorch.datasets.transforms.FlattenTemporalIntoChannels": (
-            FlattenTemporalIntoChannels
-        ),
+        "terratorch.datasets.transforms.FlattenTemporalIntoChannels": (FlattenTemporalIntoChannels),
         "UnflattenTemporalFromChannels": UnflattenTemporalFromChannels,
         "terratorch.datasets.transforms.UnflattenTemporalFromChannels": (
             UnflattenTemporalFromChannels
@@ -39,9 +37,7 @@ def _build_transform(items: list[dict[str, Any]]) -> A.Compose:
         "albumentations.VerticalFlip": A.VerticalFlip,
         "albumentations.RandomRotate90": A.RandomRotate90,
         "albumentations.Affine": A.Affine,
-        "prithvi_crop.transforms.RandomNonIdentityDihedral": (
-            RandomNonIdentityDihedral
-        ),
+        "prithvi_crop.transforms.RandomNonIdentityDihedral": (RandomNonIdentityDihedral),
     }
     transforms = []
     for item in items:

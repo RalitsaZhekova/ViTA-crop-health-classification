@@ -20,7 +20,7 @@ also supplies a Boolean analysis mask assembled from:
 crop pixel
 AND clear pixel
 AND valid reflectance
-AND direct crop probability >= 0.645
+AND direct crop probability >= caller-recorded threshold
 ```
 
 The deployed crop raster is binary and has the following exact semantics:
@@ -39,11 +39,14 @@ The base model does not identify crop type, so fallow fields cannot yet be
 excluded automatically. Temporal baselines must therefore prevent expected
 seasonal low vegetation from being presented as stress.
 
-The `0.645` health-analysis threshold was calibrated with
+The shared default `0.645` health-analysis threshold was calibrated with
 `epoch=14-binary_acc=0.7949.ckpt` on the 308-chip internal validation split. It
 limits false crop detections to below 10% on that split. The normal
 crop/non-crop map uses `0.49`, which maximizes binary accuracy. Both thresholds
-must be recalibrated if the checkpoint or validation split changes.
+must be recalibrated if the checkpoint or validation split changes. A caller
+may supply a sensor-specific threshold only when it records that value and its
+scope in the crop plan; the calibrated Balkan-1 route currently supplies
+`0.30`, while Sentinel-2 retains the shared default.
 
 ## Measurements
 

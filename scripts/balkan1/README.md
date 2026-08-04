@@ -82,23 +82,9 @@ launcher expands `{scene_id}`, `{scene_dir}`, `{raw_root}`,
 `{preprocessed_root}` and `{output}`. Use `--dry-run` to inspect the exact
 command first. Quote arguments containing placeholders in PowerShell.
 
-## Do not use the supplied reference implementations
-
-`preprocessors/l1a.py`, `l1b.py` and `l1b_tif_batch.py` are educational
-reference implementations, not the processor that produced the existing
-L1ORT collection. Their calibration values are random/mock values and their
-orbit fallback is synthesized. Do not overwrite the trusted files in
-`data/balkan1/preprocessed/` with their output.
-They are quarantined as reference material and are not part of the commands
-below.
-
-The existing per-scene logs show that the trusted L1ORT files were produced by
-a separate GPU processor using mission calibration tables, band timing and
-interior-orientation corrections, the delivered attitude/position samples, a
-terrain DEM, a reference image and TensorRT feature registration. That
-processor, its configuration and its calibration/reference assets are not in
-these three Python files. They are required before this repository can
-reproduce the trusted L1ORT products directly from raw imagery.
+Only production implementations backed by real mission inputs belong under
+`preprocessors/`. Mock calibration, synthetic orbit fallbacks and educational
+reference processors are intentionally excluded from this workflow.
 
 ## Real L0R validation and minimum L1A
 
@@ -269,8 +255,8 @@ Balkan image as `3408_L1ORT.crop_calibration.json`. The sidecar contains no
 imagery but stays with the ignored local data rather than under `payload/` or
 Git. Do not reuse a sidecar for a different file or acquisition.
 
-Once that sidecar exists, crop, condition and downlink run without the
-provisional flag:
+Once that sidecar exists, crop, condition and downlink run through the validated
+Balkan route:
 
 ```powershell
 .venv\Scripts\python.exe scripts\balkan1\run_pipeline.py `
@@ -286,9 +272,14 @@ the probability back to the full original grid for the website. Metadata
 records the adapter, reference provenance, held-out quality, devices and
 timings. The Sentinel reference is not copied into the payload.
 
-If no valid sidecar is available, crop remains blocked. The old
-`--allow-provisional-crop` switch is retained only for explicitly labelled
-execution tests and must not be used as crop-accuracy evidence.
+The calibrated Balkan route records its operational `0.30` crop and health
+thresholds in the crop plan. Sentinel-2 continues to use its independently
+validated `0.49` and `0.645` thresholds; changing one sensor route does not
+silently recalibrate the other. Independent Balkan crop-label accuracy remains
+a separate validation task.
+
+If no valid sidecar is available, crop remains blocked. There is no unvalidated
+fallback into the production crop model.
 
 For an acquisition-lineage execution proof, first build the real raw-derived
 L1A with `--device cuda`, then stage a reviewed chip from the paired delivered

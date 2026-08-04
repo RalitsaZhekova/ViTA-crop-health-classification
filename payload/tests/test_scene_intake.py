@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 import numpy as np
-import pytest
 import rasterio
 import torch
 from cloud_detection.backend import TestBackend
@@ -16,8 +15,6 @@ from prithvi_payload.balkan_crop_calibration import (
     default_calibration_path,
     sha256_file,
 )
-from prithvi_payload.cloud_stage import build_cloud_stage_plan
-from prithvi_payload.crop_stage import build_crop_stage_plan
 from prithvi_payload.inference import InferenceOutput
 from prithvi_payload.pipeline import run_scene
 from prithvi_payload.scene_intake import inspect_scene
@@ -127,87 +124,7 @@ def test_explicit_band_order_adapts_undescribed_l1ort_without_mutating_it(
         assert unchanged.descriptions == (None, None, None, None, None)
 
 
-def test_provisional_crop_transfer_is_explicit_and_auditable(tmp_path: Path) -> None:
-    scene = tmp_path / "3036_L1ORT.tif"
-    _write_balkan_scene(scene)
-    intake = inspect_scene(
-        scene,
-        sensor="balkan-1",
-        band_order=BALKAN_ORDER,
-        acquired_at="2026-01-01T12:00:00Z",
-        allow_provisional_balkan_crop=True,
-    )
-
-    route = intake["model_band_routes"]["crop_classification"]
-    assert intake["readiness"]["crop"] == "READY_PROVISIONAL"
-    assert route["source_band_indices"] == [1, 2, 3, 4]
-    assert route["source_logical_order"] == ["BLUE", "GREEN", "RED", "NIR_BROAD"]
-    assert route["spectral_adapter"] == {
-        "mode": "PROVISIONAL_BALKAN_1_NIR_TRANSFER",
-        "source_nir_role": "NIR_BROAD",
-        "model_nir_role": "NIR_NARROW",
-        "validation_status": "EXECUTION_ONLY_UNVALIDATED",
-    }
-
-    cloud_plan = build_cloud_stage_plan(intake, reflectance_scale=1)
-    unusable = tmp_path / "unusable.tif"
-    unusable.touch()
-    crop_plan = build_crop_stage_plan(
-        intake,
-        cloud_plan,
-        {
-            "cloud_percentage": 10.0,
-            "output_files": {"unusable_mask": str(unusable)},
-        },
-    )
-    assert crop_plan["readiness"] == "READY"
-    assert crop_plan["compatibility"] == "PROVISIONAL_EXECUTION_ONLY"
-    assert crop_plan["input"]["training_scale_multiplier"] == 10_000.0
-    assert any("software execution only" in warning for warning in crop_plan["warnings"])
-
-
-def test_provisional_crop_adapter_rejects_other_sensors(tmp_path: Path) -> None:
-    scene = tmp_path / "scene.tif"
-    _write_balkan_scene(scene)
-
-    with pytest.raises(ValueError, match="only valid for balkan-1"):
-        inspect_scene(
-            scene,
-            sensor="sentinel-2",
-            allow_provisional_balkan_crop=True,
-        )
-
-
-def test_provisional_balkan_route_reaches_crop_execution(tmp_path: Path) -> None:
-    scene = tmp_path / "3036_L1ORT.tif"
-    _write_balkan_scene(scene)
-
-    result = run_scene(
-        scene,
-        sensor="balkan-1",
-        output_root=tmp_path / "run",
-        acquired_at="2026-01-01T12:00:00Z",
-        band_order=BALKAN_ORDER,
-        allow_provisional_balkan_crop=True,
-        reflectance_scale=1,
-        stop_after="crop",
-        cloud_backend=TestBackend(),
-        cloud_config=load_config(DEFAULT_CONFIG),
-        crop_model=FakeCropModel(),
-    )
-
-    assert result["status"] == "CROP_COMPLETE"
-    assert result["completed_stages"] == ["intake", "cloud", "crop"]
-    assert result["stage_metadata"]["crop_plan"]["compatibility"] == ("PROVISIONAL_EXECUTION_ONLY")
-    assert result["stage_metadata"]["cloud"]["runtime"]["device"] == "unknown"
-    assert result["stage_metadata"]["cloud"]["analysis_grid"]["mode"] == ("balkan_1_utm_10m")
-    for mask_name in ("semantic_mask", "unusable_mask", "invalid_mask"):
-        with rasterio.open(result["artifacts"]["cloud"][mask_name]) as mask:
-            assert mask.shape == (16, 16)
-    assert result["summary"]["crop"]["device"] == "cpu"
-
-
-def test_validated_balkan_calibration_runs_without_provisional_override(
+def test_validated_balkan_calibration_runs_through_crop_and_condition(
     tmp_path: Path,
 ) -> None:
     scene = tmp_path / "3408_L1ORT.tif"
@@ -244,6 +161,8 @@ def test_validated_balkan_calibration_runs_without_provisional_override(
     assert result["stage_metadata"]["crop_plan"]["compatibility"] == (
         "CALIBRATED_BALKAN_1_SENTINEL_EQUIVALENCE"
     )
+    assert result["stage_metadata"]["crop_plan"]["model"]["crop_probability_threshold"] == 0.3
+    assert result["stage_metadata"]["crop_plan"]["model"]["health_analysis_crop_threshold"] == 0.3
     crop = result["stage_metadata"]["crop"]
     assert crop["spectral_adapter"]["mode"] == ADAPTER_MODE
     assert crop["analysis_grid"]["resolution_metres"] == 10.0

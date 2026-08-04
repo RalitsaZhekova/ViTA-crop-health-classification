@@ -14,8 +14,7 @@ def test_ensemble_fingerprint_verifies_every_component(
 ) -> None:
     components = {"first.safetensors": b"first", "second.safetensors": b"second"}
     expected = {
-        filename: hashlib.sha256(content).hexdigest()
-        for filename, content in components.items()
+        filename: hashlib.sha256(content).hexdigest() for filename, content in components.items()
     }
     monkeypatch.setattr(backend_module, "OMNICLOUDMASK_MODEL_FILES", expected)
     for filename, content in components.items():
@@ -60,9 +59,7 @@ def test_backend_reorders_existing_contract_and_preserves_score_contract() -> No
 
     image = captured["image"]
     assert isinstance(image, np.ndarray)
-    assert np.allclose(
-        image[:, 1:, 1:], np.array([0.30, 0.20, 0.80])[:, None, None]
-    )
+    assert np.allclose(image[:, 1:, 1:], np.array([0.30, 0.20, 0.80])[:, None, None])
     assert np.all(image[:, 0, 0] == 0.0)
     assert result.scores.shape == (4, 32, 32)
     assert np.max(np.abs(result.scores.sum(axis=0) - 1.0)) < 1e-6

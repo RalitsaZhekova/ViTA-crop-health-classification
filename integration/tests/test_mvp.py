@@ -51,12 +51,11 @@ def test_sentinel_mvp_reaches_verified_api_and_web_client(tmp_path: Path) -> Non
         assert scene.status_code == 200
         assert scene.json()["condition"]["label"] == "Watch"
         assert client.get("/api/v1/scenes/sentinel/manifest").status_code == 200
-        assert client.get("/api/v1/scenes/sentinel/preview").headers[
-            "content-type"
-        ] == "image/webp"
-        assert client.get("/api/v1/scenes/sentinel/condition-overlay").headers[
-            "content-type"
-        ] == "image/png"
+        assert client.get("/api/v1/scenes/sentinel/preview").headers["content-type"] == "image/webp"
+        assert (
+            client.get("/api/v1/scenes/sentinel/condition-overlay").headers["content-type"]
+            == "image/png"
+        )
 
 
 def test_sentinel_mvp_does_not_ingest_cloud_rejected_scene(tmp_path: Path) -> None:

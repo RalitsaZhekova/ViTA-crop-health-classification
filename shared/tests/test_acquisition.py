@@ -36,8 +36,9 @@ def test_target_cloud_command_matches_schema_contract() -> None:
     assert command.source.start_date == date(2026, 7, 1)
     assert command.source.end_date == date(2026, 7, 29)
     schema = json.loads(
-        (Path(__file__).parents[2] / "shared/schemas/payload_acquisition_command.schema.json")
-        .read_text(encoding="utf-8")
+        (
+            Path(__file__).parents[2] / "shared/schemas/payload_acquisition_command.schema.json"
+        ).read_text(encoding="utf-8")
     )
     assert schema["additionalProperties"] is False
     assert schema["properties"]["source"]["$ref"] == "#/$defs/earthEngineSource"

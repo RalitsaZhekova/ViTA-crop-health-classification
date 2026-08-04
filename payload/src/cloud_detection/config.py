@@ -74,9 +74,7 @@ def load_config(path: str | Path) -> dict[str, Any]:
         "cloud_shadow": 3,
     }
     if raw["classes"] != expected_classes:
-        raise ConfigurationError(
-            f"Class mapping must be exactly {expected_classes}."
-        )
+        raise ConfigurationError(f"Class mapping must be exactly {expected_classes}.")
 
     size = int(raw["tiling"]["size"])
     overlap = int(raw["tiling"]["overlap"])
@@ -91,8 +89,6 @@ def load_config(path: str | Path) -> dict[str, Any]:
     low = float(raw["decision"]["process_max_unusable_percentage"])
     high = float(raw["decision"]["reject_min_unusable_percentage"])
     if not 0 <= low < high <= 100:
-        raise ConfigurationError(
-            "Decision thresholds must satisfy 0 <= process < reject <= 100."
-        )
+        raise ConfigurationError("Decision thresholds must satisfy 0 <= process < reject <= 100.")
 
     return raw

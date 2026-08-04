@@ -108,9 +108,7 @@ def test_jetson_clean_base_allows_first_pinned_headless_wheel() -> None:
 
     assert report["allowed_jetson_opencv_addition"] is True
     assert report["opencv_before"] == {}
-    assert report["opencv_after"] == {
-        "opencv-python-headless": PINNED_OPENCV_VERSION
-    }
+    assert report["opencv_after"] == {"opencv-python-headless": PINNED_OPENCV_VERSION}
     assert report["cv2_before"]["cv2_importable"] is False
     assert report["cv2_after"]["cv2_path"] == PIP_CV2_PATH
 

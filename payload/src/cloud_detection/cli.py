@@ -7,10 +7,7 @@ from pathlib import Path
 from .pipeline import CloudDetectionPipeline
 
 DEFAULT_CONFIG = (
-    Path(__file__).resolve().parents[2]
-    / "cloud_detection"
-    / "configs"
-    / "cloud_detector.yaml"
+    Path(__file__).resolve().parents[2] / "cloud_detection" / "configs" / "cloud_detector.yaml"
 )
 
 

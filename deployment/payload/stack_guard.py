@@ -108,9 +108,7 @@ def _inspect_cv2(installed: dict[str, Distribution]) -> dict[str, Any]:
 
 def snapshot() -> dict[str, Any]:
     installed = _installed_distributions()
-    installed_versions = {
-        name: distribution.version for name, distribution in installed.items()
-    }
+    installed_versions = {name: distribution.version for name, distribution in installed.items()}
     selected_names = {
         *STATIC_PROTECTED_DISTRIBUTIONS,
         *OPENCV_DISTRIBUTIONS,
@@ -171,15 +169,12 @@ def _opencv_state(record: dict[str, Any]) -> dict[str, Any]:
     if cv2_path is not None and not isinstance(cv2_path, str):
         raise RuntimeError("Payload stack snapshot has invalid cv2 path metadata")
     if not isinstance(cv2_wheel_owners, list) or not all(
-        isinstance(owner, str) and owner in OPENCV_DISTRIBUTIONS
-        for owner in cv2_wheel_owners
+        isinstance(owner, str) and owner in OPENCV_DISTRIBUTIONS for owner in cv2_wheel_owners
     ):
         raise RuntimeError("Payload stack snapshot has invalid cv2 ownership metadata")
     if any(owner not in opencv_wheels for owner in cv2_wheel_owners):
         raise RuntimeError("Payload stack snapshot has inconsistent cv2 ownership metadata")
-    if not cv2_importable and (
-        cv2_version is not None or cv2_path is not None or cv2_wheel_owners
-    ):
+    if not cv2_importable and (cv2_version is not None or cv2_path is not None or cv2_wheel_owners):
         raise RuntimeError("Non-importable cv2 may not have provider metadata")
 
     return {
@@ -220,8 +215,7 @@ def _validate_new_headless_wheel(
     if target_platform == "jetson":
         if opencv_version != PINNED_OPENCV_HEADLESS_VERSION:
             raise RuntimeError(
-                "Jetson requires opencv-python-headless=="
-                f"{PINNED_OPENCV_HEADLESS_VERSION}"
+                f"Jetson requires opencv-python-headless=={PINNED_OPENCV_HEADLESS_VERSION}"
             )
     elif re.fullmatch(r"4(?:\.\d+){2,3}", opencv_version) is None:
         raise RuntimeError("Local x86 requires a stable OpenCV 4.x headless wheel")
@@ -277,16 +271,13 @@ def compare_snapshots(
         raise RuntimeError("Unknown payload target platform")
     before = _package_versions(before_record)
     after = _package_versions(after_record)
-    protected_names = sorted(
-        name for name in {*before, *after} if _is_protected_distribution(name)
-    )
+    protected_names = sorted(name for name in {*before, *after} if _is_protected_distribution(name))
     changed = [name for name in protected_names if before.get(name) != after.get(name)]
     if before_record.get("runtime") != after_record.get("runtime"):
         changed.append("torch-cuda-build")
     if changed:
         raise RuntimeError(
-            "Payload dependency installation changed protected GPU packages: "
-            + ", ".join(changed)
+            "Payload dependency installation changed protected GPU packages: " + ", ".join(changed)
         )
 
     before_opencv, after_opencv, allowed_addition = _validate_opencv(
@@ -306,19 +297,13 @@ def compare_snapshots(
         "opencv_before": before_opencv["opencv_wheels"],
         "opencv_after": after_opencv["opencv_wheels"],
         "cv2_before": {
-            key: before_opencv[key]
-            for key in ("cv2_importable", "cv2_version", "cv2_path")
+            key: before_opencv[key] for key in ("cv2_importable", "cv2_version", "cv2_path")
         },
         "cv2_after": {
-            key: after_opencv[key]
-            for key in ("cv2_importable", "cv2_version", "cv2_path")
+            key: after_opencv[key] for key in ("cv2_importable", "cv2_version", "cv2_path")
         },
-        "allowed_local_x86_opencv_addition": (
-            target_platform == "local-x86" and allowed_addition
-        ),
-        "allowed_jetson_opencv_addition": (
-            target_platform == "jetson" and allowed_addition
-        ),
+        "allowed_local_x86_opencv_addition": (target_platform == "local-x86" and allowed_addition),
+        "allowed_jetson_opencv_addition": (target_platform == "jetson" and allowed_addition),
     }
 
 
