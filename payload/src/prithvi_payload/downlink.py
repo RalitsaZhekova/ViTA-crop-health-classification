@@ -34,6 +34,8 @@ CONDITION_COLOR_STOPS = (
     (75.0, (145, 207, 96)),
     (100.0, (26, 152, 80)),
 )
+
+
 def _read_json(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -146,6 +148,19 @@ def _asset_record(path: Path, *, width: int, height: int, media_type: str) -> di
         "bytes": path.stat().st_size,
         "sha256": _sha256(path),
     }
+
+
+def _portable_radiometry(value: Any) -> dict[str, Any]:
+    """Keep calibration evidence while removing machine-local runtime paths."""
+    if not isinstance(value, dict):
+        return {}
+    portable = dict(value)
+    adapter = portable.get("spectral_adapter")
+    if isinstance(adapter, dict):
+        portable["spectral_adapter"] = {
+            key: item for key, item in adapter.items() if key != "calibration_path"
+        }
+    return portable
 
 
 def _round_optional(value: float | None, digits: int = 4) -> float | None:
@@ -382,9 +397,7 @@ def build_downlink_bundle(
         ).astype(np.float32)
         rgb /= float(reflectance_scale)
         balkan_channelwise_display = payload.get("sensor") == "balkan-1"
-        Image.fromarray(
-            _stretch_rgb(rgb, channelwise=balkan_channelwise_display)
-        ).save(
+        Image.fromarray(_stretch_rgb(rgb, channelwise=balkan_channelwise_display)).save(
             rgb_path,
             format="WEBP",
             quality=RGB_WEBP_QUALITY,
@@ -392,12 +405,16 @@ def build_downlink_bundle(
             exact=True,
         )
 
-        condition = rasters["condition_score"].read(
-            1,
-            out_shape=(preview_height, preview_width),
-            masked=True,
-            resampling=Resampling.bilinear,
-        ).filled(np.nan)
+        condition = (
+            rasters["condition_score"]
+            .read(
+                1,
+                out_shape=(preview_height, preview_width),
+                masked=True,
+                resampling=Resampling.bilinear,
+            )
+            .filled(np.nan)
+        )
         valid_crop = rasters["valid_crop_mask"].read(
             1,
             out_shape=(preview_height, preview_width),
@@ -457,21 +474,11 @@ def build_downlink_bundle(
     cloud_summary = payload.get("summary", {}).get("cloud", {})
     source_provenance.update(
         {
-            "payload_measured_thick_cloud_percentage": cloud_summary.get(
-                "thick_cloud_percentage"
-            ),
-            "payload_measured_thin_cloud_percentage": cloud_summary.get(
-                "thin_cloud_percentage"
-            ),
-            "payload_measured_shadow_percentage": cloud_summary.get(
-                "cloud_shadow_percentage"
-            ),
-            "payload_measured_cloud_percentage": cloud_summary.get(
-                "total_cloud_percentage"
-            ),
-            "payload_measured_unusable_percentage": cloud_summary.get(
-                "unusable_percentage"
-            ),
+            "payload_measured_thick_cloud_percentage": cloud_summary.get("thick_cloud_percentage"),
+            "payload_measured_thin_cloud_percentage": cloud_summary.get("thin_cloud_percentage"),
+            "payload_measured_shadow_percentage": cloud_summary.get("cloud_shadow_percentage"),
+            "payload_measured_cloud_percentage": cloud_summary.get("total_cloud_percentage"),
+            "payload_measured_unusable_percentage": cloud_summary.get("unusable_percentage"),
         }
     )
     manifest = {
@@ -508,10 +515,8 @@ def build_downlink_bundle(
             "cloud_model": {"name": CLOUD_MODEL_NAME, "sha256": CLOUD_MODEL_SHA256},
             "crop_model": crop_model,
             "index_algorithm_version": condition_report.get("index_algorithm_version"),
-            "condition_algorithm_version": condition_report.get(
-                "condition_algorithm_version"
-            ),
-            "radiometry": condition_report.get("radiometry", {}),
+            "condition_algorithm_version": condition_report.get("condition_algorithm_version"),
+            "radiometry": _portable_radiometry(condition_report.get("radiometry", {})),
             "rgb_display": {
                 "input_values_modified": False,
                 "mode": (

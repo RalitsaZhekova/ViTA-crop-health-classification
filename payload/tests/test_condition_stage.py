@@ -408,6 +408,32 @@ def test_balkan_web_stretch_balances_channels_without_changing_input() -> None:
         assert balanced[..., channel].max() == 255
 
 
+def test_balkan_downlink_keeps_calibration_evidence_without_local_path(
+    tmp_path: Path,
+) -> None:
+    result_path = _complete_payload_for_downlink(tmp_path)
+    payload = json.loads(result_path.read_text(encoding="utf-8"))
+    payload["sensor"] = "balkan-1"
+    report_path = Path(payload["artifacts"]["condition"]["report"])
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["radiometry"]["spectral_adapter"] = {
+        "mode": "BALKAN_1_SENTINEL_MONOTONIC_V1",
+        "calibration_path": str((tmp_path / "local.crop_calibration.json").resolve()),
+        "validation_status": "VALIDATED_SENTINEL_EQUIVALENCE",
+        "validation": {"status": "PASS"},
+    }
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    result_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    manifest = build_downlink_bundle(result_path, output_root=tmp_path / "downlink")
+    adapter = manifest["processing"]["radiometry"]["spectral_adapter"]
+
+    assert adapter["mode"] == "BALKAN_1_SENTINEL_MONOTONIC_V1"
+    assert adapter["validation"] == {"status": "PASS"}
+    assert "calibration_path" not in adapter
+    assert str(tmp_path.resolve()) not in json.dumps(manifest)
+
+
 def test_downlink_bundle_protects_existing_metadata(tmp_path: Path) -> None:
     result_path = _complete_payload_for_downlink(tmp_path)
     output = tmp_path / "downlink"
