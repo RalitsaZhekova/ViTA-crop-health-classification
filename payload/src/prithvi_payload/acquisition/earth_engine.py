@@ -560,18 +560,6 @@ class EarthEngineAcquisitionProvider:
             )
             raise safe_error from None
 
-    def acquire_candidates(
-        self,
-        command: PayloadAcquisitionCommand,
-        destination_directory: Path,
-    ) -> list[AcquiredScene]:
-        candidates, grid = self.search_candidates(command)
-        destination_directory.mkdir(parents=True, exist_ok=True)
-        return [
-            self.acquire_candidate(command, candidate, destination_directory, grid=grid)
-            for candidate in candidates[: self.max_scene_attempts]
-        ]
-
     def record_candidate_evaluation(
         self,
         acquired: AcquiredScene,

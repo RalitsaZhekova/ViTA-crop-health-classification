@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import math
 import os
@@ -889,27 +888,3 @@ def run_payload_condition(
     }
     _write_json_atomic(report_path, report)
     return report
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Run windowed Phase 2 crop-condition analysis from payload result.json."
-    )
-    parser.add_argument("payload_result", type=Path)
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--region-id")
-    parser.add_argument("--tile-size", type=int, default=512)
-    parser.add_argument("--overwrite", action="store_true")
-    args = parser.parse_args()
-    report = run_payload_condition(
-        args.payload_result,
-        output_root=args.output,
-        region_id=args.region_id,
-        tile_size=args.tile_size,
-        overwrite=args.overwrite,
-    )
-    print(json.dumps(report, indent=2, sort_keys=True, allow_nan=False))
-
-
-if __name__ == "__main__":
-    main()

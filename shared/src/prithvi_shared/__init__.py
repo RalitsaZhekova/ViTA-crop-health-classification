@@ -1,4 +1,4 @@
-"""Stable contracts shared by training, payload and ground components."""
+"""Small set of contracts shared by the two MVPs."""
 
 from prithvi_shared.acquisition import (
     ACQUISITION_SCHEMA_VERSION,
@@ -19,72 +19,44 @@ from prithvi_shared.calibration import (
     HEALTH_ANALYSIS_CROP_THRESHOLD,
     SELECTED_CHECKPOINT_NAME,
     SELECTED_CHECKPOINT_SHA256,
-    SOURCE_CHECKPOINT_SHA256,
-)
-from prithvi_shared.classes import (
-    BINARY_CROP_TARGET_IDS,
-    BINARY_IGNORE_CLASS_IDS,
-    CLASS_NAMES,
-    CROP_PROBABILITY_CLASS_IDS,
-    HEALTH_CROP_CLASS_IDS,
-    NON_CROP_CLASS_IDS,
 )
 from prithvi_shared.condition import (
     ConditionAssessment,
     ConditionConfig,
-    ConditionLayers,
-    ConditionResult,
     ConditionScoreLayers,
     SpatialConditionLayers,
-    assess_crop_condition,
     build_condition_assessment,
     calculate_condition_score_layers,
     calculate_spatial_condition_layers,
 )
 from prithvi_shared.health import (
     HealthLayers,
-    HealthObservation,
-    MetricSummary,
     build_analysis_mask,
-    build_health_observation,
     calculate_health_layers,
 )
 
 __all__ = [
     "ACQUISITION_SCHEMA_VERSION",
-    "BINARY_CROP_TARGET_IDS",
-    "BINARY_IGNORE_CLASS_IDS",
-    "CLASS_NAMES",
     "ConditionAssessment",
     "ConditionConfig",
-    "ConditionLayers",
-    "ConditionResult",
     "ConditionScoreLayers",
     "CROP_CLASSIFICATION_THRESHOLD",
-    "CROP_PROBABILITY_CLASS_IDS",
     "EARTH_ENGINE_PROVIDER",
     "EarthEngineSourceCommand",
     "HEALTH_ANALYSIS_CROP_THRESHOLD",
-    "HEALTH_CROP_CLASS_IDS",
     "HealthLayers",
-    "HealthObservation",
     "INPUT_HEIGHT",
     "INPUT_WIDTH",
     "MODEL_BANDS",
-    "MetricSummary",
-    "NON_CROP_CLASS_IDS",
     "NORMALIZATION_MEANS",
     "NORMALIZATION_STDS",
     "PayloadAcquisitionCommand",
     "SELECTED_CHECKPOINT_NAME",
     "SELECTED_CHECKPOINT_SHA256",
-    "SOURCE_CHECKPOINT_SHA256",
     "SpatialConditionLayers",
     "TIME_STEPS",
-    "assess_crop_condition",
     "build_analysis_mask",
     "build_condition_assessment",
-    "build_health_observation",
     "calculate_condition_score_layers",
     "calculate_health_layers",
     "calculate_spatial_condition_layers",

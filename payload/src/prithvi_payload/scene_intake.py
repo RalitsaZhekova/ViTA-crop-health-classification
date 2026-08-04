@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
-import json
 import math
 import re
 from collections.abc import Sequence
@@ -410,39 +408,3 @@ def inspect_scene(
         "errors": errors,
         "warnings": warnings,
     }
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Inspect a preprocessed multispectral GeoTIFF without running models."
-    )
-    parser.add_argument("input", type=Path)
-    parser.add_argument("--sensor", required=True, choices=SUPPORTED_SENSORS)
-    parser.add_argument("--acquired-at")
-    parser.add_argument("--scene-id")
-    parser.add_argument(
-        "--band-order",
-        nargs="+",
-        help="Explicit source-band labels, one per raster band",
-    )
-    parser.add_argument("--crop-calibration", type=Path)
-    parser.add_argument("--output", type=Path)
-    args = parser.parse_args()
-    report = inspect_scene(
-        args.input,
-        sensor=args.sensor,
-        acquired_at=args.acquired_at,
-        scene_id=args.scene_id,
-        band_order=args.band_order,
-        crop_calibration_path=args.crop_calibration,
-    )
-    rendered = json.dumps(report, indent=2, sort_keys=True)
-    if args.output:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(rendered + "\n", encoding="utf-8")
-    print(rendered)
-    raise SystemExit(0 if report["readiness"]["intake"] == "READY" else 2)
-
-
-if __name__ == "__main__":
-    main()

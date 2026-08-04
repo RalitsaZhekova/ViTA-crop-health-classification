@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
-import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -13,8 +12,6 @@ from typing import Any
 
 import numpy as np
 import torch
-from cloud_detection.cli import DEFAULT_CONFIG
-from cloud_detection.pipeline import CloudDetectionPipeline
 from prithvi_shared import PayloadAcquisitionCommand
 
 from prithvi_payload.acquisition.earth_engine import (
@@ -23,6 +20,11 @@ from prithvi_payload.acquisition.earth_engine import (
     EarthEngineAcquisitionProvider,
 )
 from prithvi_payload.acquisition.errors import AcquisitionError
+from prithvi_payload.cloud_classifier import (
+    DEFAULT_CLOUD_CONFIG,
+    CloudModel,
+    load_cloud_model,
+)
 from prithvi_payload.inference import PayloadCropModel
 from prithvi_payload.pipeline import continue_scene_from_cloud, run_scene
 
@@ -94,9 +96,9 @@ class PayloadRuntime:
         self,
         *,
         provider: EarthEngineAcquisitionProvider | None = None,
-        cloud_runtime: CloudDetectionPipeline | None = None,
+        cloud_runtime: CloudModel | None = None,
         crop_model: PayloadCropModel | None = None,
-        cloud_config_path: str | Path = DEFAULT_CONFIG,
+        cloud_config_path: str | Path = DEFAULT_CLOUD_CONFIG,
         cuda_required: bool | None = None,
     ) -> None:
         self.provider = provider or EarthEngineAcquisitionProvider(
@@ -109,23 +111,20 @@ class PayloadRuntime:
             os.environ.get("CUDA_REQUIRED", "1") == "1" if cuda_required is None else cuda_required
         )
         self.initialized = False
-        self._initialize_lock = threading.Lock()
-        self._gpu_lock = threading.Lock()
 
     def initialize(self) -> None:
-        with self._initialize_lock:
-            if self.initialized:
-                return
-            self.provider.initialize()
-            if self.cuda_required and not torch.cuda.is_available():
-                raise RuntimeError("CUDA_REQUIRED=1 but CUDA is unavailable")
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            if self.cloud_runtime is None:
-                self.cloud_runtime = CloudDetectionPipeline.from_yaml(self.cloud_config_path)
-            if self.crop_model is None:
-                self.crop_model = PayloadCropModel.load(device=device)
-            self._warm_models()
-            self.initialized = True
+        if self.initialized:
+            return
+        self.provider.initialize()
+        if self.cuda_required and not torch.cuda.is_available():
+            raise RuntimeError("CUDA_REQUIRED=1 but CUDA is unavailable")
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        if self.cloud_runtime is None:
+            self.cloud_runtime = load_cloud_model(self.cloud_config_path)
+        if self.crop_model is None:
+            self.crop_model = PayloadCropModel.load(device=device)
+        self._warm_models()
+        self.initialized = True
 
     def _warm_models(self) -> None:
         if self.cloud_runtime is None or self.crop_model is None:
@@ -148,20 +147,6 @@ class PayloadRuntime:
         if torch.cuda.is_available():
             torch.cuda.synchronize()
 
-    def health(self) -> dict[str, Any]:
-        return {
-            "status": "ok" if self.initialized else "starting",
-            "ready": self.initialized,
-            "earth_engine_initialized": self.initialized,
-            "earth_engine_project": self.provider.project_id,
-            "cuda_required": self.cuda_required,
-            "cuda_available": torch.cuda.is_available(),
-            "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
-            "cloud_model_loaded": self.cloud_runtime is not None,
-            "crop_model_loaded": self.crop_model is not None,
-            "models_warmed": self.initialized,
-        }
-
     def process(
         self,
         command: PayloadAcquisitionCommand,
@@ -170,15 +155,6 @@ class PayloadRuntime:
     ) -> dict[str, Any]:
         if not self.initialized or self.cloud_runtime is None or self.crop_model is None:
             raise RuntimeError("Payload runtime is not initialized")
-        with self._gpu_lock:
-            return self._process_locked(command, job_directory, status_callback)
-
-    def _process_locked(
-        self,
-        command: PayloadAcquisitionCommand,
-        job_directory: Path,
-        status_callback: StatusCallback,
-    ) -> dict[str, Any]:
         payload_started = time.perf_counter()
         _notify(status_callback, "searching_candidates")
         search_started = time.perf_counter()
@@ -247,7 +223,7 @@ class PayloadRuntime:
                 reflectance_scale=REFLECTANCE_SCALE,
                 stop_after="cloud",
                 cloud_backend=self.cloud_runtime.backend,
-                cloud_config=self.cloud_runtime.cfg,
+                cloud_config=self.cloud_runtime.config,
             )
             if payload.get("status") != "CLOUD_COMPLETE":
                 raise AcquisitionError(

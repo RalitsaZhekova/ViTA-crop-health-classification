@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
 import math
@@ -628,16 +627,3 @@ class SceneCatalog:
         if self.root not in path.parents:
             raise RuntimeError("Catalog contains an unsafe bundle path")
         return path
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Validate and ingest a ViTA downlink bundle.")
-    parser.add_argument("bundle", type=Path)
-    parser.add_argument("--store", type=Path, required=True)
-    args = parser.parse_args()
-    record, created = SceneCatalog(args.store).ingest(args.bundle)
-    print(json.dumps({"created": created, "scene": record}, indent=2, sort_keys=True))
-
-
-if __name__ == "__main__":
-    main()

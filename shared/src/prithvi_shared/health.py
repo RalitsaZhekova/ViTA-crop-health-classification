@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import json
-from dataclasses import asdict, dataclass
-from datetime import datetime
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -12,8 +10,6 @@ from numpy.typing import NDArray
 
 from prithvi_shared.calibration import HEALTH_ANALYSIS_CROP_THRESHOLD
 
-SUPPORTED_SENSORS = {"balkan-1", "sentinel-2"}
-SCHEMA_VERSION = "1.0"
 ALGORITHM_VERSION = "health-indices-v2"
 CROP_BINARY_NODATA = 255
 
@@ -27,60 +23,6 @@ class HealthLayers:
 
     values: dict[str, FloatArray]
     analysis_mask: BoolArray
-
-
-@dataclass(frozen=True)
-class MetricSummary:
-    valid_pixels: int
-    mean: float | None
-    median: float | None
-    standard_deviation: float | None
-    percentile_10: float | None
-    percentile_90: float | None
-
-
-@dataclass(frozen=True)
-class HealthObservation:
-    """Compact record intended for JSON storage and a future API."""
-
-    scene_id: str
-    region_id: str
-    sensor: str
-    acquired_at: str
-    status: str
-    total_pixels: int
-    analysis_pixels: int
-    analysis_percentage: float
-    metrics: dict[str, MetricSummary]
-    raster_assets: dict[str, str]
-    schema_version: str = SCHEMA_VERSION
-    algorithm_version: str = ALGORITHM_VERSION
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "schema_version": self.schema_version,
-            "algorithm_version": self.algorithm_version,
-            "scene_id": self.scene_id,
-            "region_id": self.region_id,
-            "sensor": self.sensor,
-            "acquired_at": self.acquired_at,
-            "status": self.status,
-            "quality": {
-                "total_pixels": self.total_pixels,
-                "analysis_pixels": self.analysis_pixels,
-                "analysis_percentage": self.analysis_percentage,
-            },
-            "metrics": {name: asdict(summary) for name, summary in sorted(self.metrics.items())},
-            "raster_assets": dict(sorted(self.raster_assets.items())),
-        }
-
-    def to_json(self, *, indent: int | None = 2) -> str:
-        return json.dumps(
-            self.to_dict(),
-            allow_nan=False,
-            indent=indent,
-            sort_keys=True,
-        )
 
 
 def build_analysis_mask(
@@ -251,56 +193,4 @@ def calculate_health_layers(
             "vari": vari,
         },
         analysis_mask=valid,
-    )
-
-
-def summarize_metric(values: FloatArray) -> MetricSummary:
-    finite = np.asarray(values)[np.isfinite(values)]
-    if finite.size == 0:
-        return MetricSummary(0, None, None, None, None, None)
-    return MetricSummary(
-        valid_pixels=int(finite.size),
-        mean=float(np.mean(finite)),
-        median=float(np.median(finite)),
-        standard_deviation=float(np.std(finite)),
-        percentile_10=float(np.percentile(finite, 10)),
-        percentile_90=float(np.percentile(finite, 90)),
-    )
-
-
-def build_health_observation(
-    *,
-    scene_id: str,
-    region_id: str,
-    sensor: str,
-    acquired_at: datetime,
-    layers: HealthLayers,
-    minimum_analysis_pixels: int = 1,
-    raster_assets: dict[str, str] | None = None,
-) -> HealthObservation:
-    """Build a JSON-safe measurement record without making a health diagnosis."""
-    if not scene_id.strip() or not region_id.strip():
-        raise ValueError("scene_id and region_id must be non-empty")
-    sensor_name = sensor.lower()
-    if sensor_name not in SUPPORTED_SENSORS:
-        raise ValueError(f"Unsupported sensor: {sensor}")
-    if acquired_at.tzinfo is None or acquired_at.utcoffset() is None:
-        raise ValueError("acquired_at must include a timezone")
-    if minimum_analysis_pixels <= 0:
-        raise ValueError("minimum_analysis_pixels must be positive")
-
-    total = int(layers.analysis_mask.size)
-    analysis = int(layers.analysis_mask.sum())
-    status = "MEASURED" if analysis >= minimum_analysis_pixels else "INSUFFICIENT_DATA"
-    return HealthObservation(
-        scene_id=scene_id,
-        region_id=region_id,
-        sensor=sensor_name,
-        acquired_at=acquired_at.isoformat(),
-        status=status,
-        total_pixels=total,
-        analysis_pixels=analysis,
-        analysis_percentage=100.0 * analysis / total if total else 0.0,
-        metrics={name: summarize_metric(values) for name, values in layers.values.items()},
-        raster_assets=raster_assets or {},
     )

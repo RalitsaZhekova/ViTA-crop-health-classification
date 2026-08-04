@@ -203,25 +203,3 @@ class OmniCloudMaskBackend:
         # changing argmax classes to preserve this pipeline's score contract.
         scores /= np.maximum(scores.sum(axis=0, keepdims=True), 1e-8)
         return BackendPrediction(scores=scores, score_kind="softmax_confidence")
-
-
-class TestBackend:
-    """Deterministic backend used only for local unit tests."""
-
-    def predict(self, tile: np.ndarray) -> BackendPrediction:
-        if tile.ndim != 3 or tile.shape[0] != 4:
-            raise BackendError(f"Expected an array shaped (4,H,W), got {tile.shape}.")
-        _, red, green, blue = tile
-        brightness = (red + green + blue) / 3
-        whiteness = 1 - np.clip(
-            np.std(np.stack([red, green, blue]), axis=0) / 0.25,
-            0,
-            1,
-        )
-        cloud = np.clip((brightness - 0.35) * 2.5, 0, 1) * whiteness
-        thin = np.clip((brightness - 0.20) * 1.5, 0, 0.6) * whiteness * (1 - cloud)
-        shadow = np.clip((0.12 - brightness) * 3, 0, 0.7)
-        clear = np.clip(1 - cloud - thin - shadow, 0, 1)
-        scores = np.stack([clear, cloud, thin, shadow]).astype(np.float32)
-        scores /= np.maximum(scores.sum(axis=0, keepdims=True), 1e-8)
-        return BackendPrediction(scores=scores, score_kind="synthetic_probability")

@@ -3,46 +3,44 @@ requires = ["setuptools>=75", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "prithvi-crop-head"
-version = "0.1.0"
-description = "Four-band crop/land-cover segmentation with a frozen Prithvi EO 2.0 backbone"
-readme = "README.md"
+name = "vita-crop-mvp"
+version = "1.0.0"
+description = "Two local crop-intelligence MVPs for Sentinel-2 and Balkan-1"
 requires-python = ">=3.10,<3.14"
 dependencies = [
+  "earthengine-api>=1.5,<2",
+  "fastapi>=0.115,<1",
+  "google-auth>=2.30,<3",
+  "matplotlib>=3.7,<4",
   "numpy>=1.26,<3",
-  "geopandas>=1.0,<2",
-  "terratorch==1.2.10",
-  "huggingface-hub>=0.30",
-  "rasterio>=1.3.10,<2",
-  "pandas>=2.2,<3",
+  "omnicloudmask==1.7.1",
+  "pillow>=10,<13",
+  "pydantic>=2.9,<3",
+  "pyproj>=3.6,<4",
   "pyyaml>=6,<7",
-  "tensorboard>=2.18,<3",
-  "tqdm>=4.66,<5",
+  "rasterio>=1.3.10,<2",
+  "requests>=2.32,<3",
+  "scipy>=1.10,<2",
+  "terratorch==1.2.10",
+  "torch>=2.5,<3",
+  "uvicorn[standard]>=0.30,<1",
 ]
 
 [project.optional-dependencies]
 dev = [
+  "pytest>=8,<9",
   "ruff>=0.9,<1",
-]
-balkan = [
-  "matplotlib>=3.8,<4",
-  "opencv-python-headless>=4.8,<6",
 ]
 
 [project.scripts]
-prithvi-download = "prithvi_crop.download_data:main"
-prithvi-validate = "prithvi_crop.validate_data:main"
-prithvi-validate-europe = "prithvi_crop.pastis_validation:main"
-prithvi-check-config = "prithvi_crop.check_config:main"
-prithvi-preflight = "prithvi_crop.preflight:main"
-prithvi-smoke = "prithvi_crop.smoke:main"
-prithvi-train = "prithvi_crop.train:main"
-prithvi-evaluate = "prithvi_crop.evaluate:main"
-prithvi-evaluate-binary = "prithvi_crop.evaluate_binary:main"
-prithvi-visualize = "prithvi_crop.visualize_examples:main"
+vita-mvp = "vita_integration.cli:main"
+vita-dashboard = "prithvi_ground.api:main"
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["payload/src", "shared/src", "ground/src", "integration/src"]
+
+[tool.setuptools.package-data]
+prithvi_ground = ["web/*"]
 
 [tool.ruff]
 line-length = 100
@@ -50,3 +48,7 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

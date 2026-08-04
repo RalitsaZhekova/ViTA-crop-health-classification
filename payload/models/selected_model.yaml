@@ -5,20 +5,6 @@ format: pytorch_weights_only_state_dict
 bytes: 382645915
 sha256: c948977bffdaeb89ecf4f4d069db13c7ed81d4f3403eec9e257c45c235b1484e
 architecture: architecture.yaml
-source_checkpoint:
-  path: ../../outputs/prithvi_4band_single_frame_binary/checkpoints/epoch=14-binary_acc=0.7949.ckpt
-  bytes: 459825997
-  sha256: b309566176ce63eb556ca481e18c0ef2fbc00df846833a4a36ef0076f34ba466
-preserved_models:
-  - role: three_frame_crop_types
-    path: ../../outputs/prithvi_4band_europe_replay/checkpoints/epoch=02-macro_f1=0.5062.ckpt
-    sha256: 49383194174c56b66f3b7fa67254a42135db6ad64172e873c43d65d1afae6a65
-  - role: single_frame_crop_types
-    path: ../../outputs/prithvi_4band_single_frame/checkpoints/epoch=23-deployment=0.6572.ckpt
-    sha256: 0453e7529e81c8adbd1314c1edc2eb88c1bb4f800b6328bdf139562d875b2a0d
-  - role: archived_three_frame_payload_weights
-    path: ../../outputs/model_archive/prithvi_crop_classifier_3frame_v1_weights.pt
-    sha256: 732e9b32f2a8fa7cbd1285882148d3103302fac90c96236b438849469ac28098
 replacement_policy:
   automatic_replacement: false
   requirement: explicit_review_and_better_held_out_metrics

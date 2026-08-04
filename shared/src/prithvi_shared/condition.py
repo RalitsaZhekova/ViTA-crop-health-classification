@@ -97,18 +97,6 @@ class ConditionConfig:
 
 
 @dataclass(frozen=True)
-class ConditionLayers:
-    """Per-pixel score and anomaly evidence for map output."""
-
-    component_scores: dict[str, FloatArray]
-    condition_score: FloatArray
-    robust_deficit_z: FloatArray
-    relative_anomaly_mask: BoolArray
-    low_vigor_mask: BoolArray
-    alert_mask: BoolArray
-
-
-@dataclass(frozen=True)
 class ConditionScoreLayers:
     """Absolute per-pixel component and combined scores."""
 
@@ -150,12 +138,6 @@ class ConditionAssessment:
 
     def to_dict(self) -> dict[str, Any]:
         return json.loads(json.dumps(asdict(self), allow_nan=False))
-
-
-@dataclass(frozen=True)
-class ConditionResult:
-    assessment: ConditionAssessment
-    layers: ConditionLayers
 
 
 def _linear_score(values: FloatArray, low: float, high: float) -> FloatArray:
@@ -412,73 +394,3 @@ def build_condition_assessment(
         explanations=tuple(explanations),
         limitations=limitations,
     )
-
-
-def assess_crop_condition(
-    health_layers: HealthLayers,
-    *,
-    mean_crop_probability: float | None = None,
-    config: ConditionConfig | None = None,
-) -> ConditionResult:
-    """Assess spectral condition without inferring a disease or causal stressor."""
-    cfg = config or ConditionConfig()
-    score_layers = calculate_condition_score_layers(health_layers, config=cfg)
-    component_scores = score_layers.component_scores
-    pixel_score = score_layers.condition_score
-    valid_score = score_layers.valid_score_mask
-    analysis_pixels = int(np.count_nonzero(valid_score))
-    total_pixels = int(valid_score.size)
-
-    component_medians = {
-        name: float(np.median(score[valid_score & np.isfinite(score)]))
-        if np.any(valid_score & np.isfinite(score))
-        else None
-        for name, score in component_scores.items()
-    }
-    analysis_percentage = 100.0 * analysis_pixels / total_pixels if total_pixels else 0.0
-    sufficient = (
-        analysis_pixels >= cfg.minimum_analysis_pixels
-        and analysis_percentage >= cfg.minimum_analysis_percentage
-    )
-    if not sufficient:
-        median_score = None
-        lower_quartile_score = None
-        spatial = SpatialConditionLayers(
-            robust_deficit_z=np.full(pixel_score.shape, np.nan, dtype=np.float32),
-            relative_anomaly_mask=np.zeros(pixel_score.shape, dtype=bool),
-            low_vigor_mask=np.zeros(pixel_score.shape, dtype=bool),
-            alert_mask=np.zeros(pixel_score.shape, dtype=bool),
-        )
-    else:
-        values = pixel_score[valid_score].astype(np.float64)
-        median_score = float(np.median(values))
-        lower_quartile_score = float(np.percentile(values, 25))
-        median_absolute_deviation = float(np.median(np.abs(values - median_score)))
-        spatial = calculate_spatial_condition_layers(
-            pixel_score,
-            valid_score,
-            median_score=median_score,
-            median_absolute_deviation=median_absolute_deviation,
-            config=cfg,
-        )
-
-    assessment = build_condition_assessment(
-        analysis_pixels=analysis_pixels,
-        total_pixels=total_pixels,
-        median_score=median_score,
-        lower_quartile_score=lower_quartile_score,
-        relative_anomaly_pixels=int(np.count_nonzero(spatial.relative_anomaly_mask)),
-        low_vigor_pixels=int(np.count_nonzero(spatial.low_vigor_mask)),
-        component_median_scores=component_medians,
-        mean_crop_probability=mean_crop_probability,
-        config=cfg,
-    )
-    layers = ConditionLayers(
-        component_scores=component_scores,
-        condition_score=pixel_score,
-        robust_deficit_z=spatial.robust_deficit_z,
-        relative_anomaly_mask=spatial.relative_anomaly_mask,
-        low_vigor_mask=spatial.low_vigor_mask,
-        alert_mask=spatial.alert_mask,
-    )
-    return ConditionResult(assessment, layers)

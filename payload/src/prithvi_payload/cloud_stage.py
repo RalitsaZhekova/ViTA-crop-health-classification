@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import argparse
-import json
 import math
-from pathlib import Path
 from typing import Any
 
 CLOUD_STAGE_SCHEMA_VERSION = "0.1-draft"
@@ -136,29 +133,3 @@ def build_cloud_stage_plan(
         "errors": errors,
         "warnings": warnings,
     }
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Plan cloud detection from a scene-inspect JSON report."
-    )
-    parser.add_argument("intake_report", type=Path)
-    parser.add_argument("--reflectance-scale", type=float)
-    parser.add_argument("--output", type=Path)
-    args = parser.parse_args()
-
-    intake = json.loads(args.intake_report.read_text(encoding="utf-8"))
-    plan = build_cloud_stage_plan(
-        intake,
-        reflectance_scale=args.reflectance_scale,
-    )
-    rendered = json.dumps(plan, indent=2, sort_keys=True)
-    if args.output:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(rendered + "\n", encoding="utf-8")
-    print(rendered)
-    raise SystemExit(0 if plan["readiness"] == "READY" else 2)
-
-
-if __name__ == "__main__":
-    main()

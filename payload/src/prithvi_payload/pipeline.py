@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import time
 from collections.abc import Callable, Sequence
@@ -10,10 +9,9 @@ from pathlib import Path
 from typing import Any
 
 from cloud_detection.backend import CloudBackend
-from cloud_detection.cli import DEFAULT_CONFIG
 from cloud_detection.config import load_config
-from cloud_detection.pipeline import CloudDetectionPipeline
 
+from prithvi_payload.cloud_classifier import DEFAULT_CLOUD_CONFIG, load_cloud_model
 from prithvi_payload.cloud_executor import execute_cloud_stage
 from prithvi_payload.cloud_stage import build_cloud_stage_plan
 from prithvi_payload.crop_stage import (
@@ -21,7 +19,7 @@ from prithvi_payload.crop_stage import (
     build_crop_stage_plan,
 )
 from prithvi_payload.downlink import DEFAULT_GRID_SIZE, DEFAULT_MAX_IMAGE_DIMENSION
-from prithvi_payload.scene_intake import SUPPORTED_SENSORS, inspect_scene
+from prithvi_payload.scene_intake import inspect_scene
 
 
 def _write_json(path: Path, value: dict[str, Any]) -> None:
@@ -53,7 +51,7 @@ def run_scene(
     downlink_max_image_dimension: int = DEFAULT_MAX_IMAGE_DIMENSION,
     downlink_grid_size: int = DEFAULT_GRID_SIZE,
     overwrite: bool = False,
-    cloud_config_path: str | Path = DEFAULT_CONFIG,
+    cloud_config_path: str | Path = DEFAULT_CLOUD_CONFIG,
     cloud_backend: CloudBackend | None = None,
     cloud_config: dict[str, Any] | None = None,
     crop_model: Any | None = None,
@@ -120,9 +118,9 @@ def run_scene(
         return _finish(output_root, result)
 
     if cloud_backend is None:
-        runtime = CloudDetectionPipeline.from_yaml(cloud_config_path)
+        runtime = load_cloud_model(cloud_config_path)
         cloud_backend = runtime.backend
-        cloud_config = runtime.cfg
+        cloud_config = runtime.config
     elif cloud_config is None:
         cloud_config = load_config(cloud_config_path)
     cloud_metadata = execute_cloud_stage(
@@ -343,89 +341,3 @@ def continue_scene_from_cloud(
         "runtime": {"seconds": packaging_seconds},
     }
     return _finish(output_root, result)
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Run the stage-gated payload pipeline on one preprocessed GeoTIFF."
-    )
-    parser.add_argument("input", type=Path)
-    parser.add_argument("--sensor", required=True, choices=SUPPORTED_SENSORS)
-    parser.add_argument("--output", type=Path, default=Path("testing/runs"))
-    parser.add_argument("--acquired-at")
-    parser.add_argument("--scene-id")
-    parser.add_argument(
-        "--band-order",
-        nargs="+",
-        help="Explicit source-band labels, one per raster band",
-    )
-    parser.add_argument("--crop-calibration", type=Path)
-    parser.add_argument("--reflectance-scale", type=float)
-    parser.add_argument(
-        "--stop-after",
-        choices=("intake", "cloud", "crop", "condition", "downlink"),
-        default="cloud",
-    )
-    parser.add_argument(
-        "--max-crop-cloud-percentage",
-        type=float,
-        default=DEFAULT_MAX_CLOUD_PERCENTAGE,
-    )
-    parser.add_argument("--region-id")
-    parser.add_argument("--condition-tile-size", type=int, default=512)
-    parser.add_argument(
-        "--downlink-max-image-dimension",
-        type=int,
-        default=DEFAULT_MAX_IMAGE_DIMENSION,
-    )
-    parser.add_argument("--downlink-grid-size", type=int, default=DEFAULT_GRID_SIZE)
-    parser.add_argument("--overwrite", action="store_true")
-    parser.add_argument("--cloud-config", type=Path, default=DEFAULT_CONFIG)
-    args = parser.parse_args()
-
-    result = run_scene(
-        args.input,
-        sensor=args.sensor,
-        output_root=args.output,
-        acquired_at=args.acquired_at,
-        scene_id=args.scene_id,
-        band_order=args.band_order,
-        crop_calibration_path=args.crop_calibration,
-        reflectance_scale=args.reflectance_scale,
-        stop_after=args.stop_after,
-        max_crop_cloud_percentage=args.max_crop_cloud_percentage,
-        region_id=args.region_id,
-        condition_tile_size=args.condition_tile_size,
-        downlink_max_image_dimension=args.downlink_max_image_dimension,
-        downlink_grid_size=args.downlink_grid_size,
-        overwrite=args.overwrite,
-        cloud_config_path=args.cloud_config,
-    )
-    console_result = {
-        key: result[key]
-        for key in (
-            "schema_version",
-            "scene_id",
-            "sensor",
-            "status",
-            "completed_stages",
-            "summary",
-            "artifacts",
-            "warnings",
-            "errors",
-        )
-    }
-    print(json.dumps(console_result, indent=2, sort_keys=True))
-    successful_statuses = {
-        "INTAKE_READY",
-        "CLOUD_COMPLETE",
-        "CROP_COMPLETE",
-        "CONDITION_COMPLETE",
-        "DOWNLINK_READY",
-        "CROP_SKIPPED_CLOUD_GATE",
-    }
-    raise SystemExit(0 if result["status"] in successful_statuses else 2)
-
-
-if __name__ == "__main__":
-    main()

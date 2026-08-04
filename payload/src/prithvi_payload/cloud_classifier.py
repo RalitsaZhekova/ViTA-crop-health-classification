@@ -3,29 +3,49 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from cloud_detection.backend import (
     OMNICLOUDMASK_ENSEMBLE_SHA256,
-    ensemble_sha256,
+    CloudBackend,
+    OmniCloudMaskBackend,
 )
+from cloud_detection.config import load_config
 
 CLOUD_MODEL_NAME = "omnicloudmask_v4"
 CLOUD_MODEL_SHA256 = OMNICLOUDMASK_ENSEMBLE_SHA256
 
 PAYLOAD_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_CLOUD_CONFIG = (
+    PAYLOAD_ROOT / "cloud_detection" / "configs" / "cloud_detector.yaml"
+)
 
 
-def default_cloud_weights_directory() -> Path:
-    configured = os.environ.get("OMNICLOUDMASK_MODEL_DIR")
-    if configured:
-        return Path(configured)
-    source_checkout = PAYLOAD_ROOT / "models" / "omnicloudmask"
-    if source_checkout.parent.is_dir():
-        return source_checkout
-    return Path.cwd() / "models" / "omnicloudmask"
+@dataclass(frozen=True)
+class CloudModel:
+    """Loaded backend plus the exact masking configuration used with it."""
+
+    backend: CloudBackend
+    config: dict[str, Any]
 
 
-def cloud_checkpoint_sha256(directory: Path) -> str:
-    """Verify and fingerprint the two-component OmniCloudMask ensemble."""
-    return ensemble_sha256(directory)
+def load_cloud_model(config_path: str | Path = DEFAULT_CLOUD_CONFIG) -> CloudModel:
+    path = Path(config_path).resolve()
+    config = load_config(path)
+    configured_weights = Path(config["model"]["weights_folder"])
+    if not configured_weights.is_absolute():
+        configured_weights = (path.parent / configured_weights).resolve()
+    model = config["model"]
+    backend = OmniCloudMaskBackend(
+        name=model["name"],
+        weights_folder=os.environ.get("OMNICLOUDMASK_MODEL_DIR", str(configured_weights)),
+        device=model.get("device", "auto"),
+        expected_sha256=model.get("expected_sha256"),
+        inference_dtype=model.get("inference_dtype", "fp32"),
+        patch_size=int(model["patch_size"]),
+        patch_overlap=int(model["patch_overlap"]),
+        batch_size=int(model["batch_size"]),
+    )
+    return CloudModel(backend=backend, config=config)
