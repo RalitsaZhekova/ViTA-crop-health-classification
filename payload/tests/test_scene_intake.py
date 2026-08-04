@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -9,6 +10,12 @@ import torch
 from cloud_detection.backend import TestBackend
 from cloud_detection.cli import DEFAULT_CONFIG
 from cloud_detection.config import load_config
+from prithvi_payload.balkan_crop_calibration import (
+    ADAPTER_MODE,
+    CALIBRATION_SCHEMA_VERSION,
+    default_calibration_path,
+    sha256_file,
+)
 from prithvi_payload.cloud_stage import build_cloud_stage_plan
 from prithvi_payload.crop_stage import build_crop_stage_plan
 from prithvi_payload.inference import InferenceOutput
@@ -64,6 +71,42 @@ def _write_balkan_scene(path: Path) -> None:
         destination.write(values)
 
 
+def _write_calibration(scene: Path) -> Path:
+    sidecar = default_calibration_path(scene)
+    value = {
+        "schema_version": CALIBRATION_SCHEMA_VERSION,
+        "adapter_mode": ADAPTER_MODE,
+        "sensor": "balkan-1",
+        "acquired_at": "2026-01-01T12:00:00+00:00",
+        "source_band_order": ["BLUE", "GREEN", "RED", "NIR_BROAD"],
+        "model_band_order": ["BLUE", "GREEN", "RED", "NIR_NARROW"],
+        "source_band_indices_1_based": [1, 2, 3, 4],
+        "source_scale_to_model_units": 10_000.0,
+        "analysis_resolution_metres": 10.0,
+        "source": {
+            "filename": scene.name,
+            "bytes": scene.stat().st_size,
+            "sha256": sha256_file(scene),
+        },
+        "reference": {"sensor": "sentinel-2", "sha256": "a" * 64},
+        "curves": [
+            {
+                "band": band,
+                "source_knots": [0.0, 10_000.0],
+                "target_values": [100.0, 9_000.0],
+            }
+            for band in ("BLUE", "GREEN", "RED", "NIR_BROAD")
+        ],
+        "validation": {
+            "status": "PASS",
+            "held_out_valid_pixels": 20_000,
+            "held_out_band_correlations": [0.9, 0.9, 0.9, 0.9],
+        },
+    }
+    sidecar.write_text(json.dumps(value), encoding="utf-8")
+    return sidecar
+
+
 def test_explicit_band_order_adapts_undescribed_l1ort_without_mutating_it(
     tmp_path: Path,
 ) -> None:
@@ -77,13 +120,9 @@ def test_explicit_band_order_adapts_undescribed_l1ort_without_mutating_it(
     assert "Every input band must have a description" in rejected["errors"]
     assert accepted["readiness"]["intake"] == "READY"
     assert accepted["sensor_contract"]["band_order_source"] == "explicit_override"
-    assert accepted["model_band_routes"]["cloud_detection"][
-        "source_band_indices"
-    ] == [4, 3, 2, 1]
+    assert accepted["model_band_routes"]["cloud_detection"]["source_band_indices"] == [4, 3, 2, 1]
     assert accepted["readiness"]["crop"] == "BALKAN_1_SPECTRAL_HARMONISATION_REQUIRED"
-    assert accepted["model_band_routes"]["crop_classification"][
-        "source_band_indices"
-    ] is None
+    assert accepted["model_band_routes"]["crop_classification"]["source_band_indices"] is None
     with rasterio.open(scene) as unchanged:
         assert unchanged.descriptions == (None, None, None, None, None)
 
@@ -159,14 +198,55 @@ def test_provisional_balkan_route_reaches_crop_execution(tmp_path: Path) -> None
 
     assert result["status"] == "CROP_COMPLETE"
     assert result["completed_stages"] == ["intake", "cloud", "crop"]
-    assert result["stage_metadata"]["crop_plan"]["compatibility"] == (
-        "PROVISIONAL_EXECUTION_ONLY"
-    )
+    assert result["stage_metadata"]["crop_plan"]["compatibility"] == ("PROVISIONAL_EXECUTION_ONLY")
     assert result["stage_metadata"]["cloud"]["runtime"]["device"] == "unknown"
-    assert result["stage_metadata"]["cloud"]["analysis_grid"]["mode"] == (
-        "balkan_1_utm_10m"
-    )
+    assert result["stage_metadata"]["cloud"]["analysis_grid"]["mode"] == ("balkan_1_utm_10m")
     for mask_name in ("semantic_mask", "unusable_mask", "invalid_mask"):
         with rasterio.open(result["artifacts"]["cloud"][mask_name]) as mask:
             assert mask.shape == (16, 16)
     assert result["summary"]["crop"]["device"] == "cpu"
+
+
+def test_validated_balkan_calibration_runs_without_provisional_override(
+    tmp_path: Path,
+) -> None:
+    scene = tmp_path / "3408_L1ORT.tif"
+    _write_balkan_scene(scene)
+    _write_calibration(scene)
+
+    intake = inspect_scene(
+        scene,
+        sensor="balkan-1",
+        band_order=BALKAN_ORDER,
+        acquired_at="2026-01-01T12:00:00Z",
+    )
+    route = intake["model_band_routes"]["crop_classification"]
+
+    assert intake["readiness"]["crop"] == "READY"
+    assert route["spectral_adapter"]["mode"] == ADAPTER_MODE
+    assert route["spectral_adapter"]["validation_status"] == ("VALIDATED_SENTINEL_EQUIVALENCE")
+
+    result = run_scene(
+        scene,
+        sensor="balkan-1",
+        output_root=tmp_path / "calibrated_run",
+        acquired_at="2026-01-01T12:00:00Z",
+        band_order=BALKAN_ORDER,
+        reflectance_scale=1,
+        stop_after="condition",
+        cloud_backend=TestBackend(),
+        cloud_config=load_config(DEFAULT_CONFIG),
+        crop_model=FakeCropModel(),
+    )
+
+    assert result["status"] == "CONDITION_COMPLETE"
+    assert result["completed_stages"] == ["intake", "cloud", "crop", "condition"]
+    assert result["stage_metadata"]["crop_plan"]["compatibility"] == (
+        "CALIBRATED_BALKAN_1_SENTINEL_EQUIVALENCE"
+    )
+    crop = result["stage_metadata"]["crop"]
+    assert crop["spectral_adapter"]["mode"] == ADAPTER_MODE
+    assert crop["analysis_grid"]["resolution_metres"] == 10.0
+    with rasterio.open(result["artifacts"]["crop"]["crop_binary"]) as output:
+        assert output.shape == (16, 16)
+    assert result["stage_metadata"]["condition"]["radiometry"]["source"] == ADAPTER_MODE

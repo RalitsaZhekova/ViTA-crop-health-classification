@@ -134,8 +134,9 @@ declared band order, and runs cloud detection through bounded 512-pixel windows.
 When explicitly requested, scenes below the 60% cloud gate continue through
 bounded crop segmentation and windowed condition processing. Every cloud-shadow,
 cloud and invalid pixel in the operational unusable mask is excluded from crop
-and condition outputs. The Balkan-1 route is provisional until real imagery is
-radiometrically and spectrally validated.
+and condition outputs. Sentinel-2 keeps its native inference path. A Balkan-1
+scene uses the crop model only when a source-bound calibration sidecar passes
+the radiometric quality gate; otherwise crop remains blocked by default.
 
 Real Balkan-1 collections remain under ignored `data/` storage or at an
 external path; they are not stored in this component. The versioned local
@@ -144,11 +145,15 @@ preprocessing and handoff utilities are documented in
 explicit band order for existing L1ORT products that have no GeoTIFF band
 descriptions, without copying or rewriting the multi-gigabyte source.
 
-Balkan crop transfer remains blocked by default. An explicit
-`--allow-provisional-balkan-crop` execution-only adapter is available for
-accelerator and interface demonstrations. Its metadata records the broad-NIR to
-narrow-NIR transfer as unvalidated; its outputs must not be presented as Balkan
-crop accuracy evidence.
+Balkan crop transfer requires an adjacent
+`<scene>.crop_calibration.json` produced from a co-registered Sentinel reference
+by `scripts/balkan1/calibrate_crop_input.py`. The sidecar is tied to the source
+SHA-256, contains monotonic band-response curves and must pass held-out spatial
+correlation gates. At inference, only a temporary 10 m calibrated raster is
+sent to Prithvi; outputs are returned to the original full-resolution grid.
+Sentinel reference imagery is not a runtime or payload dependency. The existing
+`--allow-provisional-balkan-crop` path remains available only for explicitly
+unvalidated software execution tests.
 
 Run only from an explicit command:
 
@@ -247,6 +252,8 @@ files remain available for debugging and audit.
 
 ## Current limits
 
-Crop inference is ready for tiled arrays, and the cloud stage streams large
-GeoTIFFs without loading a full scene. Balkan-1 raw-band reconstruction and
-real Balkan-1 cloud/crop validation are not yet implemented.
+Crop inference is ready for tiled arrays, the cloud stage streams large
+GeoTIFFs, and calibrated Balkan-1 L1ORT scenes use a validated Sentinel-domain
+input adapter. Balkan-1 raw-band reconstruction remains separate, and a
+labelled multi-scene Balkan crop benchmark is still required before reporting
+sensor-specific crop accuracy.

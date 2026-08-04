@@ -32,6 +32,11 @@ def main() -> None:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--band-order", nargs="+", default=list(DEFAULT_BAND_ORDER))
     parser.add_argument("--reflectance-scale", type=float)
+    parser.add_argument(
+        "--crop-calibration",
+        type=Path,
+        help="Validated calibration sidecar (defaults beside the input GeoTIFF)",
+    )
     parser.add_argument("--stop-after", choices=STAGE_ORDER, default="cloud")
     parser.add_argument("--region-id")
     parser.add_argument("--max-crop-cloud-percentage", type=float, default=60.0)
@@ -53,10 +58,17 @@ def main() -> None:
     if len(args.band_order) != 5:
         parser.error("Balkan-1 --band-order must contain exactly five labels")
     requested_crop = STAGE_ORDER.index(args.stop_after) >= STAGE_ORDER.index("crop")
-    if requested_crop and not args.allow_provisional_crop:
+    calibration_path = (
+        args.crop_calibration.resolve()
+        if args.crop_calibration
+        else input_path.with_name(f"{input_path.stem}.crop_calibration.json")
+    )
+    if requested_crop and not calibration_path.is_file() and not args.allow_provisional_crop:
         parser.error(
-            "Balkan-1 crop transfer is unvalidated. Pass --allow-provisional-crop only "
-            "for an explicitly labelled software execution test."
+            "Balkan-1 crop classification requires a validated calibration sidecar. "
+            "Create the adjacent *.crop_calibration.json file with calibrate_crop_input.py, "
+            "pass --crop-calibration, or use --allow-provisional-crop only for an "
+            "explicitly unvalidated software execution test."
         )
     if requested_crop and not args.acquired_at:
         parser.error("--acquired-at is required for crop inference")
@@ -103,6 +115,8 @@ def main() -> None:
         command.extend(("--region-id", args.region_id))
     if args.reflectance_scale is not None:
         command.extend(("--reflectance-scale", str(args.reflectance_scale)))
+    if args.crop_calibration:
+        command.extend(("--crop-calibration", str(calibration_path)))
     if args.allow_provisional_crop:
         command.append("--allow-provisional-balkan-crop")
     if args.overwrite:
@@ -126,13 +140,18 @@ def main() -> None:
         raise SystemExit(completed.returncode)
 
     result = json.loads(result_path.read_text(encoding="utf-8"))
+    crop_compatibility = result.get("stage_metadata", {}).get("crop_plan", {}).get("compatibility")
     evidence = {
         "result": str(result_path),
         "status": result["status"],
         "scientific_status": (
-            "unvalidated_balkan_sensor_transfer"
-            if args.allow_provisional_crop
-            else "provisional_cloud_transfer"
+            "validated_balkan_to_sentinel_crop_calibration"
+            if crop_compatibility == "CALIBRATED_BALKAN_1_SENTINEL_EQUIVALENCE"
+            else (
+                "unvalidated_balkan_sensor_transfer"
+                if crop_compatibility == "PROVISIONAL_EXECUTION_ONLY"
+                else "provisional_cloud_transfer"
+            )
         ),
         "cloud": result.get("summary", {}).get("cloud"),
         "crop": result.get("summary", {}).get("crop"),

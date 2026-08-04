@@ -16,6 +16,7 @@ from prithvi_shared import (
 
 CROP_STAGE_SCHEMA_VERSION = "0.1-draft"
 DEFAULT_MAX_CLOUD_PERCENTAGE = 60.0
+CALIBRATED_BALKAN_ADAPTER = "BALKAN_1_SENTINEL_MONOTONIC_V1"
 
 
 def _temporal_coordinate(acquired_at: str | None) -> list[float] | None:
@@ -45,6 +46,11 @@ def build_crop_stage_plan(
     warnings: list[str] = []
     crop_input_readiness = intake.get("readiness", {}).get("crop")
     spectral_adapter = route.get("spectral_adapter")
+    calibrated_balkan = (
+        intake.get("sensor") == "balkan-1"
+        and isinstance(spectral_adapter, dict)
+        and spectral_adapter.get("mode") == CALIBRATED_BALKAN_ADAPTER
+    )
 
     if gate_passed and crop_input_readiness not in {"READY", "READY_PROVISIONAL"}:
         errors.append(
@@ -52,9 +58,10 @@ def build_crop_stage_plan(
             "BLUE, GREEN, RED and NIR_NARROW"
         )
     if gate_passed and crop_input_readiness == "READY_PROVISIONAL":
-        if not isinstance(spectral_adapter, dict) or spectral_adapter.get(
-            "validation_status"
-        ) != "EXECUTION_ONLY_UNVALIDATED":
+        if (
+            not isinstance(spectral_adapter, dict)
+            or spectral_adapter.get("validation_status") != "EXECUTION_ONLY_UNVALIDATED"
+        ):
             errors.append("Provisional crop readiness is missing its spectral adapter record")
         warnings.extend(
             [
@@ -62,6 +69,12 @@ def build_crop_stage_plan(
                 "Results demonstrate software execution only, not crop accuracy",
             ]
         )
+    if gate_passed and calibrated_balkan:
+        if spectral_adapter.get("validation_status") != "VALIDATED_SENTINEL_EQUIVALENCE":
+            errors.append("Balkan-1 crop calibration is not validated")
+        calibration_path = spectral_adapter.get("calibration_path")
+        if not isinstance(calibration_path, str) or not Path(calibration_path).is_file():
+            errors.append("Balkan-1 crop calibration sidecar is unavailable")
     if gate_passed and (
         not isinstance(source_indices, list)
         or len(source_indices) != 4
@@ -76,7 +89,11 @@ def build_crop_stage_plan(
         errors.append("Crop classification requires the image acquisition timestamp")
 
     cloud_reflectance_scale = cloud_plan.get("input", {}).get("reflectance_scale")
-    if not isinstance(cloud_reflectance_scale, (int, float)) or cloud_reflectance_scale <= 0:
+    if calibrated_balkan:
+        training_scale_multiplier = spectral_adapter.get("source_scale_to_model_units")
+        if not isinstance(training_scale_multiplier, (int, float)):
+            training_scale_multiplier = None
+    elif not isinstance(cloud_reflectance_scale, (int, float)) or cloud_reflectance_scale <= 0:
         training_scale_multiplier = None
     else:
         training_scale_multiplier = 10000.0 / float(cloud_reflectance_scale)
@@ -84,9 +101,7 @@ def build_crop_stage_plan(
         errors.append("A verified reflectance scale is required for crop classification")
 
     unusable_mask = cloud_metadata.get("output_files", {}).get("unusable_mask")
-    if gate_passed and (
-        not isinstance(unusable_mask, str) or not Path(unusable_mask).is_file()
-    ):
+    if gate_passed and (not isinstance(unusable_mask, str) or not Path(unusable_mask).is_file()):
         errors.append("The cloud stage did not provide an unusable-pixel mask")
 
     if not gate_passed:
@@ -105,9 +120,13 @@ def build_crop_stage_plan(
         "acquired_at": intake.get("acquired_at"),
         "readiness": readiness,
         "compatibility": (
-            "PROVISIONAL_EXECUTION_ONLY"
-            if crop_input_readiness == "READY_PROVISIONAL"
-            else "VALIDATED_MODEL_INPUT_CONTRACT"
+            "CALIBRATED_BALKAN_1_SENTINEL_EQUIVALENCE"
+            if calibrated_balkan
+            else (
+                "PROVISIONAL_EXECUTION_ONLY"
+                if crop_input_readiness == "READY_PROVISIONAL"
+                else "VALIDATED_MODEL_INPUT_CONTRACT"
+            )
         ),
         "gate": {
             "metric": "cloud_percentage",

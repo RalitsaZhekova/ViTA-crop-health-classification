@@ -16,6 +16,12 @@ import rasterio
 from rasterio.enums import Resampling
 from rasterio.transform import Affine
 
+from prithvi_payload.balkan_crop_calibration import (
+    CalibrationError,
+    default_calibration_path,
+    load_calibration,
+)
+
 SCHEMA_VERSION = "0.1-draft"
 SUPPORTED_SENSORS = ("sentinel-2", "balkan-1")
 
@@ -121,6 +127,7 @@ def inspect_scene(
     scene_id: str | None = None,
     band_order: Sequence[str] | None = None,
     allow_provisional_balkan_crop: bool = False,
+    crop_calibration_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Inspect a scene without loading the full raster into memory."""
     if sensor not in SUPPORTED_SENSORS:
@@ -138,6 +145,8 @@ def inspect_scene(
 
     errors: list[str] = []
     warnings: list[str] = []
+    crop_calibration: dict[str, Any] | None = None
+    crop_calibration_error: str | None = None
     mapping: dict[str, dict[str, Any]] = {}
     bands: list[dict[str, Any]] = []
 
@@ -206,9 +215,7 @@ def inspect_scene(
             description is None for description in source_descriptions
         ):
             errors.append("Every input band must have a description")
-        unrecognised = [
-            item["index"] for item in bands if item["logical_role"] is None
-        ]
+        unrecognised = [item["index"] for item in bands if item["logical_role"] is None]
         if unrecognised:
             warnings.append(f"Unrecognised extra band indices: {unrecognised}")
         if dataset.nodata is None:
@@ -236,9 +243,7 @@ def inspect_scene(
 
     if sensor == "balkan-1":
         if raster["band_count"] != 5:
-            errors.append(
-                "Balkan-1 preprocessed input must contain exactly five bands"
-            )
+            errors.append("Balkan-1 preprocessed input must contain exactly five bands")
         if "PANCHROMATIC" not in mapping:
             errors.append("Balkan-1 preprocessed input is missing PANCHROMATIC")
         if unrecognised:
@@ -255,11 +260,40 @@ def inspect_scene(
     if normalised_acquired_at is None:
         warnings.append("Acquisition time is missing")
 
+    requested_calibration_path = (
+        Path(crop_calibration_path)
+        if crop_calibration_path is not None
+        else default_calibration_path(raster_path)
+    )
+    if sensor == "balkan-1" and requested_calibration_path.is_file():
+        try:
+            crop_calibration = load_calibration(
+                requested_calibration_path,
+                source_path=raster_path,
+            )
+        except CalibrationError as exc:
+            crop_calibration_error = str(exc)
+            warnings.append(f"Balkan-1 crop calibration rejected: {exc}")
+        else:
+            calibration_acquired_at = _validate_acquired_at(crop_calibration.get("acquired_at"))
+            if (
+                normalised_acquired_at is not None
+                and calibration_acquired_at is not None
+                and datetime.fromisoformat(normalised_acquired_at).date()
+                != datetime.fromisoformat(calibration_acquired_at).date()
+            ):
+                crop_calibration_error = (
+                    "Crop calibration acquisition date does not match the scene timestamp"
+                )
+                crop_calibration = None
+                warnings.append(f"Balkan-1 crop calibration rejected: {crop_calibration_error}")
+    elif sensor == "balkan-1" and crop_calibration_path is not None:
+        crop_calibration_error = f"Crop calibration does not exist: {requested_calibration_path}"
+        warnings.append(crop_calibration_error)
+
     if sensor == "sentinel-2":
         cloud_status = (
-            "READY"
-            if not missing_rgb and (has_nir_broad or has_nir_narrow)
-            else "MISSING_NIR"
+            "READY" if not missing_rgb and (has_nir_broad or has_nir_narrow) else "MISSING_NIR"
         )
         if not missing_rgb and has_nir_narrow:
             crop_status = "READY"
@@ -275,6 +309,8 @@ def inspect_scene(
         )
         if missing_rgb or not (has_nir_broad or has_nir_narrow):
             crop_status = "MISSING_REQUIRED_BANDS"
+        elif crop_calibration is not None:
+            crop_status = "READY"
         elif allow_provisional_balkan_crop:
             crop_status = "READY_PROVISIONAL"
             warnings.extend(
@@ -292,7 +328,9 @@ def inspect_scene(
     cloud_nir_role = (
         "NIR_NARROW"
         if sensor == "sentinel-2" and has_nir_narrow
-        else "NIR_BROAD" if has_nir_broad else "NIR_NARROW"
+        else "NIR_BROAD"
+        if has_nir_broad
+        else "NIR_NARROW"
     )
     cloud_order = (cloud_nir_role, "RED", "GREEN", "BLUE")
     crop_order = ("BLUE", "GREEN", "RED", "NIR_NARROW")
@@ -309,13 +347,34 @@ def inspect_scene(
     crop_approximate_indices = None
     if native_crop_indices is None and not missing_rgb and has_nir_broad:
         crop_approximate_indices = [
-            mapping[role]["index"]
-            for role in ("BLUE", "GREEN", "RED", "NIR_BROAD")
+            mapping[role]["index"] for role in ("BLUE", "GREEN", "RED", "NIR_BROAD")
         ]
     crop_indices = native_crop_indices
     crop_source_roles = list(crop_order) if native_crop_indices is not None else None
     spectral_adapter = None
-    if sensor == "balkan-1" and allow_provisional_balkan_crop:
+    if sensor == "balkan-1" and crop_calibration is not None:
+        calibrated_indices = crop_calibration["source_band_indices_1_based"]
+        expected_indices = crop_approximate_indices or native_crop_indices
+        if calibrated_indices != expected_indices:
+            crop_calibration_error = (
+                "Crop calibration band indices do not match the inspected Balkan band route"
+            )
+            crop_status = "BALKAN_1_SPECTRAL_HARMONISATION_REQUIRED"
+            warnings.append(f"Balkan-1 crop calibration rejected: {crop_calibration_error}")
+            crop_calibration = None
+        else:
+            crop_indices = calibrated_indices
+            crop_source_roles = list(crop_calibration["source_band_order"])
+            spectral_adapter = {
+                "mode": crop_calibration["adapter_mode"],
+                "validation_status": "VALIDATED_SENTINEL_EQUIVALENCE",
+                "calibration_path": str(requested_calibration_path.resolve()),
+                "analysis_resolution_metres": crop_calibration["analysis_resolution_metres"],
+                "source_scale_to_model_units": crop_calibration["source_scale_to_model_units"],
+                "validation": crop_calibration["validation"],
+                "reference": crop_calibration["reference"],
+            }
+    elif sensor == "balkan-1" and allow_provisional_balkan_crop:
         if native_crop_indices is not None:
             crop_source_roles = list(crop_order)
         elif crop_approximate_indices is not None:
@@ -346,6 +405,12 @@ def inspect_scene(
             "pan_used_by_current_models": False,
             "band_order_source": band_order_source,
             "provisional_crop_adapter_enabled": allow_provisional_balkan_crop,
+            "crop_calibration_path": (
+                str(requested_calibration_path.resolve())
+                if sensor == "balkan-1" and requested_calibration_path.is_file()
+                else None
+            ),
+            "crop_calibration_error": crop_calibration_error,
         },
         "raster": raster,
         "bands": bands,
@@ -387,6 +452,7 @@ def main() -> None:
         nargs="+",
         help="Explicit source-band labels, one per raster band",
     )
+    parser.add_argument("--crop-calibration", type=Path)
     parser.add_argument(
         "--allow-provisional-balkan-crop",
         action="store_true",
@@ -401,6 +467,7 @@ def main() -> None:
         scene_id=args.scene_id,
         band_order=args.band_order,
         allow_provisional_balkan_crop=args.allow_provisional_balkan_crop,
+        crop_calibration_path=args.crop_calibration,
     )
     rendered = json.dumps(report, indent=2, sort_keys=True)
     if args.output:

@@ -31,6 +31,12 @@ from prithvi_shared.health import build_analysis_mask, calculate_health_layers
 from rasterio.enums import Resampling
 from rasterio.windows import Window
 
+from prithvi_payload.balkan_crop_calibration import (
+    ADAPTER_MODE,
+    apply_calibration,
+    load_calibration,
+)
+
 PAYLOAD_CONDITION_ALGORITHM_VERSION = "payload-condition-v1"
 FLOAT_NODATA = -9999.0
 BYTE_NODATA = 255
@@ -472,8 +478,11 @@ def run_payload_condition(
         raise ValueError("Payload result is missing stage metadata")
     intake = stage_metadata.get("intake")
     cloud_plan = stage_metadata.get("cloud_plan")
+    crop_plan = stage_metadata.get("crop_plan", {})
     if not isinstance(intake, dict) or not isinstance(cloud_plan, dict):
         raise ValueError("Payload result is missing intake or cloud-plan metadata")
+    if not isinstance(crop_plan, dict):
+        raise ValueError("Payload crop-plan metadata is invalid")
     acquired_at = intake.get("acquired_at")
     if not isinstance(acquired_at, str) or not acquired_at:
         raise ValueError("Payload result is missing acquisition time")
@@ -496,13 +505,27 @@ def run_payload_condition(
     if not isinstance(band_mapping, dict):
         raise ValueError("Payload intake metadata is missing logical band mapping")
     warnings: list[str] = []
+    crop_input = crop_plan.get("input", {})
+    spectral_adapter = crop_input.get("spectral_adapter")
+    calibrated_balkan = (
+        sensor == "balkan-1"
+        and isinstance(spectral_adapter, dict)
+        and spectral_adapter.get("mode") == ADAPTER_MODE
+    )
+    calibration = None
+    if calibrated_balkan:
+        calibration = load_calibration(
+            spectral_adapter["calibration_path"],
+            source_path=source_path,
+        )
     nir_role = "NIR_NARROW"
     if nir_role not in band_mapping:
         nir_role = "NIR_BROAD"
-        warnings.append(
-            "NIR_NARROW was unavailable; health analysis used NIR_BROAD and requires "
-            "sensor-specific validation."
-        )
+        if not calibrated_balkan:
+            warnings.append(
+                "NIR_NARROW was unavailable; health analysis used NIR_BROAD and requires "
+                "sensor-specific validation."
+            )
     roles = ("BLUE", "GREEN", "RED", nir_role)
     if any(role not in band_mapping for role in roles):
         raise ValueError(f"Source scene does not provide required condition roles: {roles}")
@@ -581,7 +604,14 @@ def run_payload_condition(
         for window in windows:
             pixel_ids = _window_pixel_ids(window, source.width)
             raw_bands = source.read(band_indices, window=window).astype(np.float32)
-            reflectance = raw_bands / reflectance_scale
+            if calibration is not None:
+                model_values = apply_calibration(
+                    raw_bands * np.float32(calibration["source_scale_to_model_units"]),
+                    calibration,
+                )
+                reflectance = model_values / np.float32(10_000.0)
+            else:
+                reflectance = raw_bands / reflectance_scale
             source_valid = np.all(
                 source.read_masks(band_indices, window=window) > 0,
                 axis=0,
@@ -787,10 +817,15 @@ def run_payload_condition(
             "height": height,
         },
         "radiometry": {
-            "input_scale_divisor": reflectance_scale,
+            "input_scale_divisor": 10_000.0 if calibration is not None else reflectance_scale,
             "analysis_units": "scaled_reflectance",
             "nir_role": nir_role,
-            "source": cloud_input.get("reflectance_scale_source"),
+            "source": (
+                ADAPTER_MODE
+                if calibration is not None
+                else cloud_input.get("reflectance_scale_source")
+            ),
+            "spectral_adapter": spectral_adapter if calibration is not None else None,
         },
         "provenance": {
             "payload_result": str(result_path),

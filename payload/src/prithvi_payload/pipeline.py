@@ -45,6 +45,7 @@ def run_scene(
     scene_id: str | None = None,
     band_order: Sequence[str] | None = None,
     allow_provisional_balkan_crop: bool = False,
+    crop_calibration_path: str | Path | None = None,
     reflectance_scale: float | None = None,
     stop_after: str = "cloud",
     max_crop_cloud_percentage: float = DEFAULT_MAX_CLOUD_PERCENTAGE,
@@ -75,6 +76,7 @@ def run_scene(
         scene_id=scene_id,
         band_order=band_order,
         allow_provisional_balkan_crop=allow_provisional_balkan_crop,
+        crop_calibration_path=crop_calibration_path,
     )
     resolved_scene_id = intake["scene_id"]
     intake_path = output_root / "metadata" / f"{resolved_scene_id}_intake.json"
@@ -257,9 +259,7 @@ def continue_scene_from_cloud(
         "decision": "CLASSIFIED",
         "crop_percentage_usable": crop_metadata["crop_percentage_usable"],
         "usable_percentage": crop_metadata["usable_percentage"],
-        "mean_crop_probability_usable": crop_metadata[
-            "mean_crop_probability_usable"
-        ],
+        "mean_crop_probability_usable": crop_metadata["mean_crop_probability_usable"],
         "mean_confidence_usable": crop_metadata["mean_confidence_usable"],
         "runtime_seconds": crop_metadata["runtime"]["seconds"],
         "device": crop_metadata["runtime"]["device"],
@@ -293,9 +293,7 @@ def continue_scene_from_cloud(
         "status": condition_report["status"],
         "label": condition_report["condition"]["label"],
         "score": condition_report["condition"]["condition_score"],
-        "evidence_quality_label": condition_report["condition"][
-            "evidence_quality_label"
-        ],
+        "evidence_quality_label": condition_report["condition"]["evidence_quality_label"],
         "analysis_percentage": condition_report["quality"]["analysis_percentage"],
         "runtime_seconds": condition_report["runtime"]["seconds"],
     }
@@ -323,8 +321,7 @@ def continue_scene_from_cloud(
     downlink_files = {
         "metadata": downlink_root / "scene.json",
         "rgb_preview": downlink_root / downlink["assets"]["rgb_preview"]["href"],
-        "condition_overlay": downlink_root
-        / downlink["assets"]["condition_overlay"]["href"],
+        "condition_overlay": downlink_root / downlink["assets"]["condition_overlay"]["href"],
     }
     source_bytes = Path(intake["source_path"]).stat().st_size
     package_bytes = int(downlink["package"]["total_bytes"])
@@ -369,6 +366,7 @@ def main() -> None:
         action="store_true",
         help="Enable unvalidated Balkan NIR transfer for execution testing only",
     )
+    parser.add_argument("--crop-calibration", type=Path)
     parser.add_argument("--reflectance-scale", type=float)
     parser.add_argument(
         "--stop-after",
@@ -400,6 +398,7 @@ def main() -> None:
         scene_id=args.scene_id,
         band_order=args.band_order,
         allow_provisional_balkan_crop=args.allow_provisional_balkan_crop,
+        crop_calibration_path=args.crop_calibration,
         reflectance_scale=args.reflectance_scale,
         stop_after=args.stop_after,
         max_crop_cloud_percentage=args.max_crop_cloud_percentage,

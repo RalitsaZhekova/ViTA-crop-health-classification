@@ -9,6 +9,7 @@ param(
     [string]$AcquiredAt,
     [string]$SceneId,
     [string[]]$BandOrder,
+    [string]$CropCalibration,
     [switch]$AllowProvisionalBalkanCrop,
     [string]$Output,
     [ValidateSet("intake", "cloud", "crop", "condition", "downlink")]
@@ -57,6 +58,10 @@ if ($SceneId) {
 if ($BandOrder) {
     $pipelineArguments += "--band-order"
     $pipelineArguments += $BandOrder
+}
+if ($CropCalibration) {
+    $resolvedCropCalibration = (Resolve-Path -LiteralPath $CropCalibration).Path
+    $pipelineArguments += @("--crop-calibration", $resolvedCropCalibration)
 }
 if ($AllowProvisionalBalkanCrop) {
     $pipelineArguments += "--allow-provisional-balkan-crop"

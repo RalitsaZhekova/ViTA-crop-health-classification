@@ -50,8 +50,13 @@ preprocessing, proof-chip and payload-handoff utilities live under
 proof chips may be staged under the already ignored `testing/inputs/balkan1/`
 when local or target acceleration evidence is needed.
 
-The current Balkan cloud route and opt-in crop route are sensor-transfer
-execution tests. They do not establish cloud or crop accuracy on Balkan-1.
+The Balkan cloud route remains a sensor-transfer execution path. Balkan crop
+classification is blocked unless the input has a validated per-scene spectral
+calibration sidecar. The calibrated route resamples model input to 10 m and
+maps Balkan RGB/NIR into the Sentinel B02/B03/B04/B8A radiometric domain before
+using the unchanged Prithvi model. This establishes input/model equivalence
+against the paired Sentinel scene; it is not a substitute for a labelled
+Balkan crop-accuracy benchmark.
 
 ## Complete Sentinel MVP
 

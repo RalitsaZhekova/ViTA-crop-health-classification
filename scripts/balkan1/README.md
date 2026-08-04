@@ -234,8 +234,7 @@ region. It refuses to write proof imagery below `payload/`.
 
 ## Run the payload stages
 
-Cloud detection is the safe default and remains a provisional Sentinel-to-
-Balkan transfer:
+Cloud detection is the safe default and remains a Sentinel-to-Balkan transfer:
 
 ```powershell
 .venv\Scripts\python.exe scripts\balkan1\run_pipeline.py `
@@ -249,23 +248,47 @@ reflectance. Raw DN must not be passed to either model. If the scale is omitted,
 scene intake reports its sampled inference; that inference is not a calibration
 certificate.
 
-The Balkan NIR response is not validated as the crop model's narrow-NIR input.
-Crop, condition and downlink execution therefore require an explicit
-execution-only opt-in and an acquisition time:
+Crop inference must not consume the preprocessed pixels directly: Balkan-1 has
+a finer native ground sampling distance and a different radiometric response
+than the Sentinel/HLS data used to train the Prithvi head. For each scene,
+prepare a co-registered Sentinel reference containing B02, B03, B04 and B8A in
+model scale units, then fit the ground-side calibration:
+
+```powershell
+.venv\Scripts\python.exe scripts\balkan1\calibrate_crop_input.py `
+  data\balkan1\preprocessed\3408_L1ORT.tif `
+  D:\path\to\3408_sentinel2_reference.tif `
+  --acquired-at 2026-06-16T18:40:43Z
+```
+
+The inputs must overlap and be co-registered. The fitter uses alternating
+spatial blocks for fit and held-out validation and refuses to write a sidecar
+unless every band correlation is at least 0.75 and their mean is at least 0.80.
+Its default output is adjacent to the
+Balkan image as `3408_L1ORT.crop_calibration.json`. The sidecar contains no
+imagery but stays with the ignored local data rather than under `payload/` or
+Git. Do not reuse a sidecar for a different file or acquisition.
+
+Once that sidecar exists, crop, condition and downlink run without the
+provisional flag:
 
 ```powershell
 .venv\Scripts\python.exe scripts\balkan1\run_pipeline.py `
-  testing\inputs\balkan1\3036_L1ORT_sample.tif `
-  --acquired-at 2026-01-01T12:00:00Z `
+  data\balkan1\preprocessed\3408_L1ORT.tif `
+  --acquired-at 2026-06-16T18:40:43Z `
   --stop-after crop `
-  --reflectance-scale 1 `
-  --allow-provisional-crop
+  --reflectance-scale 1
 ```
 
-The run metadata records the adapter as `EXECUTION_ONLY_UNVALIDATED`, the cloud
-and crop device, synchronized model timing and warnings. This can demonstrate
-that the software path runs and uses an accelerator; it is not Balkan crop or
-cloud accuracy evidence.
+The runtime validates the sidecar against the source SHA-256, creates a
+temporary calibrated 10 m model raster, runs the same Prithvi model, and maps
+the probability back to the full original grid for the website. Metadata
+records the adapter, reference provenance, held-out quality, devices and
+timings. The Sentinel reference is not copied into the payload.
+
+If no valid sidecar is available, crop remains blocked. The old
+`--allow-provisional-crop` switch is retained only for explicitly labelled
+execution tests and must not be used as crop-accuracy evidence.
 
 For an acquisition-lineage execution proof, first build the real raw-derived
 L1A with `--device cuda`, then stage a reviewed chip from the paired delivered
