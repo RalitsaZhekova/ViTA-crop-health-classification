@@ -21,6 +21,10 @@ then applies robust within-crop-region anomaly analysis. Its reflectance,
 masking, interpretation and JSON output rules are documented in
 [`shared/health_analysis_contract.md`](shared/health_analysis_contract.md).
 
+For a plain-language, file-by-file explanation of the complete repository and
+the Jetson sub-two-second acceleration plan, read
+[`REPOSITORY_GUIDE.md`](REPOSITORY_GUIDE.md).
+
 ## Extracted components
 
 The selected model is frozen for the current project phase. Its checksum-pinned
