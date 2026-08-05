@@ -13,6 +13,8 @@ import torch
 import yaml
 from prithvi_shared import (
     CROP_CLASSIFICATION_THRESHOLD,
+    INPUT_HEIGHT,
+    INPUT_WIDTH,
     MODEL_BANDS,
     NORMALIZATION_MEANS,
     NORMALIZATION_STDS,
@@ -23,6 +25,7 @@ from prithvi_shared import (
 from torch import Tensor, nn
 
 PAYLOAD_ROOT = Path(__file__).resolve().parents[2]
+OPTIMIZED_BATCH_SIZE = 4
 
 
 def default_model_directory() -> Path:
@@ -45,6 +48,26 @@ class InferenceOutput:
     crop_confidence: Tensor
 
 
+class _TensorLogitsModel(nn.Module):
+    """Expose TerraTorch's tensor output as a portable PyTorch graph."""
+
+    def __init__(self, model: nn.Module) -> None:
+        super().__init__()
+        self.model = model
+
+    def forward(
+        self,
+        image: Tensor,
+        temporal_coords: Tensor,
+        location_coords: Tensor,
+    ) -> Tensor:
+        return self.model(
+            image,
+            temporal_coords=temporal_coords,
+            location_coords=location_coords,
+        ).output
+
+
 def checkpoint_sha256(path: Path) -> str:
     """Hash a checkpoint without loading it into memory."""
     digest = hashlib.sha256()
@@ -52,6 +75,47 @@ def checkpoint_sha256(path: Path) -> str:
         for chunk in iter(lambda: file.read(8 * 1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _optimized_model_path(model_directory: Path, device: torch.device) -> Path:
+    checkpoint_stem = Path(SELECTED_CHECKPOINT_NAME).stem
+    version = SELECTED_CHECKPOINT_SHA256[:12]
+    torch_version = torch.__version__.split("+", maxsplit=1)[0].replace(".", "_")
+    return model_directory / (
+        f"{checkpoint_stem}.{version}.torch_{torch_version}.{device.type}.export.pt2"
+    )
+
+
+def _export_optimized_model(
+    model: nn.Module,
+    destination: Path,
+    device: torch.device,
+) -> None:
+    """Atomically cache the fixed-shape inference graph used by both MVPs."""
+    image = torch.zeros(
+        (
+            OPTIMIZED_BATCH_SIZE,
+            len(MODEL_BANDS),
+            TIME_STEPS,
+            INPUT_HEIGHT,
+            INPUT_WIDTH,
+        ),
+        device=device,
+    )
+    temporal_coords = torch.zeros((OPTIMIZED_BATCH_SIZE, TIME_STEPS, 2), device=device)
+    location_coords = torch.zeros((OPTIMIZED_BATCH_SIZE, 2), device=device)
+    model = model.to(device).eval()
+    optimized = torch.export.export(
+        model,
+        (image, temporal_coords, location_coords),
+        strict=False,
+    )
+    temporary = destination.with_name(f".{destination.stem}.{os.getpid()}.tmp.pt2")
+    try:
+        torch.export.save(optimized, temporary)
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _model_state(checkpoint: dict[str, Any]) -> dict[str, Tensor]:
@@ -81,9 +145,14 @@ class PayloadCropModel:
         model: nn.Module,
         *,
         device: torch.device,
+        fixed_batch_size: int | None = None,
+        exported: bool = False,
     ) -> None:
-        self.model = model.to(device).eval()
+        self.model = model.to(device)
+        if not exported:
+            self.model.eval()
         self.device = device
+        self.fixed_batch_size = fixed_batch_size
         self._means = torch.tensor(
             NORMALIZATION_MEANS,
             dtype=torch.float32,
@@ -110,6 +179,15 @@ class PayloadCropModel:
 
         architecture_path = model_directory / "architecture.yaml"
         checkpoint_path = model_directory / SELECTED_CHECKPOINT_NAME
+        optimized_path = _optimized_model_path(model_directory, requested_device)
+        if optimized_path.is_file():
+            optimized = torch.export.load(optimized_path).module()
+            return cls(
+                optimized,
+                device=requested_device,
+                fixed_batch_size=OPTIMIZED_BATCH_SIZE,
+                exported=True,
+            )
         if not architecture_path.is_file():
             raise FileNotFoundError(architecture_path)
         if not checkpoint_path.is_file():
@@ -137,7 +215,13 @@ class PayloadCropModel:
             mmap=True,
         )
         model.load_state_dict(_model_state(checkpoint), strict=True)
-        return cls(model, device=requested_device)
+        tensor_model = _TensorLogitsModel(model)
+        _export_optimized_model(tensor_model, optimized_path, requested_device)
+        return cls(
+            tensor_model,
+            device=requested_device,
+            fixed_batch_size=OPTIMIZED_BATCH_SIZE,
+        )
 
     def _validate_inputs(
         self,
@@ -153,6 +237,8 @@ class PayloadCropModel:
                 f"got shape {tuple(image.shape)}"
             )
         batch_size = image.shape[0]
+        if batch_size < 1:
+            raise ValueError("image batch must contain at least one tile")
         if temporal_coords.shape != (batch_size, TIME_STEPS, 2):
             raise ValueError("temporal_coords must have shape [batch, time, 2] as year/day-of-year")
         if location_coords.shape != (batch_size, 2):
@@ -167,6 +253,21 @@ class PayloadCropModel:
     ) -> InferenceOutput:
         """Predict one or more tiles supplied on the training numeric scale."""
         self._validate_inputs(image, temporal_coords, location_coords)
+        output_batch_size = image.shape[0]
+        if self.fixed_batch_size is not None:
+            if output_batch_size > self.fixed_batch_size:
+                raise ValueError(
+                    f"Optimized model accepts at most {self.fixed_batch_size} tiles per batch"
+                )
+            padding = self.fixed_batch_size - output_batch_size
+            if padding:
+                image = torch.cat((image, image[-1:].expand(padding, -1, -1, -1, -1)))
+                temporal_coords = torch.cat(
+                    (temporal_coords, temporal_coords[-1:].expand(padding, -1, -1))
+                )
+                location_coords = torch.cat(
+                    (location_coords, location_coords[-1:].expand(padding, -1))
+                )
         image = image.to(self.device, dtype=torch.float32, non_blocking=True)
         temporal_coords = temporal_coords.to(
             self.device,
@@ -185,13 +286,9 @@ class PayloadCropModel:
             else nullcontext()
         )
         with torch.inference_mode(), autocast:
-            logits = self.model(
-                normalized,
-                temporal_coords=temporal_coords,
-                location_coords=location_coords,
-            ).output
+            logits = self.model(normalized, temporal_coords, location_coords)
             probabilities = logits.softmax(dim=1)
-            crop_probability = probabilities[:, 1]
+            crop_probability = probabilities[:output_batch_size, 1]
             crop_binary = (crop_probability >= CROP_CLASSIFICATION_THRESHOLD).to(dtype=torch.uint8)
             crop_confidence = torch.maximum(crop_probability, 1 - crop_probability)
         return InferenceOutput(

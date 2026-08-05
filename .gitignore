@@ -23,6 +23,7 @@ testing/
 *.tiff
 *.ckpt
 *.pt
+*.pt2
 *.pth
 *.safetensors
 *.tar
