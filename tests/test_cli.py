@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-import argparse
 import logging
 from pathlib import Path
 
 import pytest
 from vita_integration.cli import (
-    _balkan_pipeline_timings,
-    _bbox,
     _configure_runtime_logging,
+    _execution_scene_id,
     _ExpectedProviderTiffFilter,
+    _local_pipeline_timings,
     _render_timing_report,
+    _resolve_sentinel_source,
     parser,
     run_balkan,
     run_sentinel,
@@ -31,36 +31,38 @@ def test_sentinel_arguments_are_one_complete_command() -> None:
     args = parser().parse_args(
         [
             "sentinel",
-            "--bbox=-96.70,40.65,-96.64,40.71",
-            "--start",
-            "2026-06-01",
-            "--end",
-            "2026-07-31",
+            "data/sentinel2",
+            "--image",
+            "S2_20260712T170851_T14TPL_cloudy.tif",
             "--region-id",
             "nebraska-crops",
         ]
     )
     assert args.handler is run_sentinel
-    assert args.bbox == (-96.70, 40.65, -96.64, 40.71)
-    assert args.max_candidates == 2
+    assert args.input == Path("data/sentinel2")
+    assert args.image == "S2_20260712T170851_T14TPL_cloudy.tif"
 
 
-def test_sentinel_candidate_limit_is_explicitly_bounded() -> None:
-    args = parser().parse_args(
-        [
-            "sentinel",
-            "--bbox=-96.70,40.65,-96.64,40.71",
-            "--start",
-            "2026-06-01",
-            "--end",
-            "2026-07-31",
-            "--region-id",
-            "nebraska-crops",
-            "--max-candidates",
-            "3",
-        ]
-    )
-    assert args.max_candidates == 3
+def test_sentinel_folder_requires_an_explicit_choice_when_ambiguous(tmp_path: Path) -> None:
+    first = tmp_path / "first.tif"
+    second = tmp_path / "second.tif"
+    first.touch()
+    second.touch()
+
+    with pytest.raises(ValueError, match="pass --image"):
+        _resolve_sentinel_source(tmp_path, None)
+    assert _resolve_sentinel_source(tmp_path, second.name) == second.resolve()
+
+
+def test_default_scene_ids_are_unique_but_explicit_ids_are_stable(tmp_path: Path) -> None:
+    source = tmp_path / "scene.tif"
+
+    first = _execution_scene_id(source, None)
+    second = _execution_scene_id(source, None)
+
+    assert first != second
+    assert first.startswith("scene_20")
+    assert _execution_scene_id(source, "fixed-id") == "fixed-id"
 
 
 def test_runtime_logging_filters_only_known_provider_noise() -> None:
@@ -124,13 +126,7 @@ def test_balkan_command_fails_before_models_when_source_is_missing(tmp_path: Pat
         run_balkan(args)
 
 
-@pytest.mark.parametrize("value", ["1,2,3", "west,south,east,north"])
-def test_bbox_rejects_malformed_values(value: str) -> None:
-    with pytest.raises(argparse.ArgumentTypeError):
-        _bbox(value)
-
-
-def test_balkan_timing_extraction_uses_stage_runtime_contracts() -> None:
+def test_local_timing_extraction_uses_stage_runtime_contracts() -> None:
     result = {
         "timing": {
             "intake_seconds": 0.1,
@@ -161,7 +157,7 @@ def test_balkan_timing_extraction_uses_stage_runtime_contracts() -> None:
         },
     }
 
-    timing = _balkan_pipeline_timings(result)
+    timing = _local_pipeline_timings(result)
 
     assert timing["intake_seconds"] == 0.1
     assert timing["cloud_inference_seconds"] == 2.0
