@@ -17,7 +17,6 @@ import torch
 from cloud_detection.backend import CloudBackend
 from cloud_detection.postprocessing import postprocess
 from cloud_detection.preprocessing import normalize_reflectance, strict_valid_mask
-from cloud_detection.preview import save_preview
 from rasterio.crs import CRS
 from rasterio.enums import Resampling
 from rasterio.warp import calculate_default_transform, reproject, transform_bounds
@@ -160,13 +159,11 @@ def execute_cloud_stage(
     invalid_path = output_root / "cloud_masks" / f"{stem}_invalid.tif"
     preview_path = output_root / "visualisations" / f"{stem}_cloud.png"
     metadata_path = output_root / "metadata" / f"{stem}.json"
-    for path in (
-        semantic_path,
-        unusable_path,
-        invalid_path,
-        preview_path,
-        metadata_path,
-    ):
+    save_diagnostic_preview = bool(config.get("output", {}).get("save_preview", False))
+    output_paths = [semantic_path, unusable_path, invalid_path, metadata_path]
+    if save_diagnostic_preview:
+        output_paths.append(preview_path)
+    for path in output_paths:
         path.parent.mkdir(parents=True, exist_ok=True)
 
     started = time.perf_counter()
@@ -443,43 +440,49 @@ def execute_cloud_stage(
     else:
         decision = "PROCESS"
 
-    preview_scale = min(1.0, 1200.0 / max(width, height))
-    preview_height = max(1, round(height * preview_scale))
-    preview_width = max(1, round(width * preview_scale))
-    with rasterio.open(source_path) as source:
-        preview_raw = source.read(
-            indices,
-            out_shape=(4, preview_height, preview_width),
-            resampling=Resampling.bilinear,
+    preview_seconds = 0.0
+    if save_diagnostic_preview:
+        preview_started = time.perf_counter()
+        from cloud_detection.preview import save_preview
+
+        preview_scale = min(1.0, 1200.0 / max(width, height))
+        preview_height = max(1, round(height * preview_scale))
+        preview_width = max(1, round(width * preview_scale))
+        with rasterio.open(source_path) as source:
+            preview_raw = source.read(
+                indices,
+                out_shape=(4, preview_height, preview_width),
+                resampling=Resampling.bilinear,
+            )
+        preview_image, _ = normalize_reflectance(
+            preview_raw,
+            scale=scale,
+            clip_min=config["input"].get("clip_min"),
+            clip_max=config["input"].get("clip_max"),
+            nodata_value=nodata_value,
         )
-    preview_image, _ = normalize_reflectance(
-        preview_raw,
-        scale=scale,
-        clip_min=config["input"].get("clip_min"),
-        clip_max=config["input"].get("clip_max"),
-        nodata_value=nodata_value,
-    )
-    with (
-        rasterio.open(semantic_path) as semantic_source,
-        rasterio.open(unusable_path) as unusable_source,
-    ):
-        semantic_preview = semantic_source.read(
-            1,
-            out_shape=(preview_height, preview_width),
-            resampling=Resampling.nearest,
+        with (
+            rasterio.open(semantic_path) as semantic_source,
+            rasterio.open(unusable_path) as unusable_source,
+        ):
+            semantic_preview = semantic_source.read(
+                1,
+                out_shape=(preview_height, preview_width),
+                resampling=Resampling.nearest,
+            )
+            unusable_preview = unusable_source.read(
+                1,
+                out_shape=(preview_height, preview_width),
+                resampling=Resampling.nearest,
+            )
+        save_preview(
+            preview_path,
+            preview_image,
+            semantic_preview,
+            unusable_preview,
+            channelwise_rgb=plan["sensor"] == "balkan-1",
         )
-        unusable_preview = unusable_source.read(
-            1,
-            out_shape=(preview_height, preview_width),
-            resampling=Resampling.nearest,
-        )
-    save_preview(
-        preview_path,
-        preview_image,
-        semantic_preview,
-        unusable_preview,
-        channelwise_rgb=plan["sensor"] == "balkan-1",
-    )
+        preview_seconds = time.perf_counter() - preview_started
 
     metadata = {
         "schema_version": "0.1-draft",
@@ -515,6 +518,7 @@ def execute_cloud_stage(
             "mask_processing_seconds": mask_processing_seconds,
             "analysis_grid_preparation_seconds": analysis_grid_preparation_seconds,
             "mask_reprojection_seconds": reprojection_seconds,
+            "preview_seconds": preview_seconds,
             "device": str(getattr(backend, "device", "unknown")),
             "execution_strategy": execution_strategy,
             "tile_count": tile_count,
@@ -534,8 +538,12 @@ def execute_cloud_stage(
             "semantic_mask": str(semantic_path.resolve()),
             "unusable_mask": str(unusable_path.resolve()),
             "invalid_mask": str(invalid_path.resolve()),
-            "preview": str(preview_path.resolve()),
             "metadata": str(metadata_path.resolve()),
+            **(
+                {"preview": str(preview_path.resolve())}
+                if save_diagnostic_preview
+                else {}
+            ),
         },
         "warnings": plan.get("warnings", []),
     }

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import re
 import time
 import uuid
@@ -14,6 +15,11 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_GROUND_STORE = REPOSITORY_ROOT / "runtime" / "ground"
 DEFAULT_RUN_ROOT = REPOSITORY_ROOT / "runtime" / "runs"
 BALKAN_BAND_ORDER = ("BLUE", "GREEN", "RED", "NIR", "PAN")
+
+_IGNORED_RASTERIO_MESSAGES = (
+    "Sum of Photometric type-related color channels and ExtraSamples doesn't match",
+    "Creating TIFF with legacy Deflate codec identifier",
+)
 
 TIMING_ROWS = (
     ("command_overhead_seconds", "Command setup/import overhead"),
@@ -46,6 +52,20 @@ TIMING_ROWS = (
     ("ground_ingest_seconds", "Ground catalog ingest"),
     ("end_to_end_seconds", "END TO END"),
 )
+
+
+class _ExpectedProviderTiffFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        return not any(fragment in message for fragment in _IGNORED_RASTERIO_MESSAGES)
+
+
+def _configure_runtime_logging() -> None:
+    """Hide only known harmless provider/optional-tool warnings."""
+    rasterio_logger = logging.getLogger("rasterio._env")
+    if not any(isinstance(item, _ExpectedProviderTiffFilter) for item in rasterio_logger.filters):
+        rasterio_logger.addFilter(_ExpectedProviderTiffFilter())
+    logging.getLogger("torch.utils.flop_counter").setLevel(logging.ERROR)
 
 
 def _write_json(path: Path, value: dict[str, Any]) -> None:
@@ -186,6 +206,7 @@ def _final_record(
 
 def run_sentinel(args: argparse.Namespace) -> int:
     command_started = time.perf_counter()
+    from prithvi_payload.acquisition.earth_engine import EarthEngineAcquisitionProvider
     from prithvi_payload.runtime import PayloadRuntime
     from prithvi_shared import PayloadAcquisitionCommand
 
@@ -219,7 +240,12 @@ def run_sentinel(args: argparse.Namespace) -> int:
         }
         print("progress:", json.dumps(visible, sort_keys=True), flush=True)
 
-    runtime = PayloadRuntime()
+    runtime = PayloadRuntime(
+        provider=EarthEngineAcquisitionProvider(
+            max_candidates=args.max_candidates,
+            max_scene_attempts=args.max_candidates,
+        )
+    )
     runtime.initialize()
     pipeline_started = time.perf_counter()
     result = runtime.process(command, output, progress)
@@ -418,6 +444,13 @@ def parser() -> argparse.ArgumentParser:
     sentinel.add_argument("--target-cloud-min", type=float, default=15.0)
     sentinel.add_argument("--target-cloud-max", type=float, default=35.0)
     sentinel.add_argument("--target-cloud-ideal", type=float, default=25.0)
+    sentinel.add_argument(
+        "--max-candidates",
+        type=int,
+        choices=(1, 2, 3),
+        default=2,
+        help="maximum Earth Engine scenes to evaluate (default: 2)",
+    )
     sentinel.add_argument("--output", type=Path)
     sentinel.add_argument("--ground-store", type=Path, default=DEFAULT_GROUND_STORE)
     sentinel.set_defaults(handler=run_sentinel)
@@ -441,6 +474,7 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    _configure_runtime_logging()
     args = parser().parse_args()
     try:
         raise SystemExit(args.handler(args))

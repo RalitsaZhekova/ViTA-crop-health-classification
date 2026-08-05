@@ -462,6 +462,7 @@ def run_payload_condition(
     region_id: str | None = None,
     tile_size: int = 512,
     config: ConditionConfig | None = None,
+    save_diagnostic_preview: bool = False,
     overwrite: bool = False,
 ) -> dict[str, Any]:
     """Process one payload result without loading the complete scene into RAM."""
@@ -562,7 +563,10 @@ def run_payload_condition(
     health_root = output / "health_layers"
     condition_root = output / "condition"
     visual_root = output / "visualisations"
-    for directory in (health_root, condition_root, visual_root):
+    output_directories = [health_root, condition_root]
+    if save_diagnostic_preview:
+        output_directories.append(visual_root)
+    for directory in output_directories:
         directory.mkdir(parents=True, exist_ok=True)
 
     health_paths = {name: health_root / f"{scene_id}_{name}.tif" for name in HEALTH_LAYER_NAMES}
@@ -790,19 +794,20 @@ def run_payload_condition(
     )
 
     preview_started = time.perf_counter()
-    _save_quicklook(
-        quicklook_path,
-        source_path=source_path,
-        rgb_indices=band_indices[:3],
-        reflectance_scale=reflectance_scale,
-        condition_path=condition_score_path,
-        semantic_mask_path=semantic_path,
-        unusable_mask_path=unusable_path,
-        crop_probability_path=crop_probability_path,
-        valid_mask_path=valid_mask_path,
-        label=assessment.label,
-        score=assessment.condition_score,
-    )
+    if save_diagnostic_preview:
+        _save_quicklook(
+            quicklook_path,
+            source_path=source_path,
+            rgb_indices=band_indices[:3],
+            reflectance_scale=reflectance_scale,
+            condition_path=condition_score_path,
+            semantic_mask_path=semantic_path,
+            unusable_mask_path=unusable_path,
+            crop_probability_path=crop_probability_path,
+            valid_mask_path=valid_mask_path,
+            label=assessment.label,
+            score=assessment.condition_score,
+        )
     preview_seconds = time.perf_counter() - preview_started
 
     assets = {
@@ -813,7 +818,7 @@ def run_payload_condition(
         "relative_anomaly_mask": relative_anomaly_path,
         "low_vigor_mask": low_vigor_path,
         "alert_mask": alert_path,
-        "quicklook": quicklook_path,
+        **({"quicklook": quicklook_path} if save_diagnostic_preview else {}),
     }
     raster_assets = {
         name: path.relative_to(output).as_posix() for name, path in sorted(assets.items())

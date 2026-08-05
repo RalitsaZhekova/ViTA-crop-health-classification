@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
 
 import pytest
 from vita_integration.cli import (
     _balkan_pipeline_timings,
     _bbox,
+    _configure_runtime_logging,
+    _ExpectedProviderTiffFilter,
     _render_timing_report,
     parser,
     run_balkan,
@@ -39,6 +42,72 @@ def test_sentinel_arguments_are_one_complete_command() -> None:
     )
     assert args.handler is run_sentinel
     assert args.bbox == (-96.70, 40.65, -96.64, 40.71)
+    assert args.max_candidates == 2
+
+
+def test_sentinel_candidate_limit_is_explicitly_bounded() -> None:
+    args = parser().parse_args(
+        [
+            "sentinel",
+            "--bbox=-96.70,40.65,-96.64,40.71",
+            "--start",
+            "2026-06-01",
+            "--end",
+            "2026-07-31",
+            "--region-id",
+            "nebraska-crops",
+            "--max-candidates",
+            "3",
+        ]
+    )
+    assert args.max_candidates == 3
+
+
+def test_runtime_logging_filters_only_known_provider_noise() -> None:
+    warning_filter = _ExpectedProviderTiffFilter()
+    known = logging.LogRecord(
+        "rasterio._env",
+        logging.WARNING,
+        "test.py",
+        1,
+        "TIFFReadDirectory: ExtraSamples doesn't match SamplesPerPixel",
+        (),
+        None,
+    )
+    exact_known = logging.LogRecord(
+        "rasterio._env",
+        logging.WARNING,
+        "test.py",
+        1,
+        "Sum of Photometric type-related color channels and ExtraSamples doesn't match",
+        (),
+        None,
+    )
+    legacy_deflate = logging.LogRecord(
+        "rasterio._env",
+        logging.WARNING,
+        "test.py",
+        1,
+        "Creating TIFF with legacy Deflate codec identifier",
+        (),
+        None,
+    )
+    unexpected = logging.LogRecord(
+        "rasterio._env",
+        logging.WARNING,
+        "test.py",
+        1,
+        "Corrupt TIFF directory",
+        (),
+        None,
+    )
+
+    assert warning_filter.filter(known)
+    assert not warning_filter.filter(exact_known)
+    assert not warning_filter.filter(legacy_deflate)
+    assert warning_filter.filter(unexpected)
+    _configure_runtime_logging()
+    assert logging.getLogger("torch.utils.flop_counter").level == logging.ERROR
 
 
 def test_balkan_command_fails_before_models_when_source_is_missing(tmp_path: Path) -> None:

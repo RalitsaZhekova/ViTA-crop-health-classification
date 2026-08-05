@@ -157,6 +157,8 @@ def build_crop_stage_plan(
             "tile_size": INPUT_HEIGHT,
             "halo": 16,
             "batch_size": 4,
+            # The dashboard builds its own final visualization from these rasters.
+            "save_preview": False,
         },
         "output_contract": {
             "masked_value_uint8": 255,

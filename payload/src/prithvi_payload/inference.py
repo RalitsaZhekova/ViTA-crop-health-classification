@@ -20,7 +20,6 @@ from prithvi_shared import (
     SELECTED_CHECKPOINT_SHA256,
     TIME_STEPS,
 )
-from terratorch.registry import MODEL_FACTORY_REGISTRY
 from torch import Tensor, nn
 
 PAYLOAD_ROOT = Path(__file__).resolve().parents[2]
@@ -121,6 +120,9 @@ class PayloadCropModel:
                 "Selected checkpoint checksum mismatch: "
                 f"expected {SELECTED_CHECKPOINT_SHA256}, got {actual_digest}"
             )
+
+        # Keep TerraTorch out of commands that never reach crop classification.
+        from terratorch.registry import MODEL_FACTORY_REGISTRY
 
         architecture = yaml.safe_load(architecture_path.read_text(encoding="utf-8"))
         factory = MODEL_FACTORY_REGISTRY.build(architecture["model_factory"])

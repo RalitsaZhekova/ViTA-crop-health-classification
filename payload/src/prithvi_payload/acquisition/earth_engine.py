@@ -7,7 +7,6 @@ import json
 import math
 import os
 import re
-import shutil
 import time
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -31,8 +30,9 @@ EARTH_ENGINE_COLLECTION = "COPERNICUS/S2_SR_HARMONIZED"
 EARTH_ENGINE_SOURCE_BANDS = ("B2", "B3", "B4", "B8", "B8A")
 EARTH_ENGINE_BANDS = ("B02", "B03", "B04", "B08", "B8A")
 REFLECTANCE_SCALE = 10_000.0
-DEFAULT_MAX_CANDIDATES = 50
-DEFAULT_MAX_SCENE_ATTEMPTS = 5
+DEFAULT_MAX_CANDIDATES = 2
+MAX_CANDIDATES = 3
+DEFAULT_MAX_SCENE_ATTEMPTS = 2
 DEFAULT_MAX_DOWNLOAD_BYTES = 32 * 1024 * 1024
 DOWNLOAD_CONNECT_TIMEOUT_SECONDS = 10
 DOWNLOAD_READ_TIMEOUT_SECONDS = 120
@@ -247,47 +247,63 @@ def normalize_and_validate_geotiff(
     temporary = destination_path.with_suffix(".partial")
     temporary.unlink(missing_ok=True)
     try:
-        shutil.copyfile(raw_path, temporary)
-        with rasterio.open(temporary, "r+") as dataset:
-            if dataset.count != len(EARTH_ENGINE_BANDS):
+        with rasterio.open(raw_path) as source:
+            if source.count != len(EARTH_ENGINE_BANDS):
                 raise AcquisitionError(
                     "EARTH_ENGINE_INVALID_RASTER",
                     "Downloaded raster does not contain exactly five bands",
                 )
-            if dataset.width <= 0 or dataset.height <= 0:
+            if source.width <= 0 or source.height <= 0:
                 raise AcquisitionError(
                     "EARTH_ENGINE_INVALID_RASTER", "Downloaded raster has invalid dimensions"
                 )
-            if dataset.width != grid.width or dataset.height != grid.height:
+            if source.width != grid.width or source.height != grid.height:
                 raise AcquisitionError(
                     "EARTH_ENGINE_INVALID_RASTER",
                     "Downloaded raster dimensions do not match the requested target grid",
                 )
-            if dataset.crs is None or dataset.crs.to_string() != grid.crs:
+            if source.crs is None or source.crs.to_string() != grid.crs:
                 raise AcquisitionError(
                     "EARTH_ENGINE_INVALID_RASTER",
                     "Downloaded raster CRS does not match the requested target grid",
                 )
-            if not dataset.transform.almost_equals(grid.transform):
+            if not source.transform.almost_equals(grid.transform):
                 raise AcquisitionError(
                     "EARTH_ENGINE_INVALID_RASTER",
                     "Downloaded raster transform does not match the requested target grid",
                 )
-            if any(np.dtype(dtype).kind not in {"i", "u"} for dtype in dataset.dtypes):
+            if any(np.dtype(dtype).kind not in {"i", "u"} for dtype in source.dtypes):
                 raise AcquisitionError(
                     "EARTH_ENGINE_INVALID_RASTER",
                     "Downloaded raster reflectance values must use an integer dtype",
                 )
-            dataset.descriptions = EARTH_ENGINE_BANDS
-            dataset.update_tags(REFLECTANCE_SCALE=str(int(REFLECTANCE_SCALE)))
-            sample = dataset.read(
-                out_shape=(dataset.count, min(dataset.height, 128), min(dataset.width, 128))
+            sample = source.read(
+                out_shape=(source.count, min(source.height, 128), min(source.width, 128))
             )
             if not np.isfinite(sample).all():
                 raise AcquisitionError(
                     "EARTH_ENGINE_INVALID_RASTER",
                     "Downloaded raster contains non-finite sampled values",
                 )
+
+            # Earth Engine currently emits a legacy Deflate identifier and omits
+            # ExtraSamples tags for its non-colour spectral bands. Re-encode once
+            # with band interleave so every later Rasterio open is clean and quiet.
+            profile = source.profile.copy()
+            profile.update(
+                driver="GTiff",
+                interleave="band",
+                photometric="MINISBLACK",
+                compress="DEFLATE",
+                zlevel=1,
+                num_threads="ALL_CPUS",
+                BIGTIFF="IF_SAFER",
+            )
+            with rasterio.open(temporary, "w", **profile) as destination:
+                for _, window in source.block_windows(1):
+                    destination.write(source.read(window=window), window=window)
+                destination.descriptions = EARTH_ENGINE_BANDS
+                destination.update_tags(REFLECTANCE_SCALE=str(int(REFLECTANCE_SCALE)))
         with rasterio.open(temporary) as dataset:
             if dataset.descriptions != EARTH_ENGINE_BANDS:
                 raise AcquisitionError(
@@ -326,10 +342,12 @@ class EarthEngineAcquisitionProvider:
             if max_scene_attempts is None
             else max_scene_attempts
         )
-        if not 1 <= self.max_candidates <= DEFAULT_MAX_CANDIDATES:
-            raise ValueError("EE_MAX_CANDIDATES must be within 1..50")
-        if not 1 <= self.max_scene_attempts <= DEFAULT_MAX_SCENE_ATTEMPTS:
-            raise ValueError("EE_MAX_SCENE_ATTEMPTS must be within 1..5")
+        if not 1 <= self.max_candidates <= MAX_CANDIDATES:
+            raise ValueError("EE_MAX_CANDIDATES must be within 1..3")
+        if not 1 <= self.max_scene_attempts <= MAX_CANDIDATES:
+            raise ValueError("EE_MAX_SCENE_ATTEMPTS must be within 1..3")
+        if self.max_scene_attempts > self.max_candidates:
+            raise ValueError("EE_MAX_SCENE_ATTEMPTS cannot exceed EE_MAX_CANDIDATES")
         if max_download_bytes <= 0:
             raise ValueError("max_download_bytes must be positive")
         self.max_download_bytes = max_download_bytes
@@ -351,9 +369,29 @@ class EarthEngineAcquisitionProvider:
                 ee.ImageCollection(EARTH_ENGINE_COLLECTION)
                 .filterBounds(region)
                 .filterDate(command.source.start_date.isoformat(), end_exclusive.isoformat())
-                .sort("system:time_start", False)
-                .limit(self.max_candidates)
             )
+            if command.source.selection_policy == "target_cloud_range":
+                collection = collection.filter(
+                    ee.Filter.gte(
+                        "CLOUDY_PIXEL_PERCENTAGE",
+                        command.source.target_cloud_min_percent,
+                    )
+                ).filter(
+                    ee.Filter.lte(
+                        "CLOUDY_PIXEL_PERCENTAGE",
+                        command.source.target_cloud_max_percent,
+                    )
+                )
+                ideal = ee.Number(command.source.target_cloud_ideal_percent)
+
+                def with_cloud_distance(image: Any) -> Any:
+                    distance = ee.Number(image.get("CLOUDY_PIXEL_PERCENTAGE")).subtract(ideal).abs()
+                    return image.set("_VITA_CLOUD_DISTANCE", distance)
+
+                collection = collection.map(with_cloud_distance).sort("_VITA_CLOUD_DISTANCE")
+            else:
+                collection = collection.sort("CLOUDY_PIXEL_PERCENTAGE")
+            collection = collection.limit(self.max_candidates)
             response = collection.getInfo()
         except Exception:
             raise AcquisitionError(
@@ -496,6 +534,7 @@ class EarthEngineAcquisitionProvider:
             validation_started = time.perf_counter()
             normalize_and_validate_geotiff(raw_path, scene_path, grid=grid)
             validation_seconds = time.perf_counter() - validation_started
+            raw_path.unlink(missing_ok=True)
             acquisition_timing = {
                 "earth_engine_download_seconds": download_seconds,
                 "geotiff_validation_seconds": validation_seconds,

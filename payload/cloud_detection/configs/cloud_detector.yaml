@@ -52,4 +52,6 @@ decision:
 
 output:
   save_class_scores: true
-  save_preview: true
+  # The dashboard builds its own final preview from the scientific rasters.
+  # Keep this off in production to avoid a redundant matplotlib render.
+  save_preview: false

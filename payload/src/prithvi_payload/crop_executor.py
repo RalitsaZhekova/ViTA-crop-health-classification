@@ -15,10 +15,6 @@ from typing import Any
 import numpy as np
 import rasterio
 import torch
-from matplotlib.backends.backend_agg import FigureCanvasAgg
-from matplotlib.colors import ListedColormap, to_rgba
-from matplotlib.figure import Figure
-from matplotlib.patches import Patch
 from prithvi_shared import NORMALIZATION_MEANS
 from rasterio.crs import CRS
 from rasterio.enums import Resampling
@@ -180,7 +176,7 @@ def _crop_probability_overlay(probability: np.ndarray) -> np.ndarray:
     valid = np.isfinite(values) & (values >= 0.0) & (values <= 1.0)
     clipped = np.clip(values, 0.0, 1.0)
     overlay = np.zeros((*values.shape, 4), dtype=np.float32)
-    overlay[..., :3] = to_rgba("#00c853")[:3]
+    overlay[..., :3] = (0.0, 200.0 / 255.0, 83.0 / 255.0)
     overlay[..., 3] = np.where(valid, 0.08 + 0.62 * clipped, 0.0)
     return overlay
 
@@ -194,7 +190,9 @@ def _crop_display(binary: np.ndarray) -> np.ndarray:
     return display
 
 
-def _crop_legend(binary: np.ndarray) -> list[Patch]:
+def _crop_legend(binary: np.ndarray) -> list[Any]:
+    from matplotlib.patches import Patch
+
     values = np.asarray(binary)
     usable = np.isin(values, (0, 1))
     usable_count = int(np.count_nonzero(usable))
@@ -226,6 +224,10 @@ def _save_preview(
     binary: np.ndarray,
     crop_threshold: float,
 ) -> None:
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.colors import ListedColormap
+    from matplotlib.figure import Figure
+
     figure = Figure(figsize=(14, 11), constrained_layout=True)
     FigureCanvasAgg(figure)
     axes = figure.subplots(2, 2).ravel()
@@ -295,13 +297,11 @@ def _execute_native_crop_stage(
     blend_weight_path = output_root / "crop_maps" / f".{stem}_blend_weight.partial"
     preview_path = output_root / "visualisations" / f"{stem}_crop.png"
     metadata_path = output_root / "metadata" / f"{stem}_crop.json"
-    for path in (
-        probability_path,
-        binary_path,
-        confidence_path,
-        preview_path,
-        metadata_path,
-    ):
+    save_diagnostic_preview = bool(plan.get("execution", {}).get("save_preview", False))
+    output_paths = [probability_path, binary_path, confidence_path, metadata_path]
+    if save_diagnostic_preview:
+        output_paths.append(preview_path)
+    for path in output_paths:
         path.parent.mkdir(parents=True, exist_ok=True)
     blend_sum_path.unlink(missing_ok=True)
     blend_weight_path.unlink(missing_ok=True)
@@ -526,46 +526,48 @@ def _execute_native_crop_stage(
             confidence_output.write(confidence, 1, window=window)
         width, height = source.width, source.height
 
-        preview_scale = min(1.0, 1200.0 / max(width, height))
-        preview_height = max(1, round(height * preview_scale))
-        preview_width = max(1, round(width * preview_scale))
-        rgb_indices = [indices[2], indices[1], indices[0]]
-        rgb = source.read(
-            rgb_indices,
-            out_shape=(3, preview_height, preview_width),
-            resampling=Resampling.bilinear,
-        )
-        unusable_preview = unusable_source.read(
-            1,
-            out_shape=(preview_height, preview_width),
-            resampling=Resampling.nearest,
-        )
+        if save_diagnostic_preview:
+            preview_scale = min(1.0, 1200.0 / max(width, height))
+            preview_height = max(1, round(height * preview_scale))
+            preview_width = max(1, round(width * preview_scale))
+            rgb_indices = [indices[2], indices[1], indices[0]]
+            rgb = source.read(
+                rgb_indices,
+                out_shape=(3, preview_height, preview_width),
+                resampling=Resampling.bilinear,
+            )
+            unusable_preview = unusable_source.read(
+                1,
+                out_shape=(preview_height, preview_width),
+                resampling=Resampling.nearest,
+            )
 
     if model.device.type == "cuda":
         torch.cuda.synchronize(model.device)
     runtime_seconds = time.perf_counter() - started
-    with (
-        rasterio.open(probability_path) as probability_source,
-        rasterio.open(binary_path) as binary_source,
-    ):
-        probability_preview = probability_source.read(
-            1,
-            out_shape=(preview_height, preview_width),
-            resampling=Resampling.bilinear,
+    if save_diagnostic_preview:
+        with (
+            rasterio.open(probability_path) as probability_source,
+            rasterio.open(binary_path) as binary_source,
+        ):
+            probability_preview = probability_source.read(
+                1,
+                out_shape=(preview_height, preview_width),
+                resampling=Resampling.bilinear,
+            )
+            binary_preview = binary_source.read(
+                1,
+                out_shape=(preview_height, preview_width),
+                resampling=Resampling.nearest,
+            )
+        _save_preview(
+            preview_path,
+            _preview_rgb(rgb),
+            unusable_preview,
+            probability_preview,
+            binary_preview,
+            crop_threshold,
         )
-        binary_preview = binary_source.read(
-            1,
-            out_shape=(preview_height, preview_width),
-            resampling=Resampling.nearest,
-        )
-    _save_preview(
-        preview_path,
-        _preview_rgb(rgb),
-        unusable_preview,
-        probability_preview,
-        binary_preview,
-        crop_threshold,
-    )
 
     total_pixels = width * height
     metadata = {
@@ -609,8 +611,12 @@ def _execute_native_crop_stage(
             "crop_probability": str(probability_path.resolve()),
             "crop_binary": str(binary_path.resolve()),
             "crop_confidence": str(confidence_path.resolve()),
-            "preview": str(preview_path.resolve()),
             "metadata": str(metadata_path.resolve()),
+            **(
+                {"preview": str(preview_path.resolve())}
+                if save_diagnostic_preview
+                else {}
+            ),
         },
         "warnings": plan.get("warnings", []),
     }
@@ -759,7 +765,11 @@ def _publish_calibrated_results(
     confidence_path = output_root / "crop_maps" / f"{stem}_confidence.tif"
     preview_path = output_root / "visualisations" / f"{stem}_crop.png"
     metadata_path = output_root / "metadata" / f"{stem}_crop.json"
-    for path in (probability_path, binary_path, confidence_path, preview_path, metadata_path):
+    save_diagnostic_preview = bool(plan.get("execution", {}).get("save_preview", False))
+    output_paths = [probability_path, binary_path, confidence_path, metadata_path]
+    if save_diagnostic_preview:
+        output_paths.append(preview_path)
+    for path in output_paths:
         path.parent.mkdir(parents=True, exist_ok=True)
 
     analysis_probability_path = Path(analysis_metadata["output_files"]["crop_probability"])
@@ -820,43 +830,45 @@ def _publish_calibrated_results(
                 binary_output.write(binary, 1, window=window)
                 confidence_output.write(confidence, 1, window=window)
 
-        preview_scale = min(1.0, 1200.0 / max(source.width, source.height))
-        preview_height = max(1, round(source.height * preview_scale))
-        preview_width = max(1, round(source.width * preview_scale))
-        rgb = source.read(
-            [indices[2], indices[1], indices[0]],
-            out_shape=(3, preview_height, preview_width),
-            resampling=Resampling.bilinear,
-        )
-        unusable_preview = unusable_source.read(
-            1,
-            out_shape=(preview_height, preview_width),
-            resampling=Resampling.nearest,
-        )
+        if save_diagnostic_preview:
+            preview_scale = min(1.0, 1200.0 / max(source.width, source.height))
+            preview_height = max(1, round(source.height * preview_scale))
+            preview_width = max(1, round(source.width * preview_scale))
+            rgb = source.read(
+                [indices[2], indices[1], indices[0]],
+                out_shape=(3, preview_height, preview_width),
+                resampling=Resampling.bilinear,
+            )
+            unusable_preview = unusable_source.read(
+                1,
+                out_shape=(preview_height, preview_width),
+                resampling=Resampling.nearest,
+            )
         width, height = source.width, source.height
 
-    with (
-        rasterio.open(probability_path) as probability_source,
-        rasterio.open(binary_path) as binary_source,
-    ):
-        probability_preview = probability_source.read(
-            1,
-            out_shape=(preview_height, preview_width),
-            resampling=Resampling.bilinear,
+    if save_diagnostic_preview:
+        with (
+            rasterio.open(probability_path) as probability_source,
+            rasterio.open(binary_path) as binary_source,
+        ):
+            probability_preview = probability_source.read(
+                1,
+                out_shape=(preview_height, preview_width),
+                resampling=Resampling.bilinear,
+            )
+            binary_preview = binary_source.read(
+                1,
+                out_shape=(preview_height, preview_width),
+                resampling=Resampling.nearest,
+            )
+        _save_preview(
+            preview_path,
+            _preview_rgb(rgb),
+            unusable_preview,
+            probability_preview,
+            binary_preview,
+            crop_threshold,
         )
-        binary_preview = binary_source.read(
-            1,
-            out_shape=(preview_height, preview_width),
-            resampling=Resampling.nearest,
-        )
-    _save_preview(
-        preview_path,
-        _preview_rgb(rgb),
-        unusable_preview,
-        probability_preview,
-        binary_preview,
-        crop_threshold,
-    )
 
     total_pixels = width * height
     metadata = deepcopy(analysis_metadata)
@@ -886,8 +898,12 @@ def _publish_calibrated_results(
             "crop_probability": str(probability_path.resolve()),
             "crop_binary": str(binary_path.resolve()),
             "crop_confidence": str(confidence_path.resolve()),
-            "preview": str(preview_path.resolve()),
             "metadata": str(metadata_path.resolve()),
+            **(
+                {"preview": str(preview_path.resolve())}
+                if save_diagnostic_preview
+                else {}
+            ),
         },
         warnings=plan.get("warnings", []),
     )
