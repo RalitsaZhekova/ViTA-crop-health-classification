@@ -110,20 +110,37 @@ class PayloadRuntime:
         self.cuda_required = (
             os.environ.get("CUDA_REQUIRED", "1") == "1" if cuda_required is None else cuda_required
         )
+        self.initialization_timing: dict[str, float] = {}
         self.initialized = False
 
     def initialize(self) -> None:
         if self.initialized:
             return
+        initialization_started = time.perf_counter()
+        earth_engine_started = time.perf_counter()
         self.provider.initialize()
+        earth_engine_initialization_seconds = time.perf_counter() - earth_engine_started
         if self.cuda_required and not torch.cuda.is_available():
             raise RuntimeError("CUDA_REQUIRED=1 but CUDA is unavailable")
         device = "cuda" if torch.cuda.is_available() else "cpu"
+        cloud_model_started = time.perf_counter()
         if self.cloud_runtime is None:
             self.cloud_runtime = load_cloud_model(self.cloud_config_path)
+        cloud_model_load_seconds = time.perf_counter() - cloud_model_started
+        crop_model_started = time.perf_counter()
         if self.crop_model is None:
             self.crop_model = PayloadCropModel.load(device=device)
+        crop_model_load_seconds = time.perf_counter() - crop_model_started
+        warmup_started = time.perf_counter()
         self._warm_models()
+        model_warmup_seconds = time.perf_counter() - warmup_started
+        self.initialization_timing = {
+            "earth_engine_initialization_seconds": earth_engine_initialization_seconds,
+            "cloud_model_load_seconds": cloud_model_load_seconds,
+            "crop_model_load_seconds": crop_model_load_seconds,
+            "model_warmup_seconds": model_warmup_seconds,
+            "runtime_initialization_seconds": time.perf_counter() - initialization_started,
+        }
         self.initialized = True
 
     def _warm_models(self) -> None:
@@ -160,7 +177,16 @@ class PayloadRuntime:
         search_started = time.perf_counter()
         candidates, grid = self.provider.search_candidates(command)
         candidate_search_seconds = time.perf_counter() - search_started
-        earth_engine_acquisition_seconds = candidate_search_seconds
+        earth_engine_acquisition_seconds = 0.0
+        earth_engine_download_seconds = 0.0
+        geotiff_validation_seconds = 0.0
+        intake_seconds = 0.0
+        cloud_plan_seconds = 0.0
+        cloud_stage_seconds = 0.0
+        cloud_analysis_grid_seconds = 0.0
+        cloud_inference_seconds = 0.0
+        mask_processing_seconds = 0.0
+        cloud_mask_reprojection_seconds = 0.0
         acquisition_root = job_directory / "acquisition"
         acquisition_root.mkdir(parents=True, exist_ok=True)
         attempts: list[dict[str, Any]] = []
@@ -210,6 +236,12 @@ class PayloadRuntime:
                     ) from None
                 continue
             earth_engine_acquisition_seconds += time.perf_counter() - acquisition_started
+            earth_engine_download_seconds += float(
+                acquired.timing.get("earth_engine_download_seconds", 0.0)
+            )
+            geotiff_validation_seconds += float(
+                acquired.timing.get("geotiff_validation_seconds", 0.0)
+            )
             candidate_root = acquired.local_tiff_path.parent
             payload_root = candidate_root / "payload"
             _notify(status_callback, "validating_input", **status_fields)
@@ -229,6 +261,21 @@ class PayloadRuntime:
                 raise AcquisitionError(
                     "PAYLOAD_CLOUD_STAGE_FAILED", "Existing payload cloud stage did not complete"
                 )
+            payload_timing = payload.get("timing", {})
+            intake_seconds += _stage_seconds(payload_timing, "intake_seconds")
+            cloud_plan_seconds += _stage_seconds(payload_timing, "cloud_plan_seconds")
+            cloud_runtime = payload.get("stage_metadata", {}).get("cloud", {}).get("runtime", {})
+            cloud_stage_seconds += _stage_seconds(cloud_runtime, "seconds")
+            cloud_analysis_grid_seconds += _stage_seconds(
+                cloud_runtime, "analysis_grid_preparation_seconds"
+            )
+            cloud_inference_seconds += _stage_seconds(cloud_runtime, "inference_seconds")
+            mask_processing_seconds += _stage_seconds(
+                cloud_runtime, "mask_processing_seconds"
+            )
+            cloud_mask_reprojection_seconds += _stage_seconds(
+                cloud_runtime, "mask_reprojection_seconds"
+            )
             cloud = payload["summary"]["cloud"]
             payload_cloud = float(cloud["total_cloud_percentage"])
             accepted = command.source.selection_policy == "least_cloudy" or (
@@ -298,24 +345,40 @@ class PayloadRuntime:
             artifact_checksums = {
                 filename: _sha256(downlink_root / filename) for filename in sorted(entries)
             }
-            cloud_runtime = payload.get("stage_metadata", {}).get("cloud", {}).get("runtime", {})
             completed_stages = completed.get("stage_metadata", {})
+            completed_timing = completed.get("timing", {})
             crop_runtime = completed_stages.get("crop", {}).get("runtime", {})
             condition_runtime = completed_stages.get("condition", {}).get("runtime", {})
             downlink_runtime = completed_stages.get("downlink", {}).get("runtime", {})
             timing = {
+                **self.initialization_timing,
                 "candidate_search_seconds": candidate_search_seconds,
                 "earth_engine_acquisition_seconds": earth_engine_acquisition_seconds,
-                "earth_engine_download_seconds": acquired.timing.get(
-                    "earth_engine_download_seconds", 0.0
-                ),
-                "geotiff_validation_seconds": acquired.timing.get(
-                    "geotiff_validation_seconds", 0.0
-                ),
-                "cloud_inference_seconds": _stage_seconds(cloud_runtime, "inference_seconds"),
-                "mask_processing_seconds": _stage_seconds(cloud_runtime, "mask_processing_seconds"),
+                "earth_engine_download_seconds": earth_engine_download_seconds,
+                "geotiff_validation_seconds": geotiff_validation_seconds,
+                "intake_seconds": intake_seconds,
+                "cloud_plan_seconds": cloud_plan_seconds,
+                "cloud_stage_seconds": cloud_stage_seconds,
+                "cloud_analysis_grid_seconds": cloud_analysis_grid_seconds,
+                "cloud_inference_seconds": cloud_inference_seconds,
+                "mask_processing_seconds": mask_processing_seconds,
+                "cloud_mask_reprojection_seconds": cloud_mask_reprojection_seconds,
+                "crop_stage_seconds": _stage_seconds(crop_runtime, "seconds"),
                 "crop_inference_seconds": _stage_seconds(crop_runtime, "inference_seconds"),
+                "crop_plan_seconds": _stage_seconds(completed_timing, "crop_plan_seconds"),
                 "condition_calculation_seconds": _stage_seconds(condition_runtime, "seconds"),
+                "condition_first_pass_seconds": _stage_seconds(
+                    condition_runtime, "first_pass_seconds"
+                ),
+                "condition_robust_statistics_seconds": _stage_seconds(
+                    condition_runtime, "robust_statistics_seconds"
+                ),
+                "condition_spatial_pass_seconds": _stage_seconds(
+                    condition_runtime, "spatial_pass_seconds"
+                ),
+                "condition_preview_seconds": _stage_seconds(
+                    condition_runtime, "preview_seconds"
+                ),
                 "downlink_packaging_seconds": _stage_seconds(downlink_runtime, "seconds"),
             }
             timing["warm_science_seconds"] = sum(

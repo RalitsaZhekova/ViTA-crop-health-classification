@@ -66,6 +66,7 @@ def run_scene(
     if downlink_max_image_dimension <= 0 or downlink_grid_size <= 0:
         raise ValueError("Downlink image and grid dimensions must be positive")
     output_root = Path(output_root)
+    intake_started = time.perf_counter()
     intake = inspect_scene(
         input_path,
         sensor=sensor,
@@ -77,6 +78,7 @@ def run_scene(
     resolved_scene_id = intake["scene_id"]
     intake_path = output_root / "metadata" / f"{resolved_scene_id}_intake.json"
     _write_json(intake_path, intake)
+    intake_seconds = time.perf_counter() - intake_started
     result: dict[str, Any] = {
         "schema_version": "0.1-draft",
         "scene_id": resolved_scene_id,
@@ -94,6 +96,7 @@ def run_scene(
             }
         },
         "stage_metadata": {"intake": intake},
+        "timing": {"intake_seconds": intake_seconds},
         "warnings": list(intake["warnings"]),
         "errors": list(intake["errors"]),
     }
@@ -103,6 +106,7 @@ def run_scene(
     if stop_after == "intake":
         return _finish(output_root, result)
 
+    cloud_plan_started = time.perf_counter()
     plan = build_cloud_stage_plan(
         intake,
         reflectance_scale=reflectance_scale,
@@ -111,6 +115,7 @@ def run_scene(
     _write_json(plan_path, plan)
     result["artifacts"]["cloud_plan"] = str(plan_path.resolve())
     result["stage_metadata"]["cloud_plan"] = plan
+    result["timing"]["cloud_plan_seconds"] = time.perf_counter() - cloud_plan_started
     result["warnings"].extend(plan["warnings"])
     result["errors"].extend(plan["errors"])
     if plan["readiness"] != "READY":
@@ -191,6 +196,9 @@ def continue_scene_from_cloud(
         raise ValueError("Cloud continuation requires an uncontinued CLOUD_COMPLETE result")
     output_root = result_path.parent
     stage_metadata = result.get("stage_metadata", {})
+    timing = result.get("timing")
+    if not isinstance(timing, dict):
+        raise ValueError("Cloud continuation timing metadata is invalid")
     intake = stage_metadata.get("intake")
     plan = stage_metadata.get("cloud_plan")
     cloud_metadata = stage_metadata.get("cloud")
@@ -212,6 +220,7 @@ def continue_scene_from_cloud(
     if progress_callback is not None:
         progress_callback("validating_input")
 
+    crop_plan_started = time.perf_counter()
     crop_plan = build_crop_stage_plan(
         intake,
         plan,
@@ -222,6 +231,7 @@ def continue_scene_from_cloud(
     _write_json(crop_plan_path, crop_plan)
     result["artifacts"]["crop_plan"] = str(crop_plan_path.resolve())
     result["stage_metadata"]["crop_plan"] = crop_plan
+    timing["crop_plan_seconds"] = time.perf_counter() - crop_plan_started
     result["warnings"].extend(crop_plan["warnings"])
     result["errors"].extend(crop_plan["errors"])
     if crop_plan["readiness"] == "SKIPPED_CLOUD_GATE":
