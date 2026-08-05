@@ -45,9 +45,25 @@ def build_crop_stage_plan(
 
     cloud_percentage = float(cloud_metadata["cloud_percentage"])
     gate_passed = cloud_percentage < max_cloud_percentage
-    route = intake.get("model_band_routes", {}).get("crop_classification", {})
-    source_indices = route.get("source_band_indices")
-    expected_order = route.get("expected_logical_order")
+    original_route = intake.get("model_band_routes", {}).get("crop_classification", {})
+    analysis = intake.get("analysis")
+    analysis_ready = intake.get("sensor") == "balkan-1" and isinstance(analysis, dict)
+    analysis_route = (
+        analysis.get("model_band_routes", {}).get("crop_classification", {})
+        if analysis_ready
+        else {}
+    )
+    route = original_route
+    source_indices = (
+        analysis_route.get("source_band_indices")
+        if analysis_ready
+        else route.get("source_band_indices")
+    )
+    expected_order = (
+        analysis_route.get("expected_logical_order")
+        if analysis_ready
+        else route.get("expected_logical_order")
+    )
     errors: list[str] = []
     warnings: list[str] = []
     crop_input_readiness = intake.get("readiness", {}).get("crop")
@@ -118,7 +134,9 @@ def build_crop_stage_plan(
         "schema_version": CROP_STAGE_SCHEMA_VERSION,
         "stage": "crop_classification",
         "scene_id": intake.get("scene_id"),
-        "source_path": intake.get("source_path"),
+        "source_path": (
+            analysis.get("source_path") if analysis_ready else intake.get("source_path")
+        ),
         "sensor": intake.get("sensor"),
         "acquired_at": intake.get("acquired_at"),
         "readiness": readiness,
@@ -139,6 +157,10 @@ def build_crop_stage_plan(
             "source_logical_band_order": route.get("source_logical_order"),
             "source_band_indices_1_based": source_indices,
             "spectral_adapter": spectral_adapter,
+            "calibration_source_path": (
+                intake.get("source_path") if calibrated_balkan else None
+            ),
+            "analysis_grid_ready": analysis_ready,
             "unusable_mask": unusable_mask,
             "training_scale_multiplier": training_scale_multiplier,
             "temporal_coordinate_year_doy": temporal_coordinate,

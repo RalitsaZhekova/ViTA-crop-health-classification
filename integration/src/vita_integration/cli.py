@@ -9,6 +9,7 @@ import math
 import re
 import time
 import uuid
+import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,7 @@ TIMING_ROWS = (
     ("crop_model_load_seconds", "  Crop model loading"),
     ("pipeline_total_seconds", "Pipeline total"),
     ("intake_seconds", "  Scene intake"),
+    ("shared_analysis_grid_seconds", "  Balkan shared 10 m preparation"),
     ("cloud_plan_seconds", "  Cloud planning"),
     ("cloud_stage_seconds", "  Cloud stage total"),
     ("cloud_analysis_grid_seconds", "    Cloud analysis-grid preparation"),
@@ -63,6 +65,12 @@ def _configure_runtime_logging() -> None:
     if not any(isinstance(item, _ExpectedProviderTiffFilter) for item in rasterio_logger.filters):
         rasterio_logger.addFilter(_ExpectedProviderTiffFilter())
     logging.getLogger("torch.utils.flop_counter").setLevel(logging.ERROR)
+    warnings.filterwarnings(
+        "ignore",
+        message=r"Significant no-data areas detected\..*",
+        category=UserWarning,
+        module=r"omnicloudmask\.cloud_mask",
+    )
 
 
 def _write_json(path: Path, value: dict[str, Any]) -> None:
@@ -105,8 +113,14 @@ def _local_pipeline_timings(result: dict[str, Any]) -> dict[str, float]:
     crop = stages.get("crop", {}).get("runtime", {})
     condition = stages.get("condition", {}).get("runtime", {})
     downlink = stages.get("downlink", {}).get("runtime", {})
+    shared_analysis_seconds = (
+        _nested_seconds(pipeline, "shared_analysis_grid_seconds")
+        if result.get("sensor") == "balkan-1"
+        else None
+    )
     values = {
         "intake_seconds": _nested_seconds(pipeline, "intake_seconds"),
+        "shared_analysis_grid_seconds": shared_analysis_seconds,
         "cloud_plan_seconds": _nested_seconds(pipeline, "cloud_plan_seconds"),
         "cloud_stage_seconds": _nested_seconds(cloud, "seconds"),
         "cloud_analysis_grid_seconds": _nested_seconds(cloud, "analysis_grid_preparation_seconds"),

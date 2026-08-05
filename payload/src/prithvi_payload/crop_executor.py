@@ -3,12 +3,8 @@
 from __future__ import annotations
 
 import json
-import math
-import os
-import tempfile
 import time
 from contextlib import ExitStack
-from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -16,13 +12,7 @@ import numpy as np
 import rasterio
 import torch
 from prithvi_shared import NORMALIZATION_MEANS
-from rasterio.crs import CRS
 from rasterio.enums import Resampling
-from rasterio.warp import (
-    calculate_default_transform,
-    reproject,
-    transform_bounds,
-)
 from rasterio.warp import (
     transform as transform_coordinates,
 )
@@ -37,7 +27,6 @@ from prithvi_payload.inference import PayloadCropModel
 
 FLOAT_NODATA = -9999.0
 BYTE_NODATA = 255
-GDAL_WARP_THREADS = max(1, min(4, os.cpu_count() or 1))
 
 
 def _tile_blend_weights(tile_size: int, halo: int) -> np.ndarray:
@@ -260,7 +249,7 @@ def _save_preview(
         vmax=2.5,
         interpolation="nearest",
     )
-    axes[3].set_title(f"Exact crop mask at p ≥ {crop_threshold:.2f}")
+    axes[3].set_title(f"Exact crop mask at p >= {crop_threshold:.2f}")
     for axis in axes:
         axis.axis("off")
     figure.legend(
@@ -270,7 +259,7 @@ def _save_preview(
         frameon=False,
     )
     figure.suptitle(
-        "Crop detail preview — exact mask uses nearest-neighbor display; "
+        "Crop detail preview - exact mask uses nearest-neighbor display; "
         "probability overlay smoothing is visual only",
         fontsize=13,
     )
@@ -310,6 +299,20 @@ def _execute_native_crop_stage(
     unusable_path = Path(plan["input"]["unusable_mask"])
     indices = list(plan["input"]["source_band_indices_1_based"])
     multiplier = float(plan["input"]["training_scale_multiplier"])
+    adapter = plan["input"].get("spectral_adapter")
+    calibration = None
+    if (
+        plan.get("sensor") == "balkan-1"
+        and isinstance(adapter, dict)
+        and adapter.get("mode") == ADAPTER_MODE
+    ):
+        calibration_source_path = plan["input"].get("calibration_source_path")
+        if not isinstance(calibration_source_path, str) or not calibration_source_path:
+            raise ValueError("Balkan crop calibration source is missing")
+        calibration = load_calibration(
+            adapter["calibration_path"],
+            source_path=calibration_source_path,
+        )
     temporal_coordinate = plan["input"]["temporal_coordinate_year_doy"]
     tile_size = int(plan["execution"]["tile_size"])
     halo = int(plan["execution"]["halo"])
@@ -472,9 +475,14 @@ def _execute_native_crop_stage(
                     halo=halo,
                 )
                 image = raw_tile * np.float32(multiplier)
+                if calibration is not None:
+                    image = apply_calibration(image, calibration)
                 invalid = ~np.isfinite(image).all(axis=0)
                 if source.nodata is not None:
-                    invalid |= np.all(raw_tile == source.nodata, axis=0)
+                    if calibration is not None:
+                        invalid |= np.any(raw_tile == source.nodata, axis=0)
+                    else:
+                        invalid |= np.all(raw_tile == source.nodata, axis=0)
                 image = image.copy()
                 image[:, invalid] = means[:, 0, 0][:, None]
                 pending.append(
@@ -577,6 +585,18 @@ def _execute_native_crop_stage(
         "sensor": plan["sensor"],
         "model": plan["model"],
         "gate": plan["gate"],
+        "spectral_adapter": (
+            {
+                "mode": calibration["adapter_mode"],
+                "calibration_path": adapter["calibration_path"],
+                "source_sha256": calibration["source"]["sha256"],
+                "reference": calibration["reference"],
+                "validation": calibration["validation"],
+                "output_grid": "shared_10m_analysis_grid",
+            }
+            if calibration is not None
+            else None
+        ),
         "mask_application": {
             "source": str(unusable_path.resolve()),
             "semantics": "0 usable, 1 unusable",
@@ -624,363 +644,11 @@ def _execute_native_crop_stage(
     return metadata
 
 
-def _utm_crs(source_crs: CRS, bounds: rasterio.coords.BoundingBox) -> CRS:
-    west, south, east, north = transform_bounds(
-        source_crs,
-        "EPSG:4326",
-        *bounds,
-        densify_pts=21,
-    )
-    longitude = (west + east) / 2.0
-    latitude = (south + north) / 2.0
-    zone = max(1, min(60, int(math.floor((longitude + 180.0) / 6.0) + 1)))
-    return CRS.from_epsg((32600 if latitude >= 0 else 32700) + zone)
-
-
-def _materialize_calibrated_analysis(
-    plan: dict[str, Any],
-    calibration: dict[str, Any],
-    *,
-    analysis_path: Path,
-    analysis_unusable_path: Path,
-) -> dict[str, Any]:
-    """Create the model-domain 10 m raster without changing the supplied product."""
-    source_path = Path(plan["source_path"])
-    unusable_path = Path(plan["input"]["unusable_mask"])
-    indices = list(plan["input"]["source_band_indices_1_based"])
-    scale = np.float32(calibration["source_scale_to_model_units"])
-    resolution = float(calibration["analysis_resolution_metres"])
-    with rasterio.open(source_path) as source, rasterio.open(unusable_path) as unusable:
-        if (
-            source.width != unusable.width
-            or source.height != unusable.height
-            or source.crs != unusable.crs
-            or source.transform != unusable.transform
-        ):
-            raise ValueError("Balkan source and cloud mask are not on the same grid")
-        destination_crs = _utm_crs(source.crs, source.bounds)
-        transform, width, height = calculate_default_transform(
-            source.crs,
-            destination_crs,
-            source.width,
-            source.height,
-            *source.bounds,
-            resolution=resolution,
-        )
-        analysis_profile = source.profile.copy()
-        analysis_profile.update(
-            driver="GTiff",
-            width=width,
-            height=height,
-            transform=transform,
-            crs=destination_crs,
-            count=4,
-            dtype="float32",
-            nodata=0.0,
-            compress="deflate",
-            predictor=3,
-            zlevel=1,
-            num_threads="ALL_CPUS",
-            tiled=True,
-            blockxsize=256,
-            blockysize=256,
-            BIGTIFF="IF_SAFER",
-        )
-        with rasterio.open(analysis_path, "w", **analysis_profile) as destination:
-            for output_index, source_index in enumerate(indices, start=1):
-                reproject(
-                    source=rasterio.band(source, source_index),
-                    destination=rasterio.band(destination, output_index),
-                    src_transform=source.transform,
-                    src_crs=source.crs,
-                    src_nodata=source.nodata,
-                    dst_transform=transform,
-                    dst_crs=destination_crs,
-                    dst_nodata=0.0,
-                    resampling=Resampling.average,
-                    init_dest_nodata=True,
-                    num_threads=GDAL_WARP_THREADS,
-                )
-                destination.set_band_description(
-                    output_index,
-                    f"{calibration['model_band_order'][output_index - 1]} calibrated model units",
-                )
-        with rasterio.open(analysis_path, "r+") as destination:
-            for _, window in destination.block_windows(1):
-                values = destination.read(window=window)
-                valid = np.isfinite(values).all(axis=0) & np.all(values > 0, axis=0)
-                values *= scale
-                values = apply_calibration(values, calibration)
-                values[:, ~valid] = 0.0
-                destination.write(values, window=window)
-
-        mask_profile = analysis_profile.copy()
-        mask_profile.update(
-            count=1,
-            dtype="uint8",
-            nodata=1,
-            compress="deflate",
-            predictor=2,
-        )
-        with rasterio.open(analysis_unusable_path, "w", **mask_profile) as destination:
-            reproject(
-                source=rasterio.band(unusable, 1),
-                destination=rasterio.band(destination, 1),
-                src_transform=unusable.transform,
-                src_crs=unusable.crs,
-                src_nodata=None,
-                dst_transform=transform,
-                dst_crs=destination_crs,
-                dst_nodata=1,
-                resampling=Resampling.max,
-                init_dest_nodata=True,
-                num_threads=GDAL_WARP_THREADS,
-            )
-            destination.set_band_description(1, "0 usable, non-zero unusable")
-    return {
-        "crs": str(destination_crs),
-        "resolution_metres": resolution,
-        "width": width,
-        "height": height,
-        "transform": list(transform)[:6],
-        "resampling": "average reflectance; conservative maximum unusable mask",
-    }
-
-
-def _publish_calibrated_results(
-    plan: dict[str, Any],
-    analysis_metadata: dict[str, Any],
-    *,
-    analysis_grid: dict[str, Any],
-    output_root: Path,
-    calibration: dict[str, Any],
-    started: float,
-) -> dict[str, Any]:
-    """Return probabilities to the original full-resolution grid for pipeline consumers."""
-    stem = str(plan["scene_id"])
-    source_path = Path(plan["source_path"])
-    unusable_path = Path(plan["input"]["unusable_mask"])
-    probability_path = output_root / "crop_maps" / f"{stem}_probability.tif"
-    binary_path = output_root / "crop_maps" / f"{stem}_binary.tif"
-    confidence_path = output_root / "crop_maps" / f"{stem}_confidence.tif"
-    preview_path = output_root / "visualisations" / f"{stem}_crop.png"
-    metadata_path = output_root / "metadata" / f"{stem}_crop.json"
-    save_diagnostic_preview = bool(plan.get("execution", {}).get("save_preview", False))
-    output_paths = [probability_path, binary_path, confidence_path, metadata_path]
-    if save_diagnostic_preview:
-        output_paths.append(preview_path)
-    for path in output_paths:
-        path.parent.mkdir(parents=True, exist_ok=True)
-
-    analysis_probability_path = Path(analysis_metadata["output_files"]["crop_probability"])
-    indices = list(plan["input"]["source_band_indices_1_based"])
-    crop_threshold = _crop_threshold(plan)
-    usable_count = 0
-    crop_count = 0
-    probability_total = 0.0
-    confidence_total = 0.0
-    with (
-        rasterio.open(source_path) as source,
-        rasterio.open(unusable_path) as unusable_source,
-        rasterio.open(analysis_probability_path) as analysis_probability,
-    ):
-        with rasterio.open(probability_path, "w", **_probability_profile(source)) as output:
-            reproject(
-                source=rasterio.band(analysis_probability, 1),
-                destination=rasterio.band(output, 1),
-                src_transform=analysis_probability.transform,
-                src_crs=analysis_probability.crs,
-                src_nodata=FLOAT_NODATA,
-                dst_transform=source.transform,
-                dst_crs=source.crs,
-                dst_nodata=FLOAT_NODATA,
-                resampling=Resampling.bilinear,
-                init_dest_nodata=True,
-                num_threads=GDAL_WARP_THREADS,
-            )
-            output.set_band_description(1, "crop probability; -9999 unusable")
-        with (
-            rasterio.open(probability_path, "r+") as probability_output,
-            rasterio.open(binary_path, "w", **_binary_profile(source)) as binary_output,
-            rasterio.open(
-                confidence_path, "w", **_probability_profile(source)
-            ) as confidence_output,
-        ):
-            binary_output.set_band_description(1, "0 non-crop, 1 crop, 255 unusable")
-            confidence_output.set_band_description(1, "winning-class confidence; -9999 unusable")
-            for _, window in source.block_windows(1):
-                probability = probability_output.read(1, window=window)
-                unusable = unusable_source.read(1, window=window).astype(bool)
-                usable = (
-                    ~unusable
-                    & np.isfinite(probability)
-                    & (probability >= 0.0)
-                    & (probability <= 1.0)
-                )
-                binary = (probability >= crop_threshold).astype(np.uint8)
-                confidence = np.maximum(probability, 1.0 - probability)
-                usable_count += int(np.count_nonzero(usable))
-                crop_count += int(np.count_nonzero(binary[usable] == 1))
-                probability_total += float(probability[usable].sum(dtype=np.float64))
-                confidence_total += float(confidence[usable].sum(dtype=np.float64))
-                probability[~usable] = FLOAT_NODATA
-                binary[~usable] = BYTE_NODATA
-                confidence[~usable] = FLOAT_NODATA
-                probability_output.write(probability, 1, window=window)
-                binary_output.write(binary, 1, window=window)
-                confidence_output.write(confidence, 1, window=window)
-
-        if save_diagnostic_preview:
-            preview_scale = min(1.0, 1200.0 / max(source.width, source.height))
-            preview_height = max(1, round(source.height * preview_scale))
-            preview_width = max(1, round(source.width * preview_scale))
-            rgb = source.read(
-                [indices[2], indices[1], indices[0]],
-                out_shape=(3, preview_height, preview_width),
-                resampling=Resampling.bilinear,
-            )
-            unusable_preview = unusable_source.read(
-                1,
-                out_shape=(preview_height, preview_width),
-                resampling=Resampling.nearest,
-            )
-        width, height = source.width, source.height
-
-    if save_diagnostic_preview:
-        with (
-            rasterio.open(probability_path) as probability_source,
-            rasterio.open(binary_path) as binary_source,
-        ):
-            probability_preview = probability_source.read(
-                1,
-                out_shape=(preview_height, preview_width),
-                resampling=Resampling.bilinear,
-            )
-            binary_preview = binary_source.read(
-                1,
-                out_shape=(preview_height, preview_width),
-                resampling=Resampling.nearest,
-            )
-        _save_preview(
-            preview_path,
-            _preview_rgb(rgb),
-            unusable_preview,
-            probability_preview,
-            binary_preview,
-            crop_threshold,
-        )
-
-    total_pixels = width * height
-    metadata = deepcopy(analysis_metadata)
-    metadata.update(
-        scene_id=plan["scene_id"],
-        sensor=plan["sensor"],
-        model=plan["model"],
-        gate=plan["gate"],
-        raster={"width": width, "height": height, "total_pixels": total_pixels},
-        analysis_grid=analysis_grid,
-        spectral_adapter={
-            "mode": calibration["adapter_mode"],
-            "calibration_path": plan["input"]["spectral_adapter"]["calibration_path"],
-            "source_sha256": calibration["source"]["sha256"],
-            "reference": calibration["reference"],
-            "validation": calibration["validation"],
-            "output_grid": "original_full_resolution_source_grid",
-        },
-        usable_pixels=usable_count,
-        usable_percentage=100.0 * usable_count / total_pixels if total_pixels else 0.0,
-        crop_pixels=crop_count,
-        crop_fraction_usable=crop_count / usable_count if usable_count else None,
-        crop_percentage_usable=100.0 * crop_count / usable_count if usable_count else None,
-        mean_crop_probability_usable=(probability_total / usable_count if usable_count else None),
-        mean_confidence_usable=confidence_total / usable_count if usable_count else None,
-        output_files={
-            "crop_probability": str(probability_path.resolve()),
-            "crop_binary": str(binary_path.resolve()),
-            "crop_confidence": str(confidence_path.resolve()),
-            "metadata": str(metadata_path.resolve()),
-            **(
-                {"preview": str(preview_path.resolve())}
-                if save_diagnostic_preview
-                else {}
-            ),
-        },
-        warnings=plan.get("warnings", []),
-    )
-    metadata["runtime"] = {
-        **analysis_metadata["runtime"],
-        "seconds": time.perf_counter() - started,
-        "analysis_seconds": analysis_metadata["runtime"]["seconds"],
-        "includes_calibration_and_full_resolution_publication": True,
-    }
-    metadata["mask_application"] = {
-        **analysis_metadata["mask_application"],
-        "source": str(unusable_path.resolve()),
-        "analysis_mask_resampling": "maximum (conservative)",
-    }
-    metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
-    return metadata
-
-
-def _execute_calibrated_balkan_crop_stage(
-    plan: dict[str, Any],
-    *,
-    output_root: str | Path,
-    model: PayloadCropModel | None,
-) -> dict[str, Any]:
-    started = time.perf_counter()
-    adapter = plan["input"]["spectral_adapter"]
-    calibration = load_calibration(
-        adapter["calibration_path"],
-        source_path=plan["source_path"],
-    )
-    with tempfile.TemporaryDirectory(prefix="balkan_crop_") as temporary:
-        temporary_root = Path(temporary)
-        analysis_path = temporary_root / "calibrated_10m.tif"
-        analysis_unusable_path = temporary_root / "unusable_10m.tif"
-        analysis_grid = _materialize_calibrated_analysis(
-            plan,
-            calibration,
-            analysis_path=analysis_path,
-            analysis_unusable_path=analysis_unusable_path,
-        )
-        analysis_plan = deepcopy(plan)
-        analysis_plan["source_path"] = str(analysis_path)
-        analysis_plan["input"]["source_band_indices_1_based"] = [1, 2, 3, 4]
-        analysis_plan["input"]["unusable_mask"] = str(analysis_unusable_path)
-        analysis_plan["input"]["training_scale_multiplier"] = 1.0
-        analysis_plan["input"]["spectral_adapter"] = None
-        analysis_metadata = _execute_native_crop_stage(
-            analysis_plan,
-            output_root=temporary_root / "inference",
-            model=model,
-        )
-        return _publish_calibrated_results(
-            plan,
-            analysis_metadata,
-            analysis_grid=analysis_grid,
-            output_root=Path(output_root),
-            calibration=calibration,
-            started=started,
-        )
-
-
 def execute_crop_stage(
     plan: dict[str, Any],
     *,
     output_root: str | Path,
     model: PayloadCropModel | None = None,
 ) -> dict[str, Any]:
-    """Execute crop inference, adapting validated Balkan-1 inputs when required."""
-    adapter = plan.get("input", {}).get("spectral_adapter")
-    if (
-        plan.get("sensor") == "balkan-1"
-        and isinstance(adapter, dict)
-        and adapter.get("mode") == ADAPTER_MODE
-    ):
-        return _execute_calibrated_balkan_crop_stage(
-            plan,
-            output_root=output_root,
-            model=model,
-        )
+    """Execute crop inference on the plan's already prepared science grid."""
     return _execute_native_crop_stage(plan, output_root=output_root, model=model)

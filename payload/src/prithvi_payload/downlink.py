@@ -75,7 +75,12 @@ def _preview_dimensions(width: int, height: int, maximum: int) -> tuple[int, int
     return max(1, round(width * scale)), max(1, round(height * scale))
 
 
-def _stretch_rgb(values: np.ndarray, *, channelwise: bool = False) -> np.ndarray:
+def _stretch_rgb(
+    values: np.ndarray,
+    *,
+    channelwise: bool = False,
+    channel_limits: list[list[float]] | None = None,
+) -> np.ndarray:
     rgb = np.moveaxis(values, 0, -1).astype(np.float32, copy=False)
     if channelwise:
         output = np.zeros(rgb.shape, dtype=np.uint8)
@@ -84,7 +89,12 @@ def _stretch_rgb(values: np.ndarray, *, channelwise: bool = False) -> np.ndarray
             samples = rgb[..., channel][valid]
             if not samples.size:
                 continue
-            low, high = np.percentile(samples, (2, 98))
+            if channel_limits is not None:
+                if len(channel_limits) != 3 or len(channel_limits[channel]) != 2:
+                    raise ValueError("RGB channel limits must contain three low/high pairs")
+                low, high = (float(value) for value in channel_limits[channel])
+            else:
+                low, high = np.percentile(samples, (2, 98))
             if high <= low:
                 high = low + 1.0
             scaled = np.clip((rgb[..., channel] - low) / (high - low), 0.0, 1.0)
@@ -328,7 +338,18 @@ def build_downlink_bundle(
         artifacts.get("condition", {}).get("report"), result_root, name="condition report"
     )
     condition_report = _read_json(condition_report_path)
-    source_path = _resolve_asset(intake.get("source_path"), result_root, name="source scene")
+    original_source_path = _resolve_asset(
+        intake.get("source_path"), result_root, name="source scene"
+    )
+    analysis = intake.get("analysis")
+    use_shared_analysis = payload.get("sensor") == "balkan-1" and isinstance(analysis, dict)
+    source_path = (
+        _resolve_asset(
+            analysis.get("source_path"), result_root, name="Balkan analysis scene"
+        )
+        if use_shared_analysis
+        else original_source_path
+    )
     cloud_assets = artifacts.get("cloud", {})
     crop_assets = artifacts.get("crop", {})
     raster_paths = {
@@ -361,7 +382,11 @@ def build_downlink_bundle(
             name=name,
         )
 
-    mapping = intake.get("logical_band_mapping", {})
+    mapping = (
+        analysis.get("logical_band_mapping", {})
+        if use_shared_analysis
+        else intake.get("logical_band_mapping", {})
+    )
     if any(role not in mapping for role in ("RED", "GREEN", "BLUE")):
         raise ValueError("Payload intake metadata is missing RGB band mapping")
     rgb_indices = [int(mapping[role]["index"]) for role in ("RED", "GREEN", "BLUE")]
@@ -398,7 +423,23 @@ def build_downlink_bundle(
         )
         rgb /= float(reflectance_scale)
         balkan_channelwise_display = payload.get("sensor") == "balkan-1"
-        Image.fromarray(_stretch_rgb(rgb, channelwise=balkan_channelwise_display)).save(
+        channel_limits = None
+        if use_shared_analysis:
+            raw_limits = analysis.get("display", {}).get(
+                "native_source_channel_limits"
+            )
+            if isinstance(raw_limits, list):
+                channel_limits = [
+                    [float(value) / float(reflectance_scale) for value in limits]
+                    for limits in raw_limits
+                ]
+        Image.fromarray(
+            _stretch_rgb(
+                rgb,
+                channelwise=balkan_channelwise_display,
+                channel_limits=channel_limits,
+            )
+        ).save(
             rgb_path,
             format="WEBP",
             quality=RGB_WEBP_QUALITY,

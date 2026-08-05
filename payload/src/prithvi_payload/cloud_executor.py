@@ -177,8 +177,13 @@ def execute_cloud_stage(
 
     reprojection_seconds = 0.0
     analysis_grid_preparation_seconds = 0.0
-    analysis_grid_mode = "source_grid"
-    execution_strategy = "windowed_source_grid"
+    shared_balkan_grid = bool(plan["input"].get("analysis_grid_ready"))
+    analysis_grid_mode = (
+        "balkan_1_shared_utm_10m" if shared_balkan_grid else "source_grid"
+    )
+    execution_strategy = (
+        "full_shared_analysis_grid" if shared_balkan_grid else "windowed_source_grid"
+    )
     with rasterio.open(source_path) as source, ExitStack() as resources:
         if max(indices) > source.count or len(set(indices)) != 4:
             raise ValueError("Cloud source-band indices do not match the GeoTIFF")
@@ -195,7 +200,7 @@ def execute_cloud_stage(
         analysis_semantic_path = semantic_path
         analysis_unusable_path = unusable_path
         analysis_invalid_path = invalid_path
-        if plan["sensor"] == "balkan-1":
+        if plan["sensor"] == "balkan-1" and not shared_balkan_grid:
             target_resolution = float(config["input"].get("balkan_target_resolution_m", 10.0))
             if target_resolution <= 0:
                 raise ValueError("Balkan cloud target resolution must be positive")
@@ -400,7 +405,7 @@ def execute_cloud_stage(
                         invalid_output.write(invalid_core.astype(np.uint8), 1, window=output_window)
                         tile_count += 1
 
-        if analysis_grid_mode != "source_grid":
+        if analysis_grid_mode == "balkan_1_utm_10m":
             reprojection_started = time.perf_counter()
             _reproject_mask_to_source(
                 analysis_semantic_path,
@@ -510,7 +515,9 @@ def execute_cloud_stage(
             "width": analysis_width,
             "height": analysis_height,
             "total_pixels": analysis_total_pixels,
-            "output_masks_reprojected_to_source_grid": analysis_grid_mode != "source_grid",
+            "output_masks_reprojected_to_source_grid": (
+                analysis_grid_mode == "balkan_1_utm_10m"
+            ),
         },
         "runtime": {
             "seconds": time.perf_counter() - started,

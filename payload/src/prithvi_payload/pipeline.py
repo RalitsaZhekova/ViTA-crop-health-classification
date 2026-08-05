@@ -76,9 +76,29 @@ def run_scene(
         crop_calibration_path=crop_calibration_path,
     )
     resolved_scene_id = intake["scene_id"]
+    intake_seconds = time.perf_counter() - intake_started
+    analysis_grid_seconds = 0.0
+    if (
+        sensor == "balkan-1"
+        and stop_after != "intake"
+        and intake["readiness"]["intake"] == "READY"
+    ):
+        from prithvi_payload.balkan_analysis import materialize_balkan_analysis_grid
+
+        if progress_callback is not None:
+            progress_callback("preparing_analysis_grid")
+        analysis = materialize_balkan_analysis_grid(
+            intake,
+            output_root=output_root,
+            overwrite=overwrite,
+        )
+        intake["analysis"] = analysis
+        analysis_grid_seconds = float(analysis["runtime"]["seconds"])
     intake_path = output_root / "metadata" / f"{resolved_scene_id}_intake.json"
     _write_json(intake_path, intake)
-    intake_seconds = time.perf_counter() - intake_started
+    artifacts = {"intake": str(intake_path.resolve())}
+    if isinstance(intake.get("analysis"), dict):
+        artifacts["analysis_grid"] = intake["analysis"]["source_path"]
     result: dict[str, Any] = {
         "schema_version": "0.1-draft",
         "scene_id": resolved_scene_id,
@@ -86,7 +106,7 @@ def run_scene(
         "requested_stop_after": stop_after,
         "completed_stages": ["intake"],
         "status": "INTAKE_READY",
-        "artifacts": {"intake": str(intake_path.resolve())},
+        "artifacts": artifacts,
         "summary": {
             "intake": {
                 "readiness": intake["readiness"]["intake"],
@@ -96,7 +116,10 @@ def run_scene(
             }
         },
         "stage_metadata": {"intake": intake},
-        "timing": {"intake_seconds": intake_seconds},
+        "timing": {
+            "intake_seconds": intake_seconds,
+            "shared_analysis_grid_seconds": analysis_grid_seconds,
+        },
         "warnings": list(intake["warnings"]),
         "errors": list(intake["errors"]),
     }

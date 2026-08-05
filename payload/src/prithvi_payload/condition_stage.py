@@ -502,7 +502,18 @@ def run_payload_condition(
     if not isinstance(acquired_at, str) or not acquired_at:
         raise ValueError("Payload result is missing acquisition time")
 
-    source_path = _resolve_asset(intake.get("source_path"), result_root, name="source scene")
+    original_source_path = _resolve_asset(
+        intake.get("source_path"), result_root, name="source scene"
+    )
+    analysis = intake.get("analysis")
+    use_shared_analysis = sensor == "balkan-1" and isinstance(analysis, dict)
+    source_path = (
+        _resolve_asset(
+            analysis.get("source_path"), result_root, name="Balkan analysis scene"
+        )
+        if use_shared_analysis
+        else original_source_path
+    )
     cloud_artifacts = payload.get("artifacts", {}).get("cloud", {})
     crop_artifacts = payload.get("artifacts", {}).get("crop", {})
     unusable_path = _resolve_asset(
@@ -516,7 +527,11 @@ def run_payload_condition(
         crop_artifacts.get("crop_probability"), result_root, name="crop probability"
     )
 
-    band_mapping = intake.get("logical_band_mapping")
+    band_mapping = (
+        analysis.get("logical_band_mapping")
+        if use_shared_analysis
+        else intake.get("logical_band_mapping")
+    )
     if not isinstance(band_mapping, dict):
         raise ValueError("Payload intake metadata is missing logical band mapping")
     warnings: list[str] = []
@@ -531,7 +546,7 @@ def run_payload_condition(
     if calibrated_balkan:
         calibration = load_calibration(
             spectral_adapter["calibration_path"],
-            source_path=source_path,
+            source_path=original_source_path,
         )
     nir_role = "NIR_NARROW"
     if nir_role not in band_mapping:
@@ -874,7 +889,8 @@ def run_payload_condition(
         },
         "provenance": {
             "payload_result": str(result_path),
-            "source_scene": str(source_path),
+            "source_scene": str(original_source_path),
+            "analysis_scene": str(source_path),
             "unusable_mask": str(unusable_path),
             "crop_binary": str(crop_binary_path),
             "crop_probability": str(crop_probability_path),

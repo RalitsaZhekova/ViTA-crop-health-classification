@@ -36,7 +36,14 @@ def build_cloud_stage_plan(
     if sensor not in {"sentinel-2", "balkan-1"}:
         raise CloudStagePlanningError(f"Unsupported sensor in intake report: {sensor}")
 
-    route = intake.get("model_band_routes", {}).get("cloud_detection", {})
+    analysis = intake.get("analysis")
+    analysis_ready = sensor == "balkan-1" and isinstance(analysis, dict)
+    routes = (
+        analysis.get("model_band_routes", {})
+        if analysis_ready
+        else intake.get("model_band_routes", {})
+    )
+    route = routes.get("cloud_detection", {})
     source_indices = route.get("source_band_indices")
     expected_order = route.get("expected_logical_order")
     errors: list[str] = []
@@ -87,7 +94,9 @@ def build_cloud_stage_plan(
         "schema_version": CLOUD_STAGE_SCHEMA_VERSION,
         "stage": "cloud_detection",
         "scene_id": intake.get("scene_id"),
-        "source_path": intake.get("source_path"),
+        "source_path": (
+            analysis.get("source_path") if analysis_ready else intake.get("source_path")
+        ),
         "sensor": sensor,
         "acquired_at": intake.get("acquired_at"),
         "readiness": "READY" if not errors else "BLOCKED",
@@ -98,7 +107,12 @@ def build_cloud_stage_plan(
             "source_band_indices_1_based": source_indices,
             "reflectance_scale": selected_scale,
             "reflectance_scale_source": scale_source,
-            "nodata_value": intake.get("raster", {}).get("nodata"),
+            "nodata_value": (
+                analysis.get("raster", {}).get("nodata")
+                if analysis_ready
+                else intake.get("raster", {}).get("nodata")
+            ),
+            "analysis_grid_ready": analysis_ready,
             "pan_used": False,
         },
         "execution": {
