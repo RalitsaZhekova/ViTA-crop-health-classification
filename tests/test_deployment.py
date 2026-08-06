@@ -58,9 +58,11 @@ def test_payload_response_flattens_stage_timings() -> None:
         },
     }
 
-    timing = _pipeline_timings(result)
+    timing = _pipeline_timings(result, payload_seconds=2.5)
 
     assert timing["cloud_stage_seconds"] == 1.0
     assert timing["cloud_inference_seconds"] == 0.7
     assert timing["crop_inference_seconds"] == 0.25
     assert timing["downlink_packaging_seconds"] == 0.2
+    assert timing["reported_stage_total_seconds"] == pytest.approx(2.3)
+    assert timing["orchestration_seconds"] == pytest.approx(0.2)

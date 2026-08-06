@@ -24,6 +24,10 @@ services:
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
       VITA_INPUT_ROOT: /data
       VITA_OUTPUT_ROOT: /runtime/runs
+      VITA_BALKAN_ANALYSIS_CACHE_DIR: /runtime/cache/balkan-analysis
+      VITA_BALKAN_PREPARE_INPUT: ${VITA_BALKAN_PREPARE_INPUT:-balkan1/preprocessed/3408_L1ORT.tif}
+      VITA_WEBP_METHOD: ${VITA_WEBP_METHOD:-3}
+      VITA_PNG_COMPRESSION_LEVEL: ${VITA_PNG_COMPRESSION_LEVEL:-4}
       PRITHVI_MODEL_DIR: /models
       OMNICLOUDMASK_MODEL_DIR: /models/omnicloudmask
       VITA_MODEL_CACHE_DIR: /engine-cache/torch-export

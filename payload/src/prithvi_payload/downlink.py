@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
@@ -22,10 +24,16 @@ from prithvi_payload.cloud_classifier import CLOUD_MODEL_NAME, CLOUD_MODEL_SHA25
 DOWNLINK_SCHEMA_VERSION = "1.0"
 DOWNLINK_PRODUCT_TYPE = "vita.crop-condition.web-bundle"
 DOWNLINK_ALGORITHM_VERSION = "compact-downlink-v2"
-DEFAULT_MAX_IMAGE_DIMENSION = 1600
+DEFAULT_MAX_IMAGE_DIMENSION = 1200
 DEFAULT_GRID_SIZE = 16
 MINIMUM_GRID_CELL_PIXELS = 32
 RGB_WEBP_QUALITY = 82
+RGB_WEBP_METHOD = int(os.environ.get("VITA_WEBP_METHOD", "3"))
+PNG_COMPRESSION_LEVEL = int(os.environ.get("VITA_PNG_COMPRESSION_LEVEL", "4"))
+if not 0 <= RGB_WEBP_METHOD <= 6:
+    raise RuntimeError("VITA_WEBP_METHOD must be in the range 0..6")
+if not 0 <= PNG_COMPRESSION_LEVEL <= 9:
+    raise RuntimeError("VITA_PNG_COMPRESSION_LEVEL must be in the range 0..9")
 
 CONDITION_COLOR_STOPS = (
     (0.0, (215, 48, 39)),
@@ -141,6 +149,25 @@ def _build_overlay(
     return overlay
 
 
+def _save_webp(path: Path, rgb: np.ndarray) -> None:
+    Image.fromarray(rgb).save(
+        path,
+        format="WEBP",
+        quality=RGB_WEBP_QUALITY,
+        method=RGB_WEBP_METHOD,
+        exact=True,
+    )
+
+
+def _save_png(path: Path, overlay: np.ndarray) -> None:
+    Image.fromarray(overlay).save(
+        path,
+        format="PNG",
+        optimize=False,
+        compress_level=PNG_COMPRESSION_LEVEL,
+    )
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -216,8 +243,30 @@ def _build_interaction_grid(
     cells: list[dict[str, Any]] = []
     metric_names = ("ndvi", "gndvi", "evi", "savi")
     for row in range(rows):
+        row_start, row_stop = row_edges[row : row + 2]
+        row_window = Window(0, row_start, source.width, row_stop - row_start)
+        # Read each compressed raster once per interaction-grid row instead of
+        # reopening 10 small windows for every one of the 16 columns.
+        condition_row = (
+            rasters["condition_score"]
+            .read(1, window=row_window, masked=True)
+            .filled(np.nan)
+        )
+        byte_rows = {
+            name: rasters[name].read(1, window=row_window)
+            for name in (
+                "alert_mask",
+                "crop_binary",
+                "unusable_mask",
+                "semantic_mask",
+                "invalid_mask",
+            )
+        }
+        metric_rows = {
+            name: rasters[name].read(1, window=row_window, masked=True).filled(np.nan)
+            for name in metric_names
+        }
         for column in range(columns):
-            row_start, row_stop = row_edges[row : row + 2]
             column_start, column_stop = column_edges[column : column + 2]
             window = Window(
                 column_start,
@@ -226,20 +275,17 @@ def _build_interaction_grid(
                 row_stop - row_start,
             )
             total = round(window.width) * round(window.height)
-            condition = (
-                rasters["condition_score"].read(1, window=window, masked=True).filled(np.nan)
-            )
+            column_slice = slice(column_start, column_stop)
+            condition = condition_row[:, column_slice]
             valid = np.isfinite(condition) & (condition >= 0.0) & (condition <= 100.0)
             analysis_pixels = int(np.count_nonzero(valid))
-            alert = rasters["alert_mask"].read(1, window=window)
-            crop = rasters["crop_binary"].read(1, window=window)
-            unusable = rasters["unusable_mask"].read(1, window=window)
-            semantic = rasters["semantic_mask"].read(1, window=window)
-            invalid = rasters["invalid_mask"].read(1, window=window)
+            alert = byte_rows["alert_mask"][:, column_slice]
+            crop = byte_rows["crop_binary"][:, column_slice]
+            unusable = byte_rows["unusable_mask"][:, column_slice]
+            semantic = byte_rows["semantic_mask"][:, column_slice]
+            invalid = byte_rows["invalid_mask"][:, column_slice]
             metrics = {
-                name: _finite_summary(
-                    rasters[name].read(1, window=window, masked=True).filled(np.nan)
-                )["median"]
+                name: _finite_summary(metric_rows[name][:, column_slice])["median"]
                 for name in metric_names
             }
             condition_summary = _finite_summary(condition)
@@ -433,18 +479,10 @@ def build_downlink_bundle(
                     [float(value) / float(reflectance_scale) for value in limits]
                     for limits in raw_limits
                 ]
-        Image.fromarray(
-            _stretch_rgb(
-                rgb,
-                channelwise=balkan_channelwise_display,
-                channel_limits=channel_limits,
-            )
-        ).save(
-            rgb_path,
-            format="WEBP",
-            quality=RGB_WEBP_QUALITY,
-            method=6,
-            exact=True,
+        rgb_preview = _stretch_rgb(
+            rgb,
+            channelwise=balkan_channelwise_display,
+            channel_limits=channel_limits,
         )
 
         condition = (
@@ -466,13 +504,15 @@ def build_downlink_bundle(
             condition,
             valid_crop,
         )
-        Image.fromarray(overlay).save(
-            overlay_path,
-            format="PNG",
-            optimize=True,
-            compress_level=9,
-        )
-        grid = _build_interaction_grid(source, rasters, grid_size=grid_size)
+        # Image encoding and interaction-grid aggregation are independent CPU
+        # work. Overlap them so packaging pays roughly the slower path, not all
+        # three paths serially.
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="downlink-encode") as pool:
+            rgb_future = pool.submit(_save_webp, rgb_path, rgb_preview)
+            overlay_future = pool.submit(_save_png, overlay_path, overlay)
+            grid = _build_interaction_grid(source, rasters, grid_size=grid_size)
+            rgb_future.result()
+            overlay_future.result()
         native_bounds = [float(value) for value in source.bounds]
         wgs84_bounds = [
             round(value, 8)

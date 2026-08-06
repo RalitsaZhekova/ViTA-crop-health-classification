@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import os
 import time
@@ -18,6 +20,77 @@ ANALYSIS_BAND_ROLES = ("BLUE", "GREEN", "RED", "NIR_BROAD")
 DEFAULT_ANALYSIS_RESOLUTION_METRES = 10.0
 GDAL_WARP_THREADS = max(1, min(4, os.cpu_count() or 1))
 DISPLAY_MAX_DIMENSION = 1600
+ANALYSIS_ALGORITHM_VERSION = "balkan-shared-analysis-grid-v1"
+
+
+def _cache_paths(
+    intake: dict[str, Any],
+    output_root: Path,
+    *,
+    resolution: float,
+    source_indices: list[int],
+) -> tuple[Path, Path, str] | None:
+    source_sha256 = intake.get("source_sha256")
+    if not isinstance(source_sha256, str) or len(source_sha256) != 64:
+        return None
+    configured = os.environ.get("VITA_BALKAN_ANALYSIS_CACHE_DIR")
+    runtime_output = os.environ.get("VITA_OUTPUT_ROOT")
+    if configured:
+        cache_root = Path(configured).resolve()
+    elif runtime_output:
+        cache_root = Path(runtime_output).resolve().parent / "cache" / "balkan-analysis"
+    else:
+        cache_root = output_root.parent.parent / "cache" / "balkan-analysis"
+    cache_key = hashlib.sha256(
+        json.dumps(
+            {
+                "algorithm": ANALYSIS_ALGORITHM_VERSION,
+                "resolution": resolution,
+                "source_band_indices": source_indices,
+                "source_sha256": source_sha256.lower(),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    cache_root.mkdir(parents=True, exist_ok=True)
+    return (
+        cache_root / f"{cache_key}.tif",
+        cache_root / f"{cache_key}.json",
+        cache_key,
+    )
+
+
+def _cached_analysis(
+    raster_path: Path,
+    metadata_path: Path,
+    cache_key: str,
+    *,
+    started: float,
+) -> dict[str, Any] | None:
+    if not raster_path.is_file() or not metadata_path.is_file():
+        return None
+    try:
+        record = json.loads(metadata_path.read_text(encoding="utf-8"))
+        with rasterio.open(raster_path) as dataset:
+            valid = (
+                record.get("cache", {}).get("key") == cache_key
+                and dataset.tags().get("ANALYSIS_CACHE_KEY") == cache_key
+                and dataset.count == len(ANALYSIS_BAND_ROLES)
+                and dataset.descriptions == ANALYSIS_BAND_ROLES
+            )
+    except (OSError, json.JSONDecodeError, rasterio.errors.RasterioError):
+        return None
+    if not valid:
+        return None
+    record["source_path"] = str(raster_path.resolve())
+    record["cache"]["hit"] = True
+    record["runtime"] = {
+        "seconds": time.perf_counter() - started,
+        "cache_hit": True,
+        "cache_key": cache_key,
+    }
+    return record
 
 
 def _utm_crs(source_crs: CRS, bounds: rasterio.coords.BoundingBox) -> CRS:
@@ -67,15 +140,37 @@ def materialize_balkan_analysis_grid(
     if not math.isfinite(resolution) or resolution <= 0:
         raise ValueError("Balkan analysis resolution must be positive and finite")
 
-    output = Path(output_root).resolve() / "analysis"
+    started = time.perf_counter()
+    output_root = Path(output_root).resolve()
+    output = output_root / "analysis"
     output.mkdir(parents=True, exist_ok=True)
-    destination_path = output / f"{intake['scene_id']}_10m.tif"
-    if destination_path.exists() and not overwrite:
-        raise FileExistsError(f"Balkan analysis grid already exists: {destination_path}")
-    temporary_path = destination_path.with_suffix(".partial")
+    cache = _cache_paths(
+        intake,
+        output_root,
+        resolution=resolution,
+        source_indices=source_indices,
+    )
+    if cache is None:
+        destination_path = output / f"{intake['scene_id']}_10m.tif"
+        metadata_path = None
+        cache_key = None
+        if destination_path.exists() and not overwrite:
+            raise FileExistsError(f"Balkan analysis grid already exists: {destination_path}")
+    else:
+        destination_path, metadata_path, cache_key = cache
+        cached = _cached_analysis(
+            destination_path,
+            metadata_path,
+            cache_key,
+            started=started,
+        )
+        if cached is not None:
+            return cached
+    temporary_path = destination_path.with_name(
+        f".{destination_path.name}.{os.getpid()}.partial"
+    )
     temporary_path.unlink(missing_ok=True)
 
-    started = time.perf_counter()
     try:
         with rasterio.open(source_path) as source:
             if source.crs is None:
@@ -126,6 +221,7 @@ def materialize_balkan_analysis_grid(
                     destination.set_band_description(output_index, role)
                 destination.update_tags(
                     ANALYSIS_GRID="balkan-1-utm-10m-v1",
+                    ANALYSIS_CACHE_KEY=cache_key or "disabled",
                     ORIGINAL_SOURCE=str(source_path),
                     RESAMPLING="average",
                     SENSOR="balkan-1",
@@ -165,9 +261,9 @@ def materialize_balkan_analysis_grid(
     finally:
         temporary_path.unlink(missing_ok=True)
 
-    return {
+    record = {
         "schema_version": "1.0",
-        "algorithm_version": "balkan-shared-analysis-grid-v1",
+        "algorithm_version": ANALYSIS_ALGORITHM_VERSION,
         "source_path": str(destination_path.resolve()),
         "source_band_indices_1_based": [1, 2, 3, 4],
         "logical_band_mapping": {
@@ -201,5 +297,24 @@ def materialize_balkan_analysis_grid(
             "stretch_percentiles": [2.0, 98.0],
             "native_source_channel_limits": display_stretch,
         },
-        "runtime": {"seconds": time.perf_counter() - started},
+        "cache": {
+            "enabled": cache_key is not None,
+            "hit": False,
+            "key": cache_key,
+        },
+        "runtime": {
+            "seconds": time.perf_counter() - started,
+            "cache_hit": False,
+            "cache_key": cache_key,
+        },
     }
+    if metadata_path is not None:
+        temporary_metadata = metadata_path.with_name(
+            f".{metadata_path.name}.{os.getpid()}.tmp"
+        )
+        temporary_metadata.write_text(
+            json.dumps(record, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary_metadata, metadata_path)
+    return record

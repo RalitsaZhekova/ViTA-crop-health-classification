@@ -6,6 +6,7 @@ import hashlib
 import json
 import string
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,30 @@ def sha256_file(path: str | Path, *, chunk_size: int = 8 * 1024 * 1024) -> str:
         while chunk := stream.read(chunk_size):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+@lru_cache(maxsize=16)
+def _sha256_for_unchanged_file(
+    resolved_path: str,
+    size: int,
+    modified_ns: int,
+    changed_ns: int,
+) -> str:
+    """Hash once per process while an immutable payload file's identity is unchanged."""
+    del size, modified_ns, changed_ns
+    return sha256_file(resolved_path)
+
+
+def verified_file_sha256(path: str | Path) -> str:
+    """Return a cached digest invalidated by path, size, mtime or metadata change."""
+    resolved = Path(path).resolve()
+    stat = resolved.stat()
+    return _sha256_for_unchanged_file(
+        str(resolved),
+        stat.st_size,
+        stat.st_mtime_ns,
+        stat.st_ctime_ns,
+    )
 
 
 def _finite_numbers(values: Any, *, name: str) -> np.ndarray:
@@ -101,7 +126,7 @@ def load_calibration(
         or any(character not in string.hexdigits for character in expected_sha)
     ):
         raise CalibrationError("Crop calibration source SHA-256 is invalid")
-    if verify_sha256 and sha256_file(source) != expected_sha.lower():
+    if verify_sha256 and verified_file_sha256(source) != expected_sha.lower():
         raise CalibrationError("Crop calibration does not match the source SHA-256")
 
     resolution = value.get("analysis_resolution_metres")

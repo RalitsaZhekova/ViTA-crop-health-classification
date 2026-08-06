@@ -34,8 +34,8 @@ The acceleration policy is:
 |---|---|---|
 | OmniCloudMask ensemble | CUDA FP16, batch 2, warm/resident models, semantic-only GPU output | Low-risk acceleration supported by the existing package |
 | Prithvi crop segmentation | FP16 Torch-TensorRT, fixed batch 4, engine/timing cache | TensorRT targets the largest crop neural network while preserving the PyTorch integration |
-| Balkan 10 m preparation | One shared GDAL grid, multithreaded warp | Avoids repeating the expensive reprojection for later stages |
-| Health indices and packaging | Vectorized NumPy/Rasterio, all-CPU GeoTIFF compression | These are I/O/scientific raster operations; GPU transfer can cost more than it saves at MVP scale |
+| Balkan 10 m preparation | Checksum-keyed persistent shared grid, multithreaded GDAL warp | Builds the fixed 1.2 GB input once, validates the cache identity, and reuses it for later jobs |
+| Health indices and packaging | Vectorized NumPy/Rasterio, all-CPU GeoTIFF compression, concurrent web encoders | These are I/O/scientific raster operations; GPU transfer can cost more than it saves at MVP scale |
 
 ModelOpt is not required for FP16 TensorRT. The import warning about the missing quantization operator is harmless here. INT8 should only be introduced after a representative calibration set and an accuracy acceptance test exist.
 
@@ -99,7 +99,7 @@ cp deploy/payload.env.example deploy/payload.env  # skip if already configured
 ./deploy/payload/deploy.sh
 ```
 
-The script runs preflight, builds the app layer on the already-installed NVIDIA image, starts Compose with `runtime: nvidia`, and waits up to 30 minutes for the first model export/TensorRT build/warmup. First startup can be slow. Subsequent restarts reuse the export, TensorRT engine, and timing caches.
+The script runs preflight, builds the app layer on the already-installed NVIDIA image, starts Compose with `runtime: nvidia`, and waits up to 30 minutes for the first model export, TensorRT build, Balkan analysis-grid preparation, and warmup. First startup can be slow. Subsequent restarts reuse the export, TensorRT engine, timing, and checksum-keyed Balkan analysis caches.
 
 Check status and logs:
 
@@ -117,13 +117,19 @@ A production-ready health response must show:
 - `crop_tensorrt_engine_count` greater than zero;
 - `cloud_backend: "omnicloudmask_cuda_fp16"`;
 - `cloud_batch_size: 2`;
-- cloud warmup profiles for batch 1 at 1,000 px and batches 1 and 2 at 869 px.
+- cloud warmup profiles for batch 1 at 1,000 px and batches 1 and 2 at 869 px;
+- `cloud_scene_warmup_profile.kind: "fixed_input_profile"` with `prediction_retained: false`;
+- `balkan_analysis_cache.cache_hit: true` after the cache has been built once.
 
 The 1,000 px profile is the fixed Sentinel path. For the proof-of-concept Balkan grid,
-OmniCloudMask's reviewed no-data rule reduces its model patch to 869 px. Warming only
-the 1,000 px input leaves the first Balkan request paying CUDA/cuDNN initialization;
-`VITA_CLOUD_WARMUP_PATCH_SIZES=869` prevents that. If the fixed Balkan image changes,
-inspect its warning/timing once and update the warmup size rather than guessing.
+OmniCloudMask's reviewed no-data rule reduces its model patch to 869 px. The service
+also reads the cached fixed input once and runs a discarded cloud prediction so that
+the exact mosaic path is ready. Model construction, warmup, and inference are pinned
+to one long-lived worker thread because CUDA/cuDNN setup includes thread-local state;
+warming on the application thread and inferring on a different FastAPI worker made the
+first request pay about four extra seconds locally. No semantic mask or crop result is
+retained from warmup. If the fixed Balkan image changes, update
+`VITA_BALKAN_PREPARE_INPUT` and inspect the health profile before benchmarking.
 
 The service has one worker and rejects a concurrent job with HTTP 409. This prevents two 100M-parameter pipelines from competing for GPU memory and corrupting latency measurements. It binds to Jetson `127.0.0.1`; do not expose port 8090 in the firewall.
 
@@ -193,6 +199,7 @@ Artifacts are retained at:
 ```text
 Payload full run:   /data/code/VITA/runtime/payload/runs/<job-id>/
 Payload TRT cache:  /data/code/VITA/runtime/engines/
+Payload grid cache: /data/code/VITA/runtime/payload/cache/balkan-analysis/
 Ground receipt:     runtime/downlink/<job-id>/
 Ground catalog:     runtime/ground/scenes/<job-id>/
 ```
@@ -216,9 +223,13 @@ tegrastats --interval 500
 
 Use the stage timings in the response and payload `result.json`, not only the total:
 
+- `reported_stage_total_seconds` sums the eight top-level stages and
+  `orchestration_seconds` is the measured remainder, so they add back to
+  `payload_seconds`; cloud/crop inference and mask-processing values are nested inside
+  their corresponding stage totals and must not be added a second time;
 - high `cloud_inference_seconds`: validate FP16, batch 2, and all three cloud warmup profiles in `/healthz`; a later, accuracy-gated task can TensorRT-compile both OmniCloudMask ensemble members;
 - high `crop_inference_seconds`: confirm the health response reports TensorRT engine partitions and cache hits appear in logs;
-- high `shared_analysis_grid_seconds`: storage/GDAL reprojection is the Balkan bottleneck, not the neural network;
+- high `shared_analysis_grid_seconds`: verify `/healthz` reports the expected Balkan cache key and that `runtime/payload/cache/balkan-analysis` is persistent and writable;
 - high condition or packaging time: profile raster I/O/compression before moving NumPy math to CUDA;
 - high total only on the first request: warmup or engine caching is incomplete.
 
@@ -229,7 +240,12 @@ materialized cloud stage to about 0.31 seconds for the 526×681 Sentinel scene a
 1.19 seconds for the 1,739×2,132 Balkan grid. Both optimized semantic rasters matched
 the saved FP32 class masks pixel-for-pixel in the controlled validation run. A warm
 local payload-service Sentinel run completed the full payload pipeline and three-file
-bundle in about 1.7–1.9 seconds. These are diagnostic results, not Orin acceptance
+bundle in about 1.7–1.9 seconds. After the cache and same-thread warmup changes, the
+first accepted local Balkan request completed in about 6.66 seconds: intake 0.03,
+shared-grid lookup 0.004, cloud 1.16, crop 1.32, condition 2.58, packaging 1.51, and
+reported orchestration 0.05 seconds. The generated WebP, PNG, interaction grid,
+metrics, and condition result matched the prior optimized bundle exactly. These are
+diagnostic results, not Orin acceptance
 numbers; repeat the five-run protocol on the payload. The local FP16 parity pass changed
 43 of 358,206 valid Sentinel classes (0.0120%) and 3 of 2,077,729 valid Balkan classes
 (0.00014%) relative to the saved FP32 masks. The project still requires an explicit
@@ -237,12 +253,7 @@ mission accuracy tolerance before FP16 is declared scientifically accepted.
 
 Input dimensions fundamentally bound runtime. A fixed five-second service-level objective needs an explicit maximum pixel count per supported sensor; this code already bounds the Balkan cloud analysis grid at 25 million pixels, but final acceptance should record the exact two MVP raster dimensions and bytes.
 
-For the files currently in this workspace, Sentinel is 526×681 pixels and about 2.4 MiB. Balkan `3408_L1ORT.tif` is 10,745×13,340 pixels and about 1.16 GiB; its shared 10 m grid is 1,739×2,132 pixels. One existing shared-grid run recorded approximately 13.4 seconds for grid preparation, 4.1 seconds for cloud, 1.7 seconds for crop, 4.7 seconds for condition, and 2.3 seconds for downlink packaging on the machine that produced that artifact. Those numbers are not Orin results, but they prove that a full cold Balkan under-five-second guarantee is not credible yet. If the Orin measurement confirms this, choose explicitly between:
-
-1. a cold/full-pipeline SLO above five seconds; or
-2. a reviewed, checksum-keyed on-payload 10 m analysis-grid cache whose preparation is outside the warm job SLO, followed by further condition/packaging I/O profiling.
-
-Do not hide preprocessing outside the measured interval without documenting that contract.
+For the files currently in this workspace, Sentinel is 526×681 pixels and about 2.4 MiB. Balkan `3408_L1ORT.tif` is 10,745×13,340 pixels and about 1.16 GiB; its shared 10 m grid is 1,739×2,132 pixels. The original local Balkan response was about 30.03 seconds, including 13.09 seconds of grid preparation, 5.70 seconds of condition work, and 2.53 seconds of packaging. The implemented cache moves the one-time, checksum-verified grid build to readiness and records its cache key in `/healthz`; it does not hide that work inside an unreported request path. A cache miss delays readiness and never serves an unprepared job. The remaining local 6.6-second warm path is dominated by condition and packaging CPU/raster work, so under five seconds remains an Orin measurement and optimization target rather than a current guarantee.
 
 ## 6. GitHub Container Registry
 

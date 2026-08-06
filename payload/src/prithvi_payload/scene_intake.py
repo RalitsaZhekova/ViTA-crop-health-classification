@@ -366,6 +366,11 @@ def inspect_scene(
         "scene_id": resolved_scene_id,
         "source_path": str(raster_path.resolve()),
         "source_bytes": raster_path.stat().st_size,
+        "source_sha256": (
+            crop_calibration.get("source", {}).get("sha256")
+            if crop_calibration is not None
+            else None
+        ),
         "sensor": sensor,
         "acquired_at": normalised_acquired_at,
         "sensor_contract": {
