@@ -32,7 +32,7 @@ The acceleration policy is:
 
 | Stage | MVP execution | Reason |
 |---|---|---|
-| OmniCloudMask ensemble | CUDA FP16, warm/resident models, GPU mosaic | Low-risk acceleration supported by the existing package |
+| OmniCloudMask ensemble | CUDA FP16, batch 2, warm/resident models, semantic-only GPU output | Low-risk acceleration supported by the existing package |
 | Prithvi crop segmentation | FP16 Torch-TensorRT, fixed batch 4, engine/timing cache | TensorRT targets the largest crop neural network while preserving the PyTorch integration |
 | Balkan 10 m preparation | One shared GDAL grid, multithreaded warp | Avoids repeating the expensive reprojection for later stages |
 | Health indices and packaging | Vectorized NumPy/Rasterio, all-CPU GeoTIFF compression | These are I/O/scientific raster operations; GPU transfer can cost more than it saves at MVP scale |
@@ -115,7 +115,15 @@ A production-ready health response must show:
 - the expected PyTorch/CUDA/TensorRT/Torch-TensorRT versions;
 - `crop_backend: "tensorrt"`;
 - `crop_tensorrt_engine_count` greater than zero;
-- `cloud_backend: "omnicloudmask_cuda_fp16"`.
+- `cloud_backend: "omnicloudmask_cuda_fp16"`;
+- `cloud_batch_size: 2`;
+- cloud warmup profiles for batch 1 at 1,000 px and batches 1 and 2 at 869 px.
+
+The 1,000 px profile is the fixed Sentinel path. For the proof-of-concept Balkan grid,
+OmniCloudMask's reviewed no-data rule reduces its model patch to 869 px. Warming only
+the 1,000 px input leaves the first Balkan request paying CUDA/cuDNN initialization;
+`VITA_CLOUD_WARMUP_PATCH_SIZES=869` prevents that. If the fixed Balkan image changes,
+inspect its warning/timing once and update the warmup size rather than guessing.
 
 The service has one worker and rejects a concurrent job with HTTP 409. This prevents two 100M-parameter pipelines from competing for GPU memory and corrupting latency measurements. It binds to Jetson `127.0.0.1`; do not expose port 8090 in the firewall.
 
@@ -191,7 +199,14 @@ Ground catalog:     runtime/ground/scenes/<job-id>/
 
 ## 5. Five-second performance acceptance
 
-The returned `payload_seconds` is the warm payload execution from scene intake through three-file packaging. It excludes SSH setup, model startup/TensorRT build, SCP, and ground ingest. `under_five_seconds` is computed from that value; no deployment should claim the target until both real proof-of-concept scenes pass on the actual Orin.
+The returned `payload_seconds` is the warm payload execution from scene intake through three-file packaging. It excludes SSH setup, service startup/model load/TensorRT build/warmup, SCP, and ground ingest. `under_five_seconds` is computed from that value; no deployment should claim the target until both real proof-of-concept scenes pass on the actual Orin. Check `/healthz` before starting the clock: a request sent before readiness is a cold-start test, not a warm payload test.
+
+Do not use the one-shot `vita-mvp` command as the payload latency benchmark. A local
+profile attributed about 3.37 seconds of a 4.39-second cloud load to importing
+OmniCloudMask, segmentation-models-pytorch, timm, torchvision, and TorchDynamo; the
+actual two-checkpoint construction/load was about 0.81 seconds. A new Python process
+must pay those imports again. The single-worker `vita-payload-server` is therefore the
+latency architecture: it loads and warms once, reports ready, then reuses both models.
 
 Run each fixed scene at least five times with unique job IDs after `jetson_clocks`, and retain the JSON output. Watch the payload concurrently:
 
@@ -201,13 +216,24 @@ tegrastats --interval 500
 
 Use the stage timings in the response and payload `result.json`, not only the total:
 
-- high `cloud_inference_seconds`: validate FP16 is active; a later, accuracy-gated task can TensorRT-compile both OmniCloudMask ensemble members;
+- high `cloud_inference_seconds`: validate FP16, batch 2, and all three cloud warmup profiles in `/healthz`; a later, accuracy-gated task can TensorRT-compile both OmniCloudMask ensemble members;
 - high `crop_inference_seconds`: confirm the health response reports TensorRT engine partitions and cache hits appear in logs;
 - high `shared_analysis_grid_seconds`: storage/GDAL reprojection is the Balkan bottleneck, not the neural network;
 - high condition or packaging time: profile raster I/O/compression before moving NumPy math to CUDA;
 - high total only on the first request: warmup or engine caching is incomplete.
 
-Before accepting FP16/TensorRT, run the same scenes with `VITA_CROP_BACKEND=pytorch` and `VITA_CLOUD_INFERENCE_DTYPE=fp32`, then compare class percentages, crop percentage, condition score/label, and visual masks against the accelerated output. Quantization is out of scope until this parity check and a representative calibration dataset are formalized.
+Before accepting FP16/TensorRT, run the same scenes with `VITA_CROP_BACKEND=pytorch` and `VITA_CLOUD_INFERENCE_DTYPE=fp32`, then compare class percentages, crop percentage, condition score/label, and visual masks against the accelerated output. Quantization is out of scope until this parity check and a representative calibration dataset are formalized. Do not enable `torch.backends.cudnn.benchmark` without measuring startup as well as steady state; fixed-shape autotuning can make service warmup much longer.
+
+On the RTX 3060 development machine, the reviewed FP32 change reduced the already
+materialized cloud stage to about 0.31 seconds for the 526×681 Sentinel scene and
+1.19 seconds for the 1,739×2,132 Balkan grid. Both optimized semantic rasters matched
+the saved FP32 class masks pixel-for-pixel in the controlled validation run. A warm
+local payload-service Sentinel run completed the full payload pipeline and three-file
+bundle in about 1.7–1.9 seconds. These are diagnostic results, not Orin acceptance
+numbers; repeat the five-run protocol on the payload. The local FP16 parity pass changed
+43 of 358,206 valid Sentinel classes (0.0120%) and 3 of 2,077,729 valid Balkan classes
+(0.00014%) relative to the saved FP32 masks. The project still requires an explicit
+mission accuracy tolerance before FP16 is declared scientifically accepted.
 
 Input dimensions fundamentally bound runtime. A fixed five-second service-level objective needs an explicit maximum pixel count per supported sensor; this code already bounds the Balkan cloud analysis grid at 25 million pixels, but final acceptance should record the exact two MVP raster dimensions and bytes.
 

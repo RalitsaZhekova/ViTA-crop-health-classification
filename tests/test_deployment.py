@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 from prithvi_payload.inference import _environment_flag
-from prithvi_payload.service import JobRequest, _safe_relative
+from prithvi_payload.service import JobRequest, _pipeline_timings, _safe_relative
 from pydantic import ValidationError
 from vita_integration.ingest import parser as ingest_parser
 
@@ -45,3 +45,22 @@ def test_boolean_environment_parser_is_strict(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv("VITA_TEST_FLAG", "sometimes")
     with pytest.raises(ValueError, match="must be one of"):
         _environment_flag("VITA_TEST_FLAG", False)
+
+
+def test_payload_response_flattens_stage_timings() -> None:
+    result = {
+        "timing": {"intake_seconds": 0.1, "cloud_plan_seconds": 0.2},
+        "stage_metadata": {
+            "cloud": {"runtime": {"seconds": 1.0, "inference_seconds": 0.7}},
+            "crop": {"runtime": {"seconds": 0.5, "inference_seconds": 0.25}},
+            "condition": {"runtime": {"seconds": 0.3}},
+            "downlink": {"runtime": {"seconds": 0.2}},
+        },
+    }
+
+    timing = _pipeline_timings(result)
+
+    assert timing["cloud_stage_seconds"] == 1.0
+    assert timing["cloud_inference_seconds"] == 0.7
+    assert timing["crop_inference_seconds"] == 0.25
+    assert timing["downlink_packaging_seconds"] == 0.2

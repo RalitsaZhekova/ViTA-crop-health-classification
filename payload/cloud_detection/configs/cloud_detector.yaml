@@ -10,7 +10,9 @@ model:
   inference_dtype: fp32
   patch_size: 1000
   patch_overlap: 300
-  batch_size: 1
+  # Batch 2 is 17% faster than batch 1 on the 6 GB development GPU and remains
+  # comfortably below its measured memory limit. Override only after benchmarking.
+  batch_size: 2
 
 input:
   processing_level: MULTISENSOR_REFLECTANCE
@@ -51,7 +53,9 @@ decision:
   reject_min_unusable_percentage: 80.0
 
 output:
-  save_class_scores: true
+  # The pipeline consumes class IDs only; avoid copying four float confidence
+  # planes from the GPU when no downstream artifact stores them.
+  save_class_scores: false
   # The dashboard builds its own final preview from the scientific rasters.
   # Keep this off in production to avoid a redundant matplotlib render.
   save_preview: false

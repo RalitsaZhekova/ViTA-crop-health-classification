@@ -152,7 +152,7 @@ class OmniCloudMaskBackend:
                 "payload/scripts/download_cloud_weights.py while online and retry."
             ) from exc
 
-    def predict(self, tile: np.ndarray) -> BackendPrediction:
+    def _prepare_input(self, tile: np.ndarray) -> np.ndarray | None:
         if tile.ndim != 3 or tile.shape[0] != 4:
             raise BackendError(f"Expected an array shaped (4,H,W), got {tile.shape}.")
         if min(tile.shape[1:]) < 32:
@@ -166,35 +166,54 @@ class OmniCloudMaskBackend:
         positive = np.all(image_rgn > np.finfo(np.float32).tiny, axis=0)
         valid = finite & positive
         if not np.any(valid):
+            return None
+        image_rgn[:, ~valid] = 0.0
+        return image_rgn
+
+    def _run_upstream(
+        self,
+        image_rgn: np.ndarray,
+        *,
+        export_confidence: bool,
+    ) -> np.ndarray:
+        try:
+            # inference_mode removes autograd view/version bookkeeping in addition
+            # to the no_grad guards used inside OmniCloudMask.
+            with self.torch.inference_mode():
+                prediction = self._predict_from_array(
+                    image_rgn,
+                    patch_size=min(self.patch_size, *image_rgn.shape[1:]),
+                    patch_overlap=min(
+                        self.patch_overlap,
+                        max(0, min(self.patch_size, *image_rgn.shape[1:]) // 2),
+                    ),
+                    batch_size=self.batch_size,
+                    inference_device=self.device,
+                    mosaic_device=self.device,
+                    inference_dtype=self.inference_dtype,
+                    export_confidence=export_confidence,
+                    softmax_output=export_confidence,
+                    no_data_value=0.0,
+                    apply_no_data_mask=False,
+                    custom_models=self.models,
+                    pred_classes=4,
+                    model_version=OMNICLOUDMASK_MODEL_VERSION,
+                )
+        except Exception as exc:
+            raise BackendError("OmniCloudMask V4 inference failed.") from exc
+        return np.asarray(prediction)
+
+    def predict(self, tile: np.ndarray) -> BackendPrediction:
+        image_rgn = self._prepare_input(tile)
+        if image_rgn is None:
             scores = np.zeros((4, *tile.shape[1:]), dtype=np.float32)
             scores[0] = 1.0
             return BackendPrediction(scores=scores, score_kind="softmax_confidence")
-        image_rgn[:, ~valid] = 0.0
 
-        try:
-            scores = self._predict_from_array(
-                image_rgn,
-                patch_size=min(self.patch_size, *tile.shape[1:]),
-                patch_overlap=min(
-                    self.patch_overlap,
-                    max(0, min(self.patch_size, *tile.shape[1:]) // 2),
-                ),
-                batch_size=self.batch_size,
-                inference_device=self.device,
-                mosaic_device=self.device,
-                inference_dtype=self.inference_dtype,
-                export_confidence=True,
-                softmax_output=True,
-                no_data_value=0.0,
-                apply_no_data_mask=False,
-                custom_models=self.models,
-                pred_classes=4,
-                model_version=OMNICLOUDMASK_MODEL_VERSION,
-            )
-        except Exception as exc:
-            raise BackendError("OmniCloudMask V4 inference failed.") from exc
-
-        scores = np.asarray(scores, dtype=np.float32)
+        scores = np.asarray(
+            self._run_upstream(image_rgn, export_confidence=True),
+            dtype=np.float32,
+        )
         expected_shape = (4, *tile.shape[1:])
         if scores.shape != expected_shape or not np.isfinite(scores).all():
             raise BackendError(f"Unexpected OmniCloudMask output shape or values: {scores.shape}.")
@@ -203,3 +222,45 @@ class OmniCloudMaskBackend:
         # changing argmax classes to preserve this pipeline's score contract.
         scores /= np.maximum(scores.sum(axis=0, keepdims=True), 1e-8)
         return BackendPrediction(scores=scores, score_kind="softmax_confidence")
+
+    def predict_semantic(self, tile: np.ndarray) -> np.ndarray:
+        """Return only class IDs, avoiding a four-channel confidence transfer to CPU."""
+        image_rgn = self._prepare_input(tile)
+        if image_rgn is None:
+            return np.zeros(tile.shape[1:], dtype=np.uint8)
+        semantic = np.asarray(
+            self._run_upstream(image_rgn, export_confidence=False),
+            dtype=np.uint8,
+        )
+        expected_shape = (1, *tile.shape[1:])
+        if semantic.shape != expected_shape or np.any(semantic > 3):
+            raise BackendError(f"Unexpected OmniCloudMask semantic output: {semantic.shape}.")
+        return semantic[0]
+
+    def warmup(self, additional_patch_sizes: tuple[int, ...] = ()) -> list[dict[str, int]]:
+        """Warm the CUDA convolution profiles used by the fixed MVP scenes."""
+        profiles = {(1, self.patch_size)}
+        for patch_size in additional_patch_sizes:
+            if patch_size < 32 or patch_size > self.patch_size:
+                raise BackendError(
+                    f"Cloud warmup patch size must be in 32..{self.patch_size}, got {patch_size}."
+                )
+            profiles.add((1, patch_size))
+            profiles.add((self.batch_size, patch_size))
+
+        with self.torch.inference_mode():
+            for batch_size, patch_size in sorted(profiles):
+                sample = self.torch.zeros(
+                    (batch_size, 3, patch_size, patch_size),
+                    device=self.device,
+                    dtype=self._torch_dtype,
+                )
+                for model in self.models:
+                    model(sample)
+                del sample
+        if self.device.type == "cuda":
+            self.torch.cuda.synchronize(self.device)
+        return [
+            {"batch_size": batch_size, "patch_size": patch_size}
+            for batch_size, patch_size in sorted(profiles)
+        ]

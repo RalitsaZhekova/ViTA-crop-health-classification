@@ -15,7 +15,6 @@ from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
-import numpy as np
 import torch
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
@@ -53,6 +52,46 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _pipeline_timings(result: dict[str, Any]) -> dict[str, float]:
+    """Flatten the persisted stage timings for the ground response."""
+    stages = result.get("stage_metadata", {})
+    pipeline = result.get("timing", {})
+    mappings = {
+        "intake_seconds": (pipeline, "intake_seconds"),
+        "shared_analysis_grid_seconds": (pipeline, "shared_analysis_grid_seconds"),
+        "cloud_plan_seconds": (pipeline, "cloud_plan_seconds"),
+        "cloud_stage_seconds": (stages.get("cloud", {}).get("runtime", {}), "seconds"),
+        "cloud_inference_seconds": (
+            stages.get("cloud", {}).get("runtime", {}),
+            "inference_seconds",
+        ),
+        "cloud_mask_processing_seconds": (
+            stages.get("cloud", {}).get("runtime", {}),
+            "mask_processing_seconds",
+        ),
+        "crop_plan_seconds": (pipeline, "crop_plan_seconds"),
+        "crop_stage_seconds": (stages.get("crop", {}).get("runtime", {}), "seconds"),
+        "crop_inference_seconds": (
+            stages.get("crop", {}).get("runtime", {}),
+            "inference_seconds",
+        ),
+        "condition_stage_seconds": (
+            stages.get("condition", {}).get("runtime", {}),
+            "seconds",
+        ),
+        "downlink_packaging_seconds": (
+            stages.get("downlink", {}).get("runtime", {}),
+            "seconds",
+        ),
+    }
+    timings: dict[str, float] = {}
+    for name, (record, key) in mappings.items():
+        value = record.get(key) if isinstance(record, dict) else None
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            timings[name] = max(0.0, float(value))
+    return timings
 
 
 def _safe_relative(root: Path, value: str, *, name: str) -> Path:
@@ -101,6 +140,7 @@ class PayloadRuntime:
         device = "cuda" if torch.cuda.is_available() else "cpu"
         self.crop = PayloadCropModel.load(device=device)
         crop_seconds = time.perf_counter() - crop_started
+        self.cloud_warmup_profiles: list[dict[str, int]] = []
         warmup_seconds = self._warmup() if _flag("VITA_WARMUP", True) else 0.0
         self.startup_timing = {
             "cloud_model_load_seconds": cloud_seconds,
@@ -112,9 +152,21 @@ class PayloadRuntime:
 
     def _warmup(self) -> float:
         started = time.perf_counter()
-        cloud_tile_size = int(self.cloud.config["model"]["patch_size"])
-        cloud_input = np.full((4, cloud_tile_size, cloud_tile_size), 0.1, dtype=np.float32)
-        self.cloud.backend.predict(cloud_input)
+        raw_patch_sizes = os.environ.get("VITA_CLOUD_WARMUP_PATCH_SIZES", "869")
+        try:
+            patch_sizes = tuple(
+                int(value.strip())
+                for value in raw_patch_sizes.split(",")
+                if value.strip()
+            )
+        except ValueError as error:
+            raise RuntimeError(
+                "VITA_CLOUD_WARMUP_PATCH_SIZES must be comma-separated integers"
+            ) from error
+        warmup = getattr(self.cloud.backend, "warmup", None)
+        if not callable(warmup):
+            raise RuntimeError("The configured cloud backend does not support warmup")
+        self.cloud_warmup_profiles = warmup(patch_sizes)
         crop_input = torch.zeros((1, 4, 1, 224, 224), dtype=torch.float32)
         self.crop.predict(
             crop_input,
@@ -123,7 +175,7 @@ class PayloadRuntime:
         )
         if torch.cuda.is_available():
             torch.cuda.synchronize()
-        del cloud_input, crop_input
+        del crop_input
         gc.collect()
         return time.perf_counter() - started
 
@@ -146,6 +198,8 @@ class PayloadRuntime:
             "crop_tensorrt_engine_count": self.crop.tensorrt_engine_count,
             "cloud_backend": "omnicloudmask_cuda_"
             + str(self.cloud.backend.inference_dtype),
+            "cloud_batch_size": self.cloud.backend.batch_size,
+            "cloud_warmup_profiles": self.cloud_warmup_profiles,
         }
 
     def health(self) -> dict[str, Any]:
@@ -238,7 +292,7 @@ class PayloadRuntime:
             "files": files,
             "payload_seconds": payload_seconds,
             "under_five_seconds": payload_seconds < 5.0,
-            "pipeline_timing_seconds": result.get("timing", {}),
+            "pipeline_timing_seconds": _pipeline_timings(result),
             "summary": result.get("summary", {}),
             "progress": progress,
             "stack": self.stack,

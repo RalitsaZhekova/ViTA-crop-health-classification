@@ -42,7 +42,19 @@ def load_cloud_model(config_path: str | Path = DEFAULT_CLOUD_CONFIG) -> CloudMod
         "VITA_CLOUD_INFERENCE_DTYPE",
         model.get("inference_dtype", "fp32"),
     )
+    try:
+        batch_size = int(
+            os.environ.get(
+                "VITA_CLOUD_BATCH_SIZE",
+                model.get("batch_size", 1),
+            )
+        )
+    except (TypeError, ValueError) as error:
+        raise ValueError("VITA_CLOUD_BATCH_SIZE must be a positive integer") from error
+    if batch_size < 1:
+        raise ValueError("VITA_CLOUD_BATCH_SIZE must be a positive integer")
     model["inference_dtype"] = inference_dtype
+    model["batch_size"] = batch_size
     backend = OmniCloudMaskBackend(
         name=model["name"],
         weights_folder=os.environ.get("OMNICLOUDMASK_MODEL_DIR", str(configured_weights)),
@@ -51,6 +63,6 @@ def load_cloud_model(config_path: str | Path = DEFAULT_CLOUD_CONFIG) -> CloudMod
         inference_dtype=inference_dtype,
         patch_size=int(model["patch_size"]),
         patch_overlap=int(model["patch_overlap"]),
-        batch_size=int(model["batch_size"]),
+        batch_size=batch_size,
     )
     return CloudModel(backend=backend, config=config)

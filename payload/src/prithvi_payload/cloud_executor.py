@@ -91,6 +91,27 @@ def _synchronize_cuda(backend: CloudBackend) -> None:
         torch.cuda.synchronize(device)
 
 
+def _predict_semantic(
+    backend: CloudBackend,
+    image: np.ndarray,
+) -> tuple[np.ndarray, str]:
+    semantic_predictor = getattr(backend, "predict_semantic", None)
+    if callable(semantic_predictor):
+        semantic = np.asarray(semantic_predictor(image), dtype=np.uint8)
+        expected_shape = image.shape[1:]
+        if semantic.shape != expected_shape or np.any(semantic > 3):
+            raise ValueError(f"Cloud backend returned invalid semantic classes: {semantic.shape}")
+        return semantic, "semantic_class"
+
+    prediction = backend.predict(image)
+    expected_shape = (4, *image.shape[1:])
+    if prediction.scores.shape != expected_shape:
+        raise ValueError(
+            f"Cloud backend returned unexpected score shape: {prediction.scores.shape}"
+        )
+    return prediction.scores.argmax(axis=0).astype(np.uint8), prediction.score_kind
+
+
 def _read_padded_tile(
     dataset: rasterio.DatasetReader,
     indices: list[int],
@@ -308,15 +329,12 @@ def execute_cloud_stage(
                     image[:, invalid] = 0.0
                 _synchronize_cuda(backend)
                 inference_started = time.perf_counter()
-                prediction = backend.predict(image.astype(np.float32, copy=False))
+                semantic, score_kind = _predict_semantic(
+                    backend,
+                    image.astype(np.float32, copy=False),
+                )
                 _synchronize_cuda(backend)
                 inference_seconds += time.perf_counter() - inference_started
-                if prediction.scores.shape != (4, analysis_height, analysis_width):
-                    raise ValueError(
-                        f"Cloud backend returned unexpected score shape: {prediction.scores.shape}"
-                    )
-                score_kind = prediction.score_kind
-                semantic = prediction.scores.argmax(axis=0).astype(np.uint8)
                 mask_started = time.perf_counter()
                 unusable = postprocess(
                     semantic,
@@ -359,20 +377,17 @@ def execute_cloud_stage(
                             image[:, invalid] = 0.0
                         _synchronize_cuda(backend)
                         inference_started = time.perf_counter()
-                        prediction = backend.predict(image.astype(np.float32, copy=False))
+                        semantic_tile, prediction_score_kind = _predict_semantic(
+                            backend,
+                            image.astype(np.float32, copy=False),
+                        )
                         _synchronize_cuda(backend)
                         inference_seconds += time.perf_counter() - inference_started
-                        if prediction.scores.shape != (4, tile_size, tile_size):
-                            raise ValueError(
-                                "Cloud backend returned unexpected score shape: "
-                                f"{prediction.scores.shape}"
-                            )
                         if score_kind is None:
-                            score_kind = prediction.score_kind
-                        elif score_kind != prediction.score_kind:
+                            score_kind = prediction_score_kind
+                        elif score_kind != prediction_score_kind:
                             raise ValueError("Cloud backend returned mixed score kinds")
 
-                        semantic_tile = prediction.scores.argmax(axis=0).astype(np.uint8)
                         mask_started = time.perf_counter()
                         unusable_tile = postprocess(
                             semantic_tile,
