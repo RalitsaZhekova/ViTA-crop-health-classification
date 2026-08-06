@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 import tempfile
 import time
@@ -17,10 +16,11 @@ import torch
 from cloud_detection.backend import CloudBackend
 from cloud_detection.postprocessing import postprocess
 from cloud_detection.preprocessing import normalize_reflectance, strict_valid_mask
-from rasterio.crs import CRS
 from rasterio.enums import Resampling
-from rasterio.warp import calculate_default_transform, reproject, transform_bounds
+from rasterio.warp import calculate_default_transform, reproject
 from rasterio.windows import Window as RasterWindow
+
+from prithvi_payload.raster_ops import read_padded_tile, utm_crs_for_bounds
 
 GDAL_WARP_THREADS = max(1, min(4, os.cpu_count() or 1))
 
@@ -42,19 +42,6 @@ def _output_profile(source: dict[str, Any]) -> dict[str, Any]:
         BIGTIFF="IF_SAFER",
     )
     return profile
-
-
-def _utm_crs(source_crs: CRS, bounds: rasterio.coords.BoundingBox) -> CRS:
-    west, south, east, north = transform_bounds(
-        source_crs,
-        "EPSG:4326",
-        *bounds,
-        densify_pts=21,
-    )
-    longitude = (west + east) / 2.0
-    latitude = (south + north) / 2.0
-    zone = max(1, min(60, int(math.floor((longitude + 180.0) / 6.0) + 1)))
-    return CRS.from_epsg((32600 if latitude >= 0 else 32700) + zone)
 
 
 def _reproject_mask_to_source(
@@ -110,40 +97,6 @@ def _predict_semantic(
             f"Cloud backend returned unexpected score shape: {prediction.scores.shape}"
         )
     return prediction.scores.argmax(axis=0).astype(np.uint8), prediction.score_kind
-
-
-def _read_padded_tile(
-    dataset: rasterio.DatasetReader,
-    indices: list[int],
-    *,
-    y: int,
-    x: int,
-    tile_size: int,
-    halo: int,
-) -> np.ndarray:
-    requested_y = y - halo
-    requested_x = x - halo
-    read_y_start = max(0, requested_y)
-    read_x_start = max(0, requested_x)
-    read_y_end = min(dataset.height, requested_y + tile_size)
-    read_x_end = min(dataset.width, requested_x + tile_size)
-    window = RasterWindow(
-        read_x_start,
-        read_y_start,
-        read_x_end - read_x_start,
-        read_y_end - read_y_start,
-    )
-    values = dataset.read(indices, window=window)
-    top = read_y_start - requested_y
-    left = read_x_start - requested_x
-    bottom = requested_y + tile_size - read_y_end
-    right = requested_x + tile_size - read_x_end
-    padding_mode = "reflect" if values.shape[-2] > 1 and values.shape[-1] > 1 else "edge"
-    return np.pad(
-        values,
-        ((0, 0), (top, bottom), (left, right)),
-        mode=padding_mode,
-    )
 
 
 def execute_cloud_stage(
@@ -225,7 +178,7 @@ def execute_cloud_stage(
             target_resolution = float(config["input"].get("balkan_target_resolution_m", 10.0))
             if target_resolution <= 0:
                 raise ValueError("Balkan cloud target resolution must be positive")
-            target_crs = _utm_crs(source.crs, source.bounds)
+            target_crs = utm_crs_for_bounds(source.crs, source.bounds)
             target_transform, target_width, target_height = calculate_default_transform(
                 source.crs,
                 target_crs,
@@ -357,7 +310,7 @@ def execute_cloud_stage(
                     core_height = min(core_size, analysis_height - y)
                     for x in range(0, analysis_width, core_size):
                         core_width = min(core_size, analysis_width - x)
-                        raw_tile = _read_padded_tile(
+                        raw_tile = read_padded_tile(
                             analysis_source,
                             analysis_indices,
                             y=y,

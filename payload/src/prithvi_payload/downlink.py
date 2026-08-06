@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import os
@@ -14,6 +13,7 @@ from typing import Any
 import numpy as np
 import rasterio
 from PIL import Image, features
+from prithvi_shared.files import sha256_file
 from rasterio.enums import Resampling
 from rasterio.warp import transform_bounds
 from rasterio.windows import Window
@@ -168,14 +168,6 @@ def _save_png(path: Path, overlay: np.ndarray) -> None:
     )
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _asset_record(path: Path, *, width: int, height: int, media_type: str) -> dict[str, Any]:
     return {
         "href": path.name,
@@ -183,7 +175,7 @@ def _asset_record(path: Path, *, width: int, height: int, media_type: str) -> di
         "width": width,
         "height": height,
         "bytes": path.stat().st_size,
-        "sha256": _sha256(path),
+        "sha256": sha256_file(path),
     }
 
 

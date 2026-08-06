@@ -24,6 +24,7 @@ from prithvi_payload.balkan_crop_calibration import (
     load_calibration,
 )
 from prithvi_payload.inference import PayloadCropModel
+from prithvi_payload.raster_ops import read_padded_tile
 
 FLOAT_NODATA = -9999.0
 BYTE_NODATA = 255
@@ -67,36 +68,6 @@ def _accumulate_prediction(
     weights = tile_weight[tile_slice]
     probability_sum[source_slice] += tile_probability[tile_slice] * weights
     probability_weight[source_slice] += weights
-
-
-def _read_padded(
-    dataset: rasterio.DatasetReader,
-    indices: list[int],
-    *,
-    y: int,
-    x: int,
-    tile_size: int,
-    halo: int,
-) -> np.ndarray:
-    requested_y = y - halo
-    requested_x = x - halo
-    read_y_start = max(0, requested_y)
-    read_x_start = max(0, requested_x)
-    read_y_end = min(dataset.height, requested_y + tile_size)
-    read_x_end = min(dataset.width, requested_x + tile_size)
-    window = RasterWindow(
-        read_x_start,
-        read_y_start,
-        read_x_end - read_x_start,
-        read_y_end - read_y_start,
-    )
-    values = dataset.read(indices, window=window, out_dtype="float32")
-    top = read_y_start - requested_y
-    left = read_x_start - requested_x
-    bottom = requested_y + tile_size - read_y_end
-    right = requested_x + tile_size - read_x_end
-    mode = "reflect" if values.shape[-2] > 1 and values.shape[-1] > 1 else "edge"
-    return np.pad(values, ((0, 0), (top, bottom), (left, right)), mode=mode)
 
 
 def _location_coordinate(
@@ -431,13 +402,14 @@ def _execute_native_crop_stage(
             core_height = min(core_size, source.height - y)
             for x in range(0, source.width, core_size):
                 core_width = min(core_size, source.width - x)
-                unusable_tile = _read_padded(
+                unusable_tile = read_padded_tile(
                     unusable_source,
                     [1],
                     y=y,
                     x=x,
                     tile_size=tile_size,
                     halo=halo,
+                    out_dtype="float32",
                 )[0].astype(bool)
                 core_slice = (
                     slice(halo, halo + core_height),
@@ -466,13 +438,14 @@ def _execute_native_crop_stage(
                     skipped_tile_count += 1
                     continue
 
-                raw_tile = _read_padded(
+                raw_tile = read_padded_tile(
                     source,
                     indices,
                     y=y,
                     x=x,
                     tile_size=tile_size,
                     halo=halo,
+                    out_dtype="float32",
                 )
                 image = raw_tile * np.float32(multiplier)
                 if calibration is not None:

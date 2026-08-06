@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import gc
-import hashlib
 import importlib
 import importlib.metadata
 import json
@@ -19,27 +18,17 @@ from typing import Any, Literal
 import anyio
 import torch
 from fastapi import FastAPI, HTTPException
+from prithvi_shared.files import sha256_file
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
 from prithvi_payload.cloud_classifier import load_cloud_model
 from prithvi_payload.inference import PayloadCropModel
 from prithvi_payload.pipeline import run_scene
+from prithvi_payload.runtime_config import environment_flag
 
 SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
 BALKAN_BAND_ORDER = ("BLUE", "GREEN", "RED", "NIR", "PAN")
-
-
-def _flag(name: str, default: bool) -> bool:
-    value = os.environ.get(name)
-    if value is None:
-        return default
-    normalized = value.strip().casefold()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    raise RuntimeError(f"{name} must be a boolean value")
 
 
 def _package_version(name: str) -> str | None:
@@ -47,14 +36,6 @@ def _package_version(name: str) -> str | None:
         return importlib.metadata.version(name)
     except importlib.metadata.PackageNotFoundError:
         return None
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _pipeline_timings(
@@ -157,7 +138,7 @@ class JobRequest(BaseModel):
 
 class PayloadRuntime:
     def __init__(self) -> None:
-        if _flag("CUDA_REQUIRED", True) and not torch.cuda.is_available():
+        if environment_flag("CUDA_REQUIRED", True) and not torch.cuda.is_available():
             raise RuntimeError("CUDA_REQUIRED=1 but torch.cuda.is_available() is false")
         self.input_root = Path(os.environ.get("VITA_INPUT_ROOT", "/data")).resolve()
         self.output_root = Path(os.environ.get("VITA_OUTPUT_ROOT", "/runtime/runs")).resolve()
@@ -181,7 +162,7 @@ class PayloadRuntime:
         crop_seconds = time.perf_counter() - crop_started
         self.cloud_warmup_profiles: list[dict[str, int]] = []
         self.cloud_scene_warmup_profile: dict[str, Any] | None = None
-        warmup_seconds = self._warmup() if _flag("VITA_WARMUP", True) else 0.0
+        warmup_seconds = self._warmup() if environment_flag("VITA_WARMUP", True) else 0.0
         self.startup_timing = {
             "cloud_model_load_seconds": cloud_seconds,
             "crop_model_load_seconds": crop_seconds,
@@ -417,7 +398,7 @@ class PayloadRuntime:
         files = {}
         for name in ("scene.json", "scene.webp", "condition.png"):
             path = bundle / name
-            files[name] = {"bytes": path.stat().st_size, "sha256": _sha256(path)}
+            files[name] = {"bytes": path.stat().st_size, "sha256": sha256_file(path)}
         return {
             "schema_version": "1.0",
             "status": "DOWNLINK_READY",
@@ -497,7 +478,7 @@ def main() -> None:
         host=args.host,
         port=args.port,
         workers=1,
-        access_log=_flag("VITA_ACCESS_LOG", False),
+        access_log=environment_flag("VITA_ACCESS_LOG", False),
     )
 
 

@@ -12,29 +12,17 @@ from typing import Any
 
 import numpy as np
 import rasterio
-from rasterio.crs import CRS
 from rasterio.enums import Resampling
-from rasterio.warp import calculate_default_transform, reproject, transform_bounds
+from rasterio.warp import calculate_default_transform, reproject
+
+from prithvi_payload.raster_ops import utm_crs_for_bounds
+from prithvi_payload.runtime_config import environment_flag
 
 ANALYSIS_BAND_ROLES = ("BLUE", "GREEN", "RED", "NIR_BROAD")
 DEFAULT_ANALYSIS_RESOLUTION_METRES = 10.0
 DISPLAY_MAX_DIMENSION = 1600
 ANALYSIS_ALGORITHM_VERSION = "balkan-shared-analysis-grid-v3-overview"
 DEFAULT_PREPARATION_MEMORY_LIMIT_BYTES = 2 * 1024 * 1024 * 1024
-
-
-def _flag(name: str, default: bool) -> bool:
-    value = os.environ.get(name)
-    if value is None:
-        return default
-    normalized = value.strip().casefold()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    raise RuntimeError(f"{name} must be a boolean value")
-
-
 def _warp_threads() -> int:
     raw = os.environ.get("VITA_CPU_THREADS", "8")
     try:
@@ -80,8 +68,8 @@ def _preparation_strategy(
     )
     eligible = [factor for factor in available if 1 < factor <= target_decimation]
     factor = max(eligible, default=None)
-    enabled = _flag("VITA_BALKAN_OVERVIEW_FAST_PATH", True)
-    required = _flag("VITA_BALKAN_OVERVIEW_REQUIRED", False)
+    enabled = environment_flag("VITA_BALKAN_OVERVIEW_FAST_PATH", True)
+    required = environment_flag("VITA_BALKAN_OVERVIEW_REQUIRED", False)
     overview_width = math.ceil(source.width / factor) if factor is not None else None
     overview_height = math.ceil(source.height / factor) if factor is not None else None
     estimated_bytes = (
@@ -211,19 +199,6 @@ def _write_cache_metadata(path: Path, record: dict[str, Any]) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _utm_crs(source_crs: CRS, bounds: rasterio.coords.BoundingBox) -> CRS:
-    west, south, east, north = transform_bounds(
-        source_crs,
-        "EPSG:4326",
-        *bounds,
-        densify_pts=21,
-    )
-    longitude = (west + east) / 2.0
-    latitude = (south + north) / 2.0
-    zone = max(1, min(60, int(math.floor((longitude + 180.0) / 6.0) + 1)))
-    return CRS.from_epsg((32600 if latitude >= 0 else 32700) + zone)
-
-
 def _display_limits(rgb: np.ndarray) -> list[list[float]]:
     stride = max(1, math.ceil(max(rgb.shape[1:]) / DISPLAY_MAX_DIMENSION))
     sampled = np.moveaxis(rgb[:, ::stride, ::stride], 0, -1)
@@ -288,7 +263,7 @@ def materialize_balkan_analysis_grid(
     with rasterio.open(source_path) as source:
         if source.crs is None:
             raise ValueError("Balkan source has no CRS")
-        target_crs = _utm_crs(source.crs, source.bounds)
+        target_crs = utm_crs_for_bounds(source.crs, source.bounds)
         transform, width, height = calculate_default_transform(
             source.crs,
             target_crs,

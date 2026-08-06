@@ -1,14 +1,52 @@
 # ViTA crop-intelligence MVP
 
-This repository runs cloud detection, crop classification, crop-condition analysis, and compact web packaging for local Sentinel-2 and preprocessed Balkan-1 GeoTIFFs.
+ViTA runs cloud detection, crop classification, crop-condition analysis, and compact
+web packaging for local Sentinel-2 and preprocessed Balkan-1 GeoTIFFs.
 
-For the NVIDIA Jetson AGX Orin payload deployment, SSH-tunnel ground command, CUDA/TensorRT configuration, GitHub Container Registry workflow, performance validation, and troubleshooting, use the [complete Jetson deployment guide](docs/DEPLOYMENT_JETSON.md).
+## Local quick start
 
-The existing local commands remain supported:
+Install the project once from PowerShell:
 
 ```powershell
-vita-mvp balkan data\balkan1\preprocessed\3408_L1ORT.tif --region-id balkan-test-3408
-vita-mvp sentinel .\data\sentinel2 --image S2_20260712T170851_T14TPL_cloudy.tif --region-id sentinel-local-cloudy
-vita-dashboard --store runtime\ground --host 127.0.0.1 --port 8000
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
 ```
 
+Then use the warm, optimized payload service through three short commands:
+
+```powershell
+.\vita.ps1 sentinel
+.\vita.ps1 balkan
+.\vita.ps1 web
+```
+
+The first pipeline command starts the payload service, loads both models, prepares the
+verified Balkan cache, warms CUDA, and waits for readiness. Every run prints the full
+execution-time breakdown and imports its WebP, PNG, and JSON bundle into
+`runtime\ground`. The `web` command starts the dashboard and opens
+[http://127.0.0.1:8000/](http://127.0.0.1:8000/).
+
+Useful commands:
+
+```powershell
+.\vita.ps1 health
+.\vita.ps1 stop
+.\vita.ps1 sentinel -Image another_scene.tif -RegionId another-region
+.\vita.ps1 balkan -InputPath balkan1/preprocessed/another_scene.tif
+```
+
+The original `vita-mvp`, `vita-payload-server`, REST API, SSH orchestration, and Docker
+commands remain supported. Use the persistent service above for latency measurements;
+the one-shot CLI must reload models in every process.
+
+## Documentation
+
+- [Pipeline and optimization guide](docs/PIPELINE_GUIDE.md): architecture, execution
+  contracts, code map, timings, outputs, local operation, and every implemented
+  optimization.
+- [Jetson deployment guide](docs/DEPLOYMENT_JETSON.md): NVIDIA container build,
+  CUDA/TensorRT configuration, SSH uplink/downlink, GHCR publishing, validation, and
+  production troubleshooting.
+
+Inputs and model binaries are intentionally excluded from Git. Generated jobs, caches,
+engine plans, logs, dashboard receipts, and previews live under `runtime/` and can be
+removed safely while the local services are stopped.

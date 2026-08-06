@@ -2,6 +2,10 @@
 
 This is the end-to-end MVP deployment for a ground Windows computer and an NVIDIA Jetson AGX Orin 64 GB payload at `/data/code/VITA`. Source imagery is never uplinked. A ground job transmits only sensor, payload-local path, region, and job identifiers through an SSH tunnel. The payload returns exactly three verified files: `scene.webp`, `condition.png`, and `scene.json`.
 
+For the sensor contracts, stage-by-stage code map, local three-command workflow,
+timing definitions, runtime artifacts, and detailed explanation of every optimization,
+read the [pipeline and optimization guide](PIPELINE_GUIDE.md) first.
+
 ## Architecture and deployment choices
 
 ```text

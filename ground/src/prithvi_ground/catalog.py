@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import os
@@ -16,6 +15,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from PIL import Image
+from prithvi_shared.files import sha256_file
 
 CATALOG_SCHEMA_VERSION = 1
 BUNDLE_SCHEMA_VERSION = "1.0"
@@ -63,14 +63,6 @@ class ValidatedBundle:
     evidence_quality_score: float
     analysis_percentage: float
     bounds_wgs84: tuple[float, float, float, float]
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _require_object(value: Any, *, name: str) -> dict[str, Any]:
@@ -261,7 +253,7 @@ def _validate_asset(
     expected_sha256 = asset.get("sha256")
     if not isinstance(expected_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
         raise BundleValidationError(f"assets.{name}.sha256 is invalid")
-    if _sha256(path) != expected_sha256:
+    if sha256_file(path) != expected_sha256:
         raise BundleValidationError(f"Checksum does not match {href}")
     try:
         with Image.open(path) as image:
@@ -393,7 +385,7 @@ def validate_bundle(bundle_root: str | Path) -> ValidatedBundle:
     return ValidatedBundle(
         root=root,
         manifest=manifest,
-        manifest_sha256=_sha256(metadata_path),
+        manifest_sha256=sha256_file(metadata_path),
         scene_id=scene_id,
         region_id=region_id,
         sensor=str(sensor),
