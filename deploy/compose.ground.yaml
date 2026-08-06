@@ -1,0 +1,24 @@
+name: vita-ground
+
+services:
+  dashboard:
+    image: ${VITA_GROUND_IMAGE:-vita-ground:1.0.0}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.ground
+      args:
+        VITA_GROUND_BASE_IMAGE: ${VITA_GROUND_BASE_IMAGE:-python:3.12-slim-bookworm}
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "127.0.0.1:${VITA_DASHBOARD_PORT:-8000}:8000"
+    volumes:
+      - ../runtime/ground:/runtime/ground
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+

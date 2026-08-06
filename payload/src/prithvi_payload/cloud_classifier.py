@@ -38,12 +38,17 @@ def load_cloud_model(config_path: str | Path = DEFAULT_CLOUD_CONFIG) -> CloudMod
     if not configured_weights.is_absolute():
         configured_weights = (path.parent / configured_weights).resolve()
     model = config["model"]
+    inference_dtype = os.environ.get(
+        "VITA_CLOUD_INFERENCE_DTYPE",
+        model.get("inference_dtype", "fp32"),
+    )
+    model["inference_dtype"] = inference_dtype
     backend = OmniCloudMaskBackend(
         name=model["name"],
         weights_folder=os.environ.get("OMNICLOUDMASK_MODEL_DIR", str(configured_weights)),
         device=model.get("device", "auto"),
         expected_sha256=model.get("expected_sha256"),
-        inference_dtype=model.get("inference_dtype", "fp32"),
+        inference_dtype=inference_dtype,
         patch_size=int(model["patch_size"]),
         patch_overlap=int(model["patch_overlap"]),
         batch_size=int(model["batch_size"]),

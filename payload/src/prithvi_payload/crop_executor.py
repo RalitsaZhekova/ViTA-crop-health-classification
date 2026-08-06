@@ -609,6 +609,8 @@ def _execute_native_crop_stage(
             "seconds": runtime_seconds,
             "inference_seconds": inference_seconds,
             "device": str(model.device),
+            "inference_backend": model.backend,
+            "tensorrt_engine_count": model.tensorrt_engine_count,
             "tile_count": tile_count,
             "inferred_tile_count": inferred_tile_count,
             "fully_masked_tile_count": skipped_tile_count,

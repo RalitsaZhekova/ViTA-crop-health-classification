@@ -1,0 +1,273 @@
+# Jetson AGX Orin payload deployment
+
+This is the end-to-end MVP deployment for a ground Windows computer and an NVIDIA Jetson AGX Orin 64 GB payload at `/data/code/VITA`. Source imagery is never uplinked. A ground job transmits only sensor, payload-local path, region, and job identifiers through an SSH tunnel. The payload returns exactly three verified files: `scene.webp`, `condition.png`, and `scene.json`.
+
+## Architecture and deployment choices
+
+```text
+Ground Windows                       Jetson AGX Orin
+----------------                    ---------------------------------
+Invoke-VitaPayload.ps1              /data/code/VITA/data (read-only)
+        |                           /data/code/VITA/payload/models (ro)
+        | SSH local forward          |
+        +===========================>| 127.0.0.1:8090
+        |     small JSON request     | warm FastAPI worker
+        |                            |  cloud: CUDA FP16
+        |                            |  crop: Torch-TensorRT FP16
+        |                            |  health/indices: CPU + GDAL threads
+        |                            |  package exactly 3 artifacts
+        | SCP + SHA-256              |
+        <============================+
+validate + catalog ingest
+ground dashboard on 127.0.0.1:8000
+```
+
+The payload image extends `nvcr.io/nvidia/pytorch:25.01-py3-igpu`, matching the stack already verified on the target: PyTorch `2.6.0a0+ecf3bae40a.nv25.01`, CUDA 12.8, TensorRT 10.8.0.40, and Torch-TensorRT 2.6.0a0. The Docker build asserts these versions and fails if the wrong base is selected.
+
+This follows NVIDIA's [Jetson container tutorial](https://developer.nvidia.com/embedded/learn/tutorials/jetson-container): use an NVIDIA Jetson/NGC base, launch it with the NVIDIA runtime, and bind-mount payload data. It also adopts the relevant guidance from NVIDIA's [DeepStream Docker documentation](https://docs.nvidia.com/metropolis/deepstream/dev-guide/text/DS_docker_containers.html): Jetson and generic ARM images are distinct, the NVIDIA container toolkit is required, and modern Jetson containers carry their user-space CUDA/TensorRT libraries.
+
+DeepStream itself is deliberately not in this image. DeepStream is a GStreamer/video analytics pipeline; these inputs are scientific multi-band GeoTIFF rasters. It would add video codecs and plugins without accelerating Rasterio reprojection, spectral-index calculations, or this PyTorch segmentation graph. The NVIDIA PyTorch iGPU image is the smaller and better-matched base. If the project later ingests live video, DeepStream should be a separate service.
+
+The acceleration policy is:
+
+| Stage | MVP execution | Reason |
+|---|---|---|
+| OmniCloudMask ensemble | CUDA FP16, warm/resident models, GPU mosaic | Low-risk acceleration supported by the existing package |
+| Prithvi crop segmentation | FP16 Torch-TensorRT, fixed batch 4, engine/timing cache | TensorRT targets the largest crop neural network while preserving the PyTorch integration |
+| Balkan 10 m preparation | One shared GDAL grid, multithreaded warp | Avoids repeating the expensive reprojection for later stages |
+| Health indices and packaging | Vectorized NumPy/Rasterio, all-CPU GeoTIFF compression | These are I/O/scientific raster operations; GPU transfer can cost more than it saves at MVP scale |
+
+ModelOpt is not required for FP16 TensorRT. The import warning about the missing quantization operator is harmless here. INT8 should only be introduced after a representative calibration set and an accuracy acceptance test exist.
+
+TensorRT engines are created on the Orin and persisted in `runtime/engines`. Do not build or publish those caches from another GPU: NVIDIA documents that serialized engines are tied to their platform, TensorRT version, and target GPU, and JetPack does not support TensorRT hardware-compatibility mode. The repository's GitHub images contain code and dependencies only—not imagery, weights, or engine plans.
+
+An installed TensorRT SDK or `trtexec` binary is not itself a model engine. If the payload also contains a `.engine`/`.plan` file, reuse it only after proving that it was built from this exact crop/cloud graph and weights on this Orin with TensorRT 10.8. The deployment therefore builds model-specific Torch-TensorRT partitions rather than silently trusting an unidentified plan.
+
+## 1. Payload prerequisites
+
+On the Orin, confirm that the project, one scene per proof of concept, calibrations, and weights exist:
+
+```bash
+cd /data/code/VITA
+test -f data/sentinel2/S2_20260712T170851_T14TPL_cloudy.tif
+test -f data/balkan1/preprocessed/3408_L1ORT.tif
+test -f data/balkan1/preprocessed/3408_L1ORT.crop_calibration.json
+test -f payload/models/prithvi_crop_binary_single_frame_v1_weights.pt
+```
+
+The two OmniCloudMask `.safetensors` files must be under `payload/models/omnicloudmask`. These assets are intentionally excluded from Git and the Docker build context. Compose mounts `data` and `payload/models` read-only at runtime.
+
+Find the exact installed NVIDIA image tag:
+
+```bash
+docker image ls --format '{{.Repository}}:{{.Tag}}' | grep -E 'nvidia/.+pytorch|pytorch'
+```
+
+If it is not literally `nvcr.io/nvidia/pytorch:25.01-py3-igpu`, copy the example and set the actual tag:
+
+```bash
+cp deploy/payload.env.example deploy/payload.env
+# Edit VITA_PAYLOAD_BASE_IMAGE in deploy/payload.env to the installed tag.
+```
+
+Do not choose an image based only on CUDA version. It must be a Jetson iGPU image compatible with the host JetPack/L4T release. The preflight prints `/etc/nv_tegra_release`, the installed JetPack package, Docker runtimes, and the complete in-container GPU stack.
+
+Make the payload helpers executable after the first checkout (Git normally preserves these bits):
+
+```bash
+chmod +x deploy/payload/*.sh
+./deploy/payload/preflight.sh
+```
+
+The preflight is successful only when the machine is `aarch64`, the expected base image is local, the model files exist, the NVIDIA Docker runtime works, CUDA is visible, and TensorRT/Torch-TensorRT import.
+
+For timing runs, inspect the current Orin power policy:
+
+```bash
+sudo nvpmodel -q --verbose
+sudo jetson_clocks --show
+```
+
+Select the approved maximum-performance profile for this specific module/carrier and run `sudo jetson_clocks` before benchmarking. Profile IDs vary by JetPack/device configuration, so this guide intentionally does not hard-code an `nvpmodel -m` number. Ensure adequate cooling; otherwise thermal throttling makes a five-second acceptance result meaningless.
+
+## 2. Build and start the payload
+
+From `/data/code/VITA`:
+
+```bash
+cp deploy/payload.env.example deploy/payload.env  # skip if already configured
+./deploy/payload/deploy.sh
+```
+
+The script runs preflight, builds the app layer on the already-installed NVIDIA image, starts Compose with `runtime: nvidia`, and waits up to 30 minutes for the first model export/TensorRT build/warmup. First startup can be slow. Subsequent restarts reuse the export, TensorRT engine, and timing caches.
+
+Check status and logs:
+
+```bash
+curl --fail http://127.0.0.1:8090/healthz
+./deploy/payload/logs.sh
+docker compose -f deploy/compose.payload.yaml ps
+```
+
+A production-ready health response must show:
+
+- `cuda_available: true`;
+- the expected PyTorch/CUDA/TensorRT/Torch-TensorRT versions;
+- `crop_backend: "tensorrt"`;
+- `crop_tensorrt_engine_count` greater than zero;
+- `cloud_backend: "omnicloudmask_cuda_fp16"`.
+
+The service has one worker and rejects a concurrent job with HTTP 409. This prevents two 100M-parameter pipelines from competing for GPU memory and corrupting latency measurements. It binds to Jetson `127.0.0.1`; do not expose port 8090 in the firewall.
+
+## 3. Prepare SSH from ground
+
+Use key authentication and connect once interactively so the real payload host key is stored in `known_hosts`:
+
+```powershell
+ssh -p 22 payload-user@payload-host
+```
+
+The orchestration uses `BatchMode=yes` and never disables host-key checking. If a private key is not in the normal OpenSSH location, pass `-IdentityFile`.
+
+On the ground checkout, install the current project so `vita-ingest` is available and build the dashboard image once:
+
+```powershell
+Set-Location D:\ML_ComputerVision\prithvi_crop_head_starter
+.\.venv\Scripts\python.exe -m pip install -e .
+docker compose -f deploy\compose.ground.yaml build
+```
+
+Only TCP SSH needs to be reachable from ground to payload. The job API travels inside the SSH local forward and the three outputs travel via SCP.
+
+## 4. Run the proof-of-concept jobs from ground
+
+Sentinel-2:
+
+```powershell
+.\scripts\ground\Invoke-VitaPayload.ps1 `
+  -SshTarget payload-user@payload-host `
+  -Sensor sentinel-2 `
+  -Input sentinel2 `
+  -Image S2_20260712T170851_T14TPL_cloudy.tif `
+  -RegionId sentinel-local-cloudy
+```
+
+Balkan-1:
+
+```powershell
+.\scripts\ground\Invoke-VitaPayload.ps1 `
+  -SshTarget payload-user@payload-host `
+  -Sensor balkan-1 `
+  -Input balkan1/preprocessed/3408_L1ORT.tif `
+  -RegionId balkan-test-3408
+```
+
+`Input` is relative to the payload's `/data/code/VITA/data` mount, so it must not start with `data/`. The Balkan calibration sidecar is discovered beside the TIFF; use `-CropCalibration` only for a different payload-local relative path.
+
+Useful connection overrides are `-SshPort`, `-IdentityFile`, `-LocalTunnelPort`, and `-RemoteProjectRoot`. Every job gets a unique ID. Supplying `-JobId` is supported, but an existing payload or ground job is never overwritten.
+
+For each invocation the script:
+
+1. creates a temporary local SSH forward to payload loopback;
+2. checks the warm payload service and acceleration stack;
+3. uplinks only the JSON job request;
+4. waits for cloud, crop, health, and packaging stages;
+5. closes the tunnel;
+6. SCPs exactly the three downlink files;
+7. verifies each SHA-256 against the authenticated payload response;
+8. validates the bundle contract and ingests it into `runtime/ground`;
+9. starts the loopback-only ground dashboard container.
+
+Open [http://127.0.0.1:8000/](http://127.0.0.1:8000/). Use `-SkipDashboard` if the existing local `vita-dashboard` process should remain in charge instead.
+
+Artifacts are retained at:
+
+```text
+Payload full run:   /data/code/VITA/runtime/payload/runs/<job-id>/
+Payload TRT cache:  /data/code/VITA/runtime/engines/
+Ground receipt:     runtime/downlink/<job-id>/
+Ground catalog:     runtime/ground/scenes/<job-id>/
+```
+
+## 5. Five-second performance acceptance
+
+The returned `payload_seconds` is the warm payload execution from scene intake through three-file packaging. It excludes SSH setup, model startup/TensorRT build, SCP, and ground ingest. `under_five_seconds` is computed from that value; no deployment should claim the target until both real proof-of-concept scenes pass on the actual Orin.
+
+Run each fixed scene at least five times with unique job IDs after `jetson_clocks`, and retain the JSON output. Watch the payload concurrently:
+
+```bash
+tegrastats --interval 500
+```
+
+Use the stage timings in the response and payload `result.json`, not only the total:
+
+- high `cloud_inference_seconds`: validate FP16 is active; a later, accuracy-gated task can TensorRT-compile both OmniCloudMask ensemble members;
+- high `crop_inference_seconds`: confirm the health response reports TensorRT engine partitions and cache hits appear in logs;
+- high `shared_analysis_grid_seconds`: storage/GDAL reprojection is the Balkan bottleneck, not the neural network;
+- high condition or packaging time: profile raster I/O/compression before moving NumPy math to CUDA;
+- high total only on the first request: warmup or engine caching is incomplete.
+
+Before accepting FP16/TensorRT, run the same scenes with `VITA_CROP_BACKEND=pytorch` and `VITA_CLOUD_INFERENCE_DTYPE=fp32`, then compare class percentages, crop percentage, condition score/label, and visual masks against the accelerated output. Quantization is out of scope until this parity check and a representative calibration dataset are formalized.
+
+Input dimensions fundamentally bound runtime. A fixed five-second service-level objective needs an explicit maximum pixel count per supported sensor; this code already bounds the Balkan cloud analysis grid at 25 million pixels, but final acceptance should record the exact two MVP raster dimensions and bytes.
+
+For the files currently in this workspace, Sentinel is 526×681 pixels and about 2.4 MiB. Balkan `3408_L1ORT.tif` is 10,745×13,340 pixels and about 1.16 GiB; its shared 10 m grid is 1,739×2,132 pixels. One existing shared-grid run recorded approximately 13.4 seconds for grid preparation, 4.1 seconds for cloud, 1.7 seconds for crop, 4.7 seconds for condition, and 2.3 seconds for downlink packaging on the machine that produced that artifact. Those numbers are not Orin results, but they prove that a full cold Balkan under-five-second guarantee is not credible yet. If the Orin measurement confirms this, choose explicitly between:
+
+1. a cold/full-pipeline SLO above five seconds; or
+2. a reviewed, checksum-keyed on-payload 10 m analysis-grid cache whose preparation is outside the warm job SLO, followed by further condition/packaging I/O profiling.
+
+Do not hide preprocessing outside the measured interval without documenting that contract.
+
+## 6. GitHub Container Registry
+
+`.github/workflows/containers.yml` publishes two code-only images:
+
+- `ghcr.io/<owner>/vita-ground:<commit-sha>` on a normal GitHub-hosted AMD64 runner;
+- `ghcr.io/<owner>/vita-payload:<commit-sha>` on a self-hosted Jetson runner labeled `self-hosted`, `Linux`, `ARM64`, and `jetson`.
+
+The payload is built natively because its NVIDIA iGPU base is ARM64/Jetson-specific. QEMU builds cannot validate the GPU runtime and make native dependency failures harder to diagnose. The workflow also launches the built image with `--runtime nvidia` and verifies CUDA before publishing it.
+
+For deployment by immutable Git SHA:
+
+```bash
+docker login ghcr.io
+docker pull ghcr.io/<owner>/vita-payload:<commit-sha>
+cp deploy/payload.env.example deploy/payload.env
+# Set VITA_PAYLOAD_IMAGE=ghcr.io/<owner>/vita-payload:<commit-sha>
+VITA_SKIP_BUILD=1 ./deploy/payload/deploy.sh
+```
+
+Keep the NGC base and GHCR app image immutable in a release record. Never publish `data`, model weights, `runtime`, credentials, or TensorRT caches; `.dockerignore` enforces this boundary.
+
+## 7. Troubleshooting
+
+`CUDA_REQUIRED=1 but torch.cuda.is_available() is false` means the container was not launched through the NVIDIA runtime, the NVIDIA container toolkit is not configured, or the base is incompatible with host L4T. Run `deploy/payload/preflight.sh` before changing Python packages.
+
+`Crop model TensorRT compilation failed` is intentionally fatal with `VITA_TRT_STRICT=1`. Inspect payload logs for an unsupported operator or memory failure. For diagnosis only, set `VITA_TRT_STRICT=0`; the health endpoint will then report `crop_backend: pytorch`, which does not satisfy TensorRT acceptance.
+
+`Torch-TensorRT produced no TensorRT engine partitions` means compilation technically returned but did not accelerate any graph segment. This is treated as failure rather than silently claiming TensorRT.
+
+The ModelOpt quantization warning can be ignored for FP16. Do not install ModelOpt merely to suppress the warning.
+
+HTTP 422 with a cloud-gate status means the scientific pipeline did not produce a complete downlink; inspect that job's payload `result.json`. It is not a transport failure.
+
+An SSH tunnel error should be resolved by testing `ssh -p <port> user@host`, confirming the host key, key permissions, and that the payload service is healthy. Do not work around it with `StrictHostKeyChecking=no`.
+
+If port 18090 is occupied on ground, pass a different `-LocalTunnelPort`. If port 8000 is occupied, start the dashboard with another port:
+
+```powershell
+.\scripts\ground\Start-VitaDashboard.ps1 -Port 8001
+```
+
+## Release acceptance checklist
+
+- Payload preflight passes with the recorded JetPack/L4T and base-image digest.
+- Payload Docker build succeeds without replacing the NVIDIA PyTorch/CUDA/TensorRT stack.
+- Health reports CUDA, FP16 cloud execution, TensorRT crop execution, and at least one engine partition.
+- Both fixed input scenes complete five warm repetitions without errors.
+- Both scenes meet the agreed pixel-size envelope and the measured payload latency target.
+- Accelerated scientific outputs pass the approved FP32/PyTorch parity tolerances.
+- Ground receives exactly WebP, PNG, and JSON and verifies all SHA-256 values.
+- Ground catalog validation passes and both scenes render in the dashboard.
+- Only SSH is network-reachable; payload and dashboard HTTP ports remain loopback-only.
+- GHCR images are pinned by commit SHA/digest; models and target-built TensorRT caches remain outside images.

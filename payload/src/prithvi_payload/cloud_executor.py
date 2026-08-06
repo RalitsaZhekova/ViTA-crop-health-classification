@@ -527,6 +527,7 @@ def execute_cloud_stage(
             "mask_reprojection_seconds": reprojection_seconds,
             "preview_seconds": preview_seconds,
             "device": str(getattr(backend, "device", "unknown")),
+            "inference_dtype": str(getattr(backend, "inference_dtype", "unknown")),
             "execution_strategy": execution_strategy,
             "tile_count": tile_count,
             "tile_size": tile_size,

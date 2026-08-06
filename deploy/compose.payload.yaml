@@ -1,0 +1,47 @@
+name: vita-payload
+
+services:
+  payload:
+    image: ${VITA_PAYLOAD_IMAGE:-vita-payload:1.0.0}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.payload
+      args:
+        VITA_PAYLOAD_BASE_IMAGE: ${VITA_PAYLOAD_BASE_IMAGE:-nvcr.io/nvidia/pytorch:25.01-py3-igpu}
+    runtime: nvidia
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    shm_size: 1gb
+    ports:
+      - "127.0.0.1:${VITA_PAYLOAD_PORT:-8090}:8090"
+    environment:
+      CUDA_REQUIRED: "1"
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      VITA_INPUT_ROOT: /data
+      VITA_OUTPUT_ROOT: /runtime/runs
+      PRITHVI_MODEL_DIR: /models
+      OMNICLOUDMASK_MODEL_DIR: /models/omnicloudmask
+      VITA_MODEL_CACHE_DIR: /engine-cache/torch-export
+      VITA_TRT_CACHE_DIR: /engine-cache/tensorrt
+      VITA_CROP_BACKEND: ${VITA_CROP_BACKEND:-tensorrt}
+      VITA_TRT_STRICT: ${VITA_TRT_STRICT:-1}
+      VITA_TRT_REQUIRE_FULL: ${VITA_TRT_REQUIRE_FULL:-0}
+      VITA_TRT_OPTIMIZATION_LEVEL: ${VITA_TRT_OPTIMIZATION_LEVEL:-3}
+      VITA_CLOUD_INFERENCE_DTYPE: ${VITA_CLOUD_INFERENCE_DTYPE:-fp16}
+      VITA_WARMUP: ${VITA_WARMUP:-1}
+      OMP_NUM_THREADS: ${VITA_CPU_THREADS:-8}
+      OPENBLAS_NUM_THREADS: ${VITA_CPU_THREADS:-8}
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+    volumes:
+      - ../data:/data:ro
+      - ../payload/models:/models:ro
+      - ../runtime/payload:/runtime
+      - ../runtime/engines:/engine-cache
+    tmpfs:
+      - /tmp:size=2g,mode=1777
+      - /root/.cache:size=512m,mode=0700

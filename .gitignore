@@ -16,6 +16,8 @@ outputs/
 secrets/
 testing/
 .env*
+deploy/payload.env
+deploy/ground.env
 *.crop_calibration.json
 
 # Large imagery and model binaries

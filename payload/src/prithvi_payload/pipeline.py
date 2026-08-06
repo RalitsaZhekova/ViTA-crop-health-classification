@@ -292,6 +292,8 @@ def continue_scene_from_cloud(
         "mean_confidence_usable": crop_metadata["mean_confidence_usable"],
         "runtime_seconds": crop_metadata["runtime"]["seconds"],
         "device": crop_metadata["runtime"]["device"],
+        "inference_backend": crop_metadata["runtime"].get("inference_backend", "pytorch"),
+        "tensorrt_engine_count": crop_metadata["runtime"].get("tensorrt_engine_count", 0),
     }
     result["stage_metadata"]["crop"] = crop_metadata
     if stop_after == "crop":

@@ -1,0 +1,52 @@
+# syntax=docker/dockerfile:1.7
+# This is the NVIDIA JetPack 6.1 iGPU image already validated on the target Orin.
+# Override VITA_PAYLOAD_BASE_IMAGE only after matching it to the host JetPack release.
+ARG VITA_PAYLOAD_BASE_IMAGE=nvcr.io/nvidia/pytorch:25.01-py3-igpu
+FROM ${VITA_PAYLOAD_BASE_IMAGE}
+
+ARG VITA_PAYLOAD_BASE_IMAGE
+LABEL org.opencontainers.image.title="ViTA crop MVP payload" \
+      org.opencontainers.image.description="Warm CUDA/TensorRT GeoTIFF inference service for Jetson AGX Orin" \
+      org.opencontainers.image.base.name="${VITA_PAYLOAD_BASE_IMAGE}"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    MPLCONFIGDIR=/tmp/matplotlib \
+    GDAL_CACHEMAX=512 \
+    GDAL_NUM_THREADS=ALL_CPUS
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends \
+        ca-certificates \
+        curl \
+        gdal-bin \
+        libgdal-dev \
+        tini \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/vita
+COPY deploy/requirements-payload.txt /tmp/requirements-payload.txt
+RUN set -eux; \
+    if [ -f /etc/pip/constraint.txt ]; then \
+        python -m pip install --no-cache-dir --constraint /etc/pip/constraint.txt \
+            --requirement /tmp/requirements-payload.txt; \
+    else \
+        python -m pip install --no-cache-dir --requirement /tmp/requirements-payload.txt; \
+    fi
+
+COPY pyproject.toml ./
+COPY payload ./payload
+COPY shared ./shared
+COPY integration ./integration
+COPY ground ./ground
+RUN python -m pip install --no-cache-dir --no-deps . \
+    && python -m pip check \
+    && python -c "import tensorrt, torch, torch_tensorrt; assert torch.__version__.startswith('2.6.0a0+ecf3bae40a'), torch.__version__; assert torch.version.cuda == '12.8', torch.version.cuda; assert tensorrt.__version__.startswith('10.8.'), tensorrt.__version__; assert torch_tensorrt.__version__.startswith('2.6.0a0'), torch_tensorrt.__version__; print('Validated NVIDIA stack:', torch.__version__, torch.version.cuda, tensorrt.__version__)"
+
+EXPOSE 8090
+HEALTHCHECK --interval=10s --timeout=5s --start-period=30m --retries=6 \
+    CMD curl --fail --silent http://127.0.0.1:8090/healthz >/dev/null || exit 1
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["vita-payload-server"]
