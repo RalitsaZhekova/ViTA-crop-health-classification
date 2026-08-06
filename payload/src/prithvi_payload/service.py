@@ -240,6 +240,8 @@ class PayloadRuntime:
             "seconds": float(analysis["runtime"]["seconds"]),
             "width": int(analysis["raster"]["width"]),
             "height": int(analysis["raster"]["height"]),
+            "preprocessing_mode": analysis.get("preprocessing", {}).get("mode"),
+            "overview_factor": analysis.get("preprocessing", {}).get("overview_factor"),
         }
 
     def _warm_balkan_cloud_profile(self) -> dict[str, Any] | None:

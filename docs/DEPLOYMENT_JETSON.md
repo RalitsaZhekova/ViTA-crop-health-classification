@@ -34,8 +34,18 @@ The acceleration policy is:
 |---|---|---|
 | OmniCloudMask ensemble | CUDA FP16, batch 2, warm/resident models, semantic-only GPU output | Low-risk acceleration supported by the existing package |
 | Prithvi crop segmentation | FP16 Torch-TensorRT, fixed batch 4, engine/timing cache | TensorRT targets the largest crop neural network while preserving the PyTorch integration |
-| Balkan 10 m preparation | Checksum-keyed persistent shared grid, multithreaded GDAL warp | Builds the fixed 1.2 GB input once, validates the cache identity, and reuses it for later jobs |
+| Balkan 10 m preparation | Embedded overview read, one multiband average GDAL warp, checksum-keyed persistent grid | Avoids decoding four full-resolution bands separately while preserving the existing 10 m UTM, band-order, nodata, and reflectance contracts |
 | Health indices and packaging | Vectorized NumPy/Rasterio, all-CPU GeoTIFF compression, concurrent web encoders | These are I/O/scientific raster operations; GPU transfer can cost more than it saves at MVP scale |
+
+The optimized Balkan warp remains on the CPU deliberately. Its measured reprojection
+is only about 0.41 seconds after the overview read, while NVIDIA
+[VPI dynamic remap](https://docs.nvidia.com/vpi/group__VPI__DynamicRemap.html) does not
+provide area-average interpolation. Replacing the scientific average with a GPU
+linear remap would change the product for a small possible saving. NVIDIA
+[nvTIFF](https://docs.nvidia.com/cuda/nvtiff/) can decode Deflate float32 TIFF data on
+Jetson and is a sensible later C++ optimization if profiling on Orin still identifies
+TIFF decode as material; it does not itself implement the GeoTIFF reprojection or the
+Python Rasterio contract used by the models.
 
 ModelOpt is not required for FP16 TensorRT. The import warning about the missing quantization operator is harmless here. INT8 should only be introduced after a representative calibration set and an accuracy acceptance test exist.
 
@@ -54,6 +64,20 @@ test -f data/balkan1/preprocessed/3408_L1ORT.tif
 test -f data/balkan1/preprocessed/3408_L1ORT.crop_calibration.json
 test -f payload/models/prithvi_crop_binary_single_frame_v1_weights.pt
 ```
+
+The fast Balkan path requires a common embedded overview in the four reflectance
+bands. The proof-of-concept TIFF already contains factors 4, 8, 16, and 32. If GDAL is
+available on the host, verify the file before deployment:
+
+```bash
+gdalinfo data/balkan1/preprocessed/3408_L1ORT.tif | grep -m 4 'Overviews:'
+```
+
+Compose sets `VITA_BALKAN_OVERVIEW_REQUIRED=1`, so an input without a suitable
+overview fails service readiness instead of silently returning to the 12--13 second
+full-resolution path. The implementation retains that exact, slower fallback for
+development by setting `VITA_BALKAN_OVERVIEW_REQUIRED=0`. It never creates or changes
+the payload source TIFF.
 
 The two OmniCloudMask `.safetensors` files must be under `payload/models/omnicloudmask`. These assets are intentionally excluded from Git and the Docker build context. Compose mounts `data` and `payload/models` read-only at runtime.
 
@@ -119,7 +143,9 @@ A production-ready health response must show:
 - `cloud_batch_size: 2`;
 - cloud warmup profiles for batch 1 at 1,000 px and batches 1 and 2 at 869 px;
 - `cloud_scene_warmup_profile.kind: "fixed_input_profile"` with `prediction_retained: false`;
-- `balkan_analysis_cache.cache_hit: true` after the cache has been built once.
+- `balkan_analysis_cache.cache_hit: true` after the cache has been built once;
+- `balkan_analysis_cache.preprocessing_mode: "embedded_overview_then_average"` and
+  `overview_factor: 4` for the supplied Balkan scene.
 
 The 1,000 px profile is the fixed Sentinel path. For the proof-of-concept Balkan grid,
 OmniCloudMask's reviewed no-data rule reduces its model patch to 869 px. The service
@@ -229,7 +255,9 @@ Use the stage timings in the response and payload `result.json`, not only the to
   their corresponding stage totals and must not be added a second time;
 - high `cloud_inference_seconds`: validate FP16, batch 2, and all three cloud warmup profiles in `/healthz`; a later, accuracy-gated task can TensorRT-compile both OmniCloudMask ensemble members;
 - high `crop_inference_seconds`: confirm the health response reports TensorRT engine partitions and cache hits appear in logs;
-- high `shared_analysis_grid_seconds`: verify `/healthz` reports the expected Balkan cache key and that `runtime/payload/cache/balkan-analysis` is persistent and writable;
+- high `shared_analysis_grid_seconds`: verify `/healthz` reports
+  `embedded_overview_then_average`, factor 4, the expected Balkan cache key, and a
+  persistent writable `runtime/payload/cache/balkan-analysis` directory;
 - high condition or packaging time: profile raster I/O/compression before moving NumPy math to CUDA;
 - high total only on the first request: warmup or engine caching is incomplete.
 
@@ -253,7 +281,30 @@ mission accuracy tolerance before FP16 is declared scientifically accepted.
 
 Input dimensions fundamentally bound runtime. A fixed five-second service-level objective needs an explicit maximum pixel count per supported sensor; this code already bounds the Balkan cloud analysis grid at 25 million pixels, but final acceptance should record the exact two MVP raster dimensions and bytes.
 
-For the files currently in this workspace, Sentinel is 526×681 pixels and about 2.4 MiB. Balkan `3408_L1ORT.tif` is 10,745×13,340 pixels and about 1.16 GiB; its shared 10 m grid is 1,739×2,132 pixels. The original local Balkan response was about 30.03 seconds, including 13.09 seconds of grid preparation, 5.70 seconds of condition work, and 2.53 seconds of packaging. The implemented cache moves the one-time, checksum-verified grid build to readiness and records its cache key in `/healthz`; it does not hide that work inside an unreported request path. A cache miss delays readiness and never serves an unprepared job. The remaining local 6.6-second warm path is dominated by condition and packaging CPU/raster work, so under five seconds remains an Orin measurement and optimization target rather than a current guarantee.
+For the files currently in this workspace, Sentinel is 526×681 pixels and about 2.4 MiB. Balkan `3408_L1ORT.tif` is 10,745×13,340 pixels and about 1.16 GiB; its shared 10 m grid is 1,739×2,132 pixels. The original local Balkan response was about 30.03 seconds, including 13.09 seconds of grid preparation, 5.70 seconds of condition work, and 2.53 seconds of packaging.
+
+The new cold grid build reads the TIFF's existing factor-4 overview once and performs
+one four-band average reprojection. On the RTX 3060 development machine repeated cold
+grid builds took about 1.43--1.76 seconds versus 12.73 seconds for the previous four
+full-resolution warps, an 86--89% reduction. Full source SHA-256 verification remains
+in intake and took about 3.0--4.2 seconds locally for this 1.16 GiB file; it is
+intentionally not skipped or hidden. Therefore a genuinely unseen cold local file is
+still expected to take roughly 10--11 seconds end to end, while the fixed
+checksum-verified startup cache keeps normal warm requests near the measured 6.6
+seconds. Only the Orin five-run protocol can
+establish whether that warm path is below five seconds.
+
+This is a controlled speed/accuracy trade, not a claim of bitwise equivalence. Against
+the previous full-resolution average grid on the supplied scene, reflectance-band
+correlations were 0.978--0.985. A full FP32/PyTorch pipeline comparison found 0.047%
+invalid-mask disagreement, 0.832% cloud-class disagreement on common-valid pixels,
+1.800% crop-mask disagreement, crop-probability correlation 0.9955, and condition-map
+correlation 0.9971. The aggregate condition score moved from 32.40 to 34.54 while the
+final condition label remained `High anomaly`. Establish
+mission tolerances on more scenes before treating the overview path as scientifically
+qualified beyond this MVP. The output metadata records the selected overview,
+resampling, grid, band order, memory estimate, and detailed preparation timings so the
+choice is auditable.
 
 ## 6. GitHub Container Registry
 
