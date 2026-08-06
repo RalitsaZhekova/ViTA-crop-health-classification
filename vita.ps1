@@ -61,15 +61,30 @@ function Get-EnvironmentDefault([string]$Name, [string]$Default) {
     return $value
 }
 
+function Get-ListeningProcessId([int]$Port) {
+    $connection = Get-NetTCPConnection `
+        -LocalPort $Port `
+        -State Listen `
+        -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($connection) { return [int]$connection.OwningProcess }
+
+    # Some Windows configurations hide user-owned sockets from
+    # Get-NetTCPConnection but still expose them through netstat.
+    foreach ($line in (& netstat.exe -ano -p TCP 2>$null)) {
+        if ($line -match "^\s*TCP\s+\S+:$Port\s+\S+\s+LISTENING\s+(\d+)\s*$") {
+            return [int]$Matches[1]
+        }
+    }
+    return $null
+}
+
 function Start-LocalPayload {
     $health = Get-Health
     if ($health -and $health.status -eq 'ready') { return $health }
 
-    $listener = Get-NetTCPConnection `
-        -LocalPort $PayloadPort `
-        -State Listen `
-        -ErrorAction SilentlyContinue
-    if ($listener) {
+    $listenerPid = Get-ListeningProcessId $PayloadPort
+    if ($listenerPid) {
         throw "Port $PayloadPort is occupied by a service that is not a healthy ViTA payload."
     }
 
@@ -135,13 +150,9 @@ function Start-LocalPayload {
     foreach ($attempt in 1..900) {
         $health = Get-Health
         if ($health -and $health.status -eq 'ready') {
-            $listener = Get-NetTCPConnection `
-                -LocalPort $PayloadPort `
-                -State Listen `
-                -ErrorAction SilentlyContinue |
-                Select-Object -First 1
+            $listenerPid = Get-ListeningProcessId $PayloadPort
             [ordered]@{
-                listener_pid = if ($listener) { $listener.OwningProcess } else { $null }
+                listener_pid = $listenerPid
                 starter_pid = $server.Id
                 starter_start_time = $server.StartTime.ToUniversalTime().ToString('o')
                 port = $PayloadPort
@@ -247,18 +258,18 @@ function Invoke-LocalPipeline([string]$SensorName) {
 }
 
 function Start-LocalWeb {
-    New-Item -ItemType Directory -Path $groundStore -Force | Out-Null
+    $webRuntime = Join-Path $runtimeRoot 'web'
+    foreach ($directory in @($groundStore, $webRuntime)) {
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    }
     $uri = "http://127.0.0.1:$WebPort/"
     $ready = $false
     try {
         $null = Invoke-WebRequest -Uri $uri -UseBasicParsing -TimeoutSec 3
         $ready = $true
     } catch {
-        $listener = Get-NetTCPConnection `
-            -LocalPort $WebPort `
-            -State Listen `
-            -ErrorAction SilentlyContinue
-        if ($listener) { throw "Port $WebPort is occupied by another application." }
+        $listenerPid = Get-ListeningProcessId $WebPort
+        if ($listenerPid) { throw "Port $WebPort is occupied by another application." }
     }
     if (-not $ready) {
         $dashboard = Get-LocalTool 'vita-dashboard'
@@ -278,18 +289,14 @@ function Start-LocalWeb {
             }
         }
         if ($ready) {
-            $listener = Get-NetTCPConnection `
-                -LocalPort $WebPort `
-                -State Listen `
-                -ErrorAction SilentlyContinue |
-                Select-Object -First 1
+            $listenerPid = Get-ListeningProcessId $WebPort
             [ordered]@{
-                listener_pid = if ($listener) { $listener.OwningProcess } else { $null }
+                listener_pid = $listenerPid
                 starter_pid = $web.Id
                 starter_start_time = $web.StartTime.ToUniversalTime().ToString('o')
                 port = $WebPort
             } | ConvertTo-Json | Set-Content `
-                -LiteralPath (Join-Path $runtimeRoot 'web\process.json') `
+                -LiteralPath (Join-Path $webRuntime 'process.json') `
                 -Encoding utf8
         }
     }
@@ -301,15 +308,10 @@ function Start-LocalWeb {
 function Stop-RecordedProcess([string]$RecordPath, [string]$Name) {
     if (-not (Test-Path -LiteralPath $RecordPath)) { return }
     $record = Get-Content -LiteralPath $RecordPath -Raw | ConvertFrom-Json
-    $listener = Get-NetTCPConnection `
-        -LocalPort ([int]$record.port) `
-        -State Listen `
-        -ErrorAction SilentlyContinue |
-        Where-Object { $_.OwningProcess -eq [int]$record.listener_pid } |
-        Select-Object -First 1
-    if ($listener) {
-        Stop-Process -Id $listener.OwningProcess -Force
-        Write-Host "Stopped $Name listener PID $($listener.OwningProcess)."
+    $listenerPid = Get-ListeningProcessId ([int]$record.port)
+    if ($listenerPid -and $listenerPid -eq [int]$record.listener_pid) {
+        Stop-Process -Id $listenerPid -Force
+        Write-Host "Stopped $Name listener PID $listenerPid."
     }
     if ($record.starter_pid -and $record.starter_pid -ne $record.listener_pid) {
         $starter = Get-Process -Id ([int]$record.starter_pid) -ErrorAction SilentlyContinue

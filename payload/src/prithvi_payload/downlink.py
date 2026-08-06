@@ -19,6 +19,10 @@ from rasterio.warp import transform_bounds
 from rasterio.windows import Window
 from rasterio.windows import bounds as window_bounds
 
+from prithvi_payload.balkan_crop_calibration import (
+    ADAPTER_MODE,
+    load_calibration,
+)
 from prithvi_payload.cloud_classifier import CLOUD_MODEL_NAME, CLOUD_MODEL_SHA256
 
 DOWNLINK_SCHEMA_VERSION = "1.0"
@@ -109,14 +113,60 @@ def _stretch_rgb(
             output[..., channel] = np.round(255.0 * scaled).astype(np.uint8)
         output[~valid] = 0
         return output
-    finite = rgb[np.isfinite(rgb)]
-    if not finite.size:
+    valid = np.all(np.isfinite(rgb), axis=-1) & np.any(rgb != 0, axis=-1)
+    samples = rgb[valid]
+    if not samples.size:
         return np.zeros(rgb.shape, dtype=np.uint8)
-    low, high = np.percentile(finite, (2, 98))
+    low, high = np.percentile(samples, (2, 98))
     if high <= low:
         high = low + 1.0
     scaled = np.clip((rgb - low) / (high - low), 0.0, 1.0)
-    return np.round(255.0 * scaled).astype(np.uint8)
+    output = np.zeros(rgb.shape, dtype=np.uint8)
+    output[valid] = np.round(255.0 * scaled[valid]).astype(np.uint8)
+    return output
+
+
+def _calibrated_balkan_rgb(
+    source: rasterio.DatasetReader,
+    *,
+    mapping: dict[str, Any],
+    spectral_adapter: dict[str, Any],
+    original_source_path: Path,
+    preview_height: int,
+    preview_width: int,
+) -> np.ndarray:
+    """Render Balkan RGB through its validated Sentinel-equivalence curves."""
+    roles = ("RED", "GREEN", "BLUE")
+    if any(role not in mapping for role in roles):
+        raise ValueError("Balkan display calibration requires RED, GREEN, and BLUE")
+    calibration_path = spectral_adapter.get("calibration_path")
+    if not isinstance(calibration_path, str) or not calibration_path:
+        raise ValueError("Balkan display calibration path is missing")
+    calibration = load_calibration(
+        calibration_path,
+        source_path=original_source_path,
+    )
+    indices = [int(mapping[role]["index"]) for role in roles]
+    raw = source.read(
+        indices,
+        out_shape=(3, preview_height, preview_width),
+        resampling=Resampling.bilinear,
+        out_dtype="float32",
+        masked=True,
+    )
+    model_units = raw.filled(np.nan) * np.float32(
+        calibration["source_scale_to_model_units"]
+    )
+    curves = {curve["band"]: curve for curve in calibration["curves"]}
+    calibrated = np.empty_like(model_units)
+    for index, role in enumerate(roles):
+        curve = curves[role]
+        calibrated[index] = np.interp(
+            model_units[index],
+            np.asarray(curve["source_knots"], dtype=np.float32),
+            np.asarray(curve["target_values"], dtype=np.float32),
+        )
+    return calibrated / np.float32(10_000.0)
 
 
 def _condition_colors(values: np.ndarray) -> np.ndarray:
@@ -453,14 +503,32 @@ def build_downlink_bundle(
         preview_width, preview_height = _preview_dimensions(
             source.width, source.height, max_image_dimension
         )
-        rgb = source.read(
-            rgb_indices,
-            out_shape=(3, preview_height, preview_width),
-            resampling=Resampling.bilinear,
-            out_dtype="float32",
+        spectral_adapter = condition_report.get("radiometry", {}).get("spectral_adapter")
+        calibrated_balkan_display = (
+            use_shared_analysis
+            and isinstance(spectral_adapter, dict)
+            and spectral_adapter.get("mode") == ADAPTER_MODE
         )
-        rgb /= float(reflectance_scale)
-        balkan_channelwise_display = payload.get("sensor") == "balkan-1"
+        if calibrated_balkan_display:
+            rgb = _calibrated_balkan_rgb(
+                source,
+                mapping=mapping,
+                spectral_adapter=spectral_adapter,
+                original_source_path=original_source_path,
+                preview_height=preview_height,
+                preview_width=preview_width,
+            )
+        else:
+            rgb = source.read(
+                rgb_indices,
+                out_shape=(3, preview_height, preview_width),
+                resampling=Resampling.bilinear,
+                out_dtype="float32",
+            )
+            rgb /= float(reflectance_scale)
+        balkan_channelwise_display = (
+            payload.get("sensor") == "balkan-1" and not calibrated_balkan_display
+        )
         channel_limits = None
         if use_shared_analysis:
             raw_limits = analysis.get("display", {}).get(
@@ -592,9 +660,12 @@ def build_downlink_bundle(
             "condition_algorithm_version": condition_report.get("condition_algorithm_version"),
             "radiometry": _portable_radiometry(condition_report.get("radiometry", {})),
             "rgb_display": {
-                "input_values_modified": False,
+                "input_values_modified": calibrated_balkan_display,
                 "mode": (
-                    "per-channel 2-98% display stretch"
+                    "validated Balkan-1 to Sentinel calibration and combined RGB "
+                    "2-98% display stretch"
+                    if calibrated_balkan_display
+                    else "per-channel 2-98% display stretch"
                     if payload.get("sensor") == "balkan-1"
                     else "combined RGB 2-98% display stretch"
                 ),

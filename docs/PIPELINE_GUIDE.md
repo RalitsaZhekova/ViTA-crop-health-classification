@@ -252,6 +252,12 @@ The interaction grid reads one compressed row stripe per metric instead of reope
 many tiny cell windows. WebP and PNG encoding run concurrently. SHA-256 and byte counts
 are returned for every file.
 
+Sentinel context uses a combined RGB 2–98% display stretch. For calibrated Balkan-1
+scenes, the WebP renderer first applies the same validated Balkan-to-Sentinel monotonic
+curves used by the science path, then performs the combined stretch. This display-only
+step removes native channel-gain color casts without changing inference rasters,
+probabilities, masks, indices, or condition scores.
+
 ### 4.8 Ground ingest and web application
 
 `vita-ingest` calls `SceneCatalog.ingest()` in `ground/src/prithvi_ground/catalog.py`.
