@@ -8,6 +8,7 @@ import os
 import time
 import zlib
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +37,7 @@ from prithvi_payload.balkan_crop_calibration import (
     apply_calibration,
     load_calibration,
 )
+from prithvi_payload.runtime_config import environment_flag
 
 PAYLOAD_CONDITION_ALGORITHM_VERSION = "payload-condition-v1"
 FLOAT_NODATA = -9999.0
@@ -69,6 +71,10 @@ class StreamingMetric:
         self._priorities = np.empty(0, dtype=np.float64)
         self._seed = np.uint64(zlib.crc32(self.name.encode("utf-8")))
         self._next_sample_id = 0
+        self._exact_percentiles = environment_flag(
+            "VITA_CONDITION_EXACT_PERCENTILES",
+            False,
+        )
         if self.sample_limit <= 0:
             raise ValueError("sample_limit must be positive")
 
@@ -78,21 +84,28 @@ class StreamingMetric:
         *,
         sample_ids: np.ndarray | None = None,
     ) -> None:
-        flattened = np.asarray(values, dtype=np.float64).ravel()
+        flattened = np.asarray(values).ravel()
+        identifiers: np.ndarray | None
         if sample_ids is None:
-            identifiers = np.arange(
-                self._next_sample_id,
-                self._next_sample_id + flattened.size,
-                dtype=np.uint64,
+            identifiers = (
+                None
+                if self._exact_percentiles
+                else np.arange(
+                    self._next_sample_id,
+                    self._next_sample_id + flattened.size,
+                    dtype=np.uint64,
+                )
             )
             self._next_sample_id += flattened.size
         else:
-            identifiers = np.asarray(sample_ids, dtype=np.uint64).ravel()
-            if identifiers.shape != flattened.shape:
+            supplied_identifiers = np.asarray(sample_ids, dtype=np.uint64).ravel()
+            if supplied_identifiers.shape != flattened.shape:
                 raise ValueError("sample_ids must match the flattened metric values")
+            identifiers = None if self._exact_percentiles else supplied_identifiers
         finite_mask = np.isfinite(flattened)
-        finite = flattened[finite_mask]
-        identifiers = identifiers[finite_mask]
+        finite = np.asarray(flattened[finite_mask], dtype=np.float64)
+        if identifiers is not None:
+            identifiers = identifiers[finite_mask]
         if finite.size == 0:
             return
         self.count += int(finite.size)
@@ -101,8 +114,12 @@ class StreamingMetric:
         self.minimum = min(self.minimum, float(np.min(finite)))
         self.maximum = max(self.maximum, float(np.max(finite)))
 
-        priorities = self._priorities_for_ids(identifiers)
         values_combined = np.concatenate((self._values, finite))
+        if self._exact_percentiles:
+            self._values = values_combined
+            return
+        assert identifiers is not None
+        priorities = self._priorities_for_ids(identifiers)
         priorities_combined = np.concatenate((self._priorities, priorities))
         if values_combined.size > self.sample_limit:
             selected = np.argpartition(priorities_combined, -self.sample_limit)[
@@ -136,7 +153,11 @@ class StreamingMetric:
                 "percentile_90": None,
                 "maximum": None,
                 "percentile_sample_pixels": 0,
-                "percentile_method": "deterministic_priority_reservoir",
+                "percentile_method": (
+                    "exact_all_valid_pixels"
+                    if self._exact_percentiles
+                    else "deterministic_priority_reservoir"
+                ),
             }
         mean = self.total / self.count
         variance = max(0.0, self.total_squared / self.count - mean * mean)
@@ -156,7 +177,11 @@ class StreamingMetric:
             "percentile_90": rounded(float(percentiles[3])),
             "maximum": rounded(self.maximum),
             "percentile_sample_pixels": int(self._values.size),
-            "percentile_method": "deterministic_priority_reservoir",
+            "percentile_method": (
+                "exact_all_valid_pixels"
+                if self._exact_percentiles
+                else "deterministic_priority_reservoir"
+            ),
         }
 
 
@@ -232,12 +257,18 @@ def _raster_profile(
         count=1,
         dtype=dtype,
         nodata=nodata,
-        compress="deflate",
-        predictor=3 if dtype == "float32" else 2,
-        zlevel=1,
-        num_threads="ALL_CPUS",
         BIGTIFF="IF_SAFER",
     )
+    if environment_flag("VITA_FAST_INTERMEDIATE_RASTERS", False):
+        for option in ("compress", "predictor", "zlevel", "num_threads"):
+            profile.pop(option, None)
+    else:
+        profile.update(
+            compress="deflate",
+            predictor=3 if dtype == "float32" else 2,
+            zlevel=1,
+            num_threads="ALL_CPUS",
+        )
     if source.width >= 16 and source.height >= 16:
         block_width = min(512, (source.width // 16) * 16)
         block_height = min(512, (source.height // 16) * 16)
@@ -464,10 +495,16 @@ def run_payload_condition(
     config: ConditionConfig | None = None,
     save_diagnostic_preview: bool = False,
     overwrite: bool = False,
+    crop_products: dict[str, np.ndarray] | None = None,
+    persist_rasters: bool = True,
 ) -> dict[str, Any]:
     """Process one payload result without loading the complete scene into RAM."""
     started = time.perf_counter()
     cfg = config or ConditionConfig()
+    exact_percentiles = environment_flag(
+        "VITA_CONDITION_EXACT_PERCENTILES",
+        False,
+    )
     result_path = Path(payload_result_path).resolve()
     payload = _load_payload_result(result_path)
     result_root = result_path.parent
@@ -516,16 +553,28 @@ def run_payload_condition(
     )
     cloud_artifacts = payload.get("artifacts", {}).get("cloud", {})
     crop_artifacts = payload.get("artifacts", {}).get("crop", {})
-    unusable_path = _resolve_asset(
-        cloud_artifacts.get("unusable_mask"), result_root, name="unusable mask"
+    unusable_path = (
+        None
+        if crop_products is not None and "unusable_mask" in crop_products
+        else _resolve_asset(
+            cloud_artifacts.get("unusable_mask"), result_root, name="unusable mask"
+        )
     )
     semantic_path = _resolve_optional_asset(cloud_artifacts.get("semantic_mask"), result_root)
-    crop_binary_path = _resolve_asset(
-        crop_artifacts.get("crop_binary"), result_root, name="crop binary mask"
-    )
-    crop_probability_path = _resolve_asset(
-        crop_artifacts.get("crop_probability"), result_root, name="crop probability"
-    )
+    if crop_products is None:
+        crop_binary_path = _resolve_asset(
+            crop_artifacts.get("crop_binary"), result_root, name="crop binary mask"
+        )
+        crop_probability_path = _resolve_asset(
+            crop_artifacts.get("crop_probability"), result_root, name="crop probability"
+        )
+    else:
+        crop_binary_path = None
+        crop_probability_path = None
+    if not persist_rasters and crop_products is None:
+        raise ValueError("In-memory condition output requires in-memory crop products")
+    if save_diagnostic_preview and not persist_rasters:
+        raise ValueError("Diagnostic condition previews require persisted rasters")
 
     band_mapping = (
         analysis.get("logical_band_mapping")
@@ -601,48 +650,176 @@ def run_payload_condition(
     probability_accumulator = StreamingMetric("crop_probability")
     candidate_crop_pixels = 0
     window_count = 0
+    input_read_seconds = 0.0
+    health_calculation_seconds = 0.0
+    score_calculation_seconds = 0.0
+    metric_aggregation_seconds = 0.0
+    product_materialization_seconds = 0.0
 
     first_pass_started = time.perf_counter()
     with ExitStack() as stack:
+        metric_threads = max(
+            1,
+            int(os.environ.get("VITA_CONDITION_METRIC_THREADS", "4")),
+        )
+        metric_pool = stack.enter_context(
+            ThreadPoolExecutor(
+                max_workers=metric_threads,
+                thread_name_prefix="condition-metric",
+            )
+        )
         source = stack.enter_context(rasterio.open(source_path))
-        unusable_source = stack.enter_context(rasterio.open(unusable_path))
-        crop_source = stack.enter_context(rasterio.open(crop_binary_path))
-        probability_source = stack.enter_context(rasterio.open(crop_probability_path))
-        for item, name in (
-            (unusable_source, "Unusable mask"),
-            (crop_source, "Crop binary mask"),
-            (probability_source, "Crop probability"),
-        ):
+        unusable_source = (
+            stack.enter_context(rasterio.open(unusable_path))
+            if unusable_path is not None
+            else None
+        )
+        crop_source = (
+            stack.enter_context(rasterio.open(crop_binary_path))
+            if crop_binary_path is not None
+            else None
+        )
+        probability_source = (
+            stack.enter_context(rasterio.open(crop_probability_path))
+            if crop_probability_path is not None
+            else None
+        )
+        raster_inputs = (
+            [(unusable_source, "Unusable mask")]
+            if unusable_source is not None
+            else []
+        )
+        if crop_source is not None and probability_source is not None:
+            raster_inputs.extend(
+                (
+                    (crop_source, "Crop binary mask"),
+                    (probability_source, "Crop probability"),
+                )
+            )
+        for item, name in raster_inputs:
             _validate_same_grid(source, item, name=name)
         if source.crs is None:
             raise ValueError("Source scene has no CRS")
         if max(band_indices) > source.count:
             raise ValueError("Condition band mapping references a missing source band")
 
-        float_profile = _raster_profile(source, dtype="float32", nodata=FLOAT_NODATA)
-        byte_profile = _raster_profile(source, dtype="uint8", nodata=BYTE_NODATA)
-        health_outputs = {
-            name: stack.enter_context(rasterio.open(path, "w", **float_profile))
-            for name, path in health_paths.items()
-        }
-        for name, destination in health_outputs.items():
-            destination.set_band_description(1, f"{name}; -9999 outside valid crop")
-        condition_output = stack.enter_context(
-            rasterio.open(condition_score_path, "w", **float_profile)
-        )
-        condition_output.set_band_description(1, "spectral condition score 0..100")
-        valid_output = stack.enter_context(rasterio.open(valid_mask_path, "w", **byte_profile))
-        valid_output.set_band_description(1, "0 excluded, 1 valid confident crop")
+        if crop_products is not None:
+            crop_binary_product = np.asarray(crop_products["crop_binary"])
+            crop_probability_product = np.asarray(
+                crop_products["crop_probability"], dtype=np.float32
+            )
+            expected_shape = (source.height, source.width)
+            if (
+                crop_binary_product.shape != expected_shape
+                or crop_probability_product.shape != expected_shape
+            ):
+                raise ValueError("In-memory crop products do not match the condition grid")
+            source_band_product = np.asarray(
+                crop_products["source_bands"], dtype=np.float32
+            )
+            model_band_product = np.asarray(
+                crop_products["model_bands"], dtype=np.float32
+            )
+            source_valid_product = np.asarray(
+                crop_products["source_valid_mask"], dtype=bool
+            )
+            unusable_product = np.asarray(
+                crop_products["unusable_mask"], dtype=np.uint8
+            )
+            product_band_indices = tuple(
+                int(value) for value in crop_products["source_band_indices"]
+            )
+            if (
+                source_band_product.shape != (4, *expected_shape)
+                or model_band_product.shape != (4, *expected_shape)
+                or source_valid_product.shape != expected_shape
+                or unusable_product.shape != expected_shape
+                or product_band_indices != tuple(band_indices)
+            ):
+                raise ValueError(
+                    "In-memory source products do not match the condition input contract"
+                )
+        else:
+            crop_binary_product = None
+            crop_probability_product = None
+            source_band_product = None
+            model_band_product = None
+            source_valid_product = None
+            unusable_product = None
+
+        health_outputs: dict[str, rasterio.io.DatasetWriter] = {}
+        condition_output = None
+        valid_output = None
+        if persist_rasters:
+            float_profile = _raster_profile(
+                source, dtype="float32", nodata=FLOAT_NODATA
+            )
+            byte_profile = _raster_profile(source, dtype="uint8", nodata=BYTE_NODATA)
+            health_outputs = {
+                name: stack.enter_context(rasterio.open(path, "w", **float_profile))
+                for name, path in health_paths.items()
+            }
+            for name, destination in health_outputs.items():
+                destination.set_band_description(
+                    1, f"{name}; -9999 outside valid crop"
+                )
+            condition_output = stack.enter_context(
+                rasterio.open(condition_score_path, "w", **float_profile)
+            )
+            condition_output.set_band_description(1, "spectral condition score 0..100")
+            valid_output = stack.enter_context(
+                rasterio.open(valid_mask_path, "w", **byte_profile)
+            )
+            valid_output.set_band_description(1, "0 excluded, 1 valid confident crop")
+            health_products = None
+            condition_product = None
+            valid_product = None
+        else:
+            health_products = {
+                name: np.full(
+                    (source.height, source.width), np.nan, dtype=np.float32
+                )
+                for name in HEALTH_LAYER_NAMES
+            }
+            condition_product = np.full(
+                (source.height, source.width), np.nan, dtype=np.float32
+            )
+            valid_product = np.zeros(
+                (source.height, source.width), dtype=np.uint8
+            )
 
         windows = _iter_windows(source.width, source.height, tile_size)
         for window in windows:
-            pixel_ids = _window_pixel_ids(window, source.width)
-            raw_bands = source.read(
-                band_indices,
-                window=window,
-                out_dtype="float32",
+            input_read_started = time.perf_counter()
+            pixel_ids = (
+                None
+                if exact_percentiles
+                else _window_pixel_ids(window, source.width)
             )
-            if calibration is not None:
+            row_slice, column_slice = window.toslices()
+            raw_bands = (
+                source.read(
+                    band_indices,
+                    window=window,
+                    out_dtype="float32",
+                )
+                if source_band_product is None
+                else source_band_product[:, row_slice, column_slice]
+            )
+            can_reuse_model_bands = (
+                calibration is not None
+                and model_band_product is not None
+                and np.isclose(
+                    float(crop_products["model_scale_multiplier"]),
+                    float(calibration["source_scale_to_model_units"]),
+                )
+            )
+            if can_reuse_model_bands:
+                reflectance = (
+                    model_band_product[:, row_slice, column_slice]
+                    / np.float32(10_000.0)
+                )
+            elif calibration is not None:
                 model_values = apply_calibration(
                     raw_bands * np.float32(calibration["source_scale_to_model_units"]),
                     calibration,
@@ -650,16 +827,32 @@ def run_payload_condition(
                 reflectance = model_values / np.float32(10_000.0)
             else:
                 reflectance = raw_bands / reflectance_scale
-            source_valid = np.all(
-                source.read_masks(band_indices, window=window) > 0,
-                axis=0,
+            source_valid = (
+                np.all(
+                    source.read_masks(band_indices, window=window) > 0,
+                    axis=0,
+                )
+                if source_valid_product is None
+                else source_valid_product[row_slice, column_slice]
             )
-            crop_binary = crop_source.read(1, window=window)
-            unusable = unusable_source.read(1, window=window)
-            crop_probability = probability_source.read(
-                1,
-                window=window,
-                out_dtype="float32",
+            crop_binary = (
+                crop_source.read(1, window=window)
+                if crop_source is not None
+                else crop_binary_product[row_slice, column_slice]
+            )
+            unusable = (
+                unusable_source.read(1, window=window)
+                if unusable_source is not None
+                else unusable_product[row_slice, column_slice]
+            )
+            crop_probability = (
+                probability_source.read(
+                    1,
+                    window=window,
+                    out_dtype="float32",
+                )
+                if probability_source is not None
+                else crop_probability_product[row_slice, column_slice]
             )
             candidate_crop_pixels += int(np.count_nonzero((crop_binary == 1) & (unusable == 0)))
             requested_mask = build_analysis_mask(
@@ -669,6 +862,8 @@ def run_payload_condition(
                 minimum_crop_probability=health_crop_threshold,
                 nodata=~source_valid,
             )
+            input_read_seconds += time.perf_counter() - input_read_started
+            health_started = time.perf_counter()
             health_layers = calculate_health_layers(
                 reflectance[0],
                 reflectance[1],
@@ -676,27 +871,75 @@ def run_payload_condition(
                 reflectance[3],
                 requested_mask,
             )
+            health_calculation_seconds += time.perf_counter() - health_started
+            score_started = time.perf_counter()
             score_layers = calculate_condition_score_layers(health_layers, config=cfg)
+            score_calculation_seconds += time.perf_counter() - score_started
+            metric_futures = []
 
+            materialization_started = time.perf_counter()
             for name, values in health_layers.values.items():
-                _write_float_tile(health_outputs[name], values, window)
-                metric_accumulators[name].update(values, sample_ids=pixel_ids)
-            _write_float_tile(condition_output, score_layers.condition_score, window)
-            valid_output.write(
-                score_layers.valid_score_mask.astype(np.uint8),
-                1,
-                window=window,
+                if persist_rasters:
+                    _write_float_tile(health_outputs[name], values, window)
+                else:
+                    assert health_products is not None
+                    health_products[name][row_slice, column_slice] = values
+                metric_futures.append(
+                    metric_pool.submit(
+                        metric_accumulators[name].update,
+                        values,
+                        sample_ids=pixel_ids,
+                    )
+                )
+            if persist_rasters:
+                assert condition_output is not None
+                assert valid_output is not None
+                _write_float_tile(
+                    condition_output, score_layers.condition_score, window
+                )
+                valid_output.write(
+                    score_layers.valid_score_mask.astype(np.uint8),
+                    1,
+                    window=window,
+                )
+            else:
+                assert condition_product is not None
+                assert valid_product is not None
+                condition_product[row_slice, column_slice] = (
+                    score_layers.condition_score
+                )
+                valid_product[row_slice, column_slice] = (
+                    score_layers.valid_score_mask.astype(np.uint8)
+                )
+            product_materialization_seconds += (
+                time.perf_counter() - materialization_started
             )
-            condition_accumulator.update(
-                score_layers.condition_score,
-                sample_ids=pixel_ids,
+            metric_started = time.perf_counter()
+            metric_futures.append(
+                metric_pool.submit(
+                    condition_accumulator.update,
+                    score_layers.condition_score,
+                    sample_ids=pixel_ids,
+                )
             )
             for name, values in score_layers.component_scores.items():
-                component_accumulators[name].update(values, sample_ids=pixel_ids)
-            probability_accumulator.update(
-                np.where(score_layers.valid_score_mask, crop_probability, np.nan),
-                sample_ids=pixel_ids,
+                metric_futures.append(
+                    metric_pool.submit(
+                        component_accumulators[name].update,
+                        values,
+                        sample_ids=pixel_ids,
+                    )
+                )
+            metric_futures.append(
+                metric_pool.submit(
+                    probability_accumulator.update,
+                    np.where(score_layers.valid_score_mask, crop_probability, np.nan),
+                    sample_ids=pixel_ids,
+                )
             )
+            for future in metric_futures:
+                future.result()
+            metric_aggregation_seconds += time.perf_counter() - metric_started
             window_count += 1
 
         width = source.width
@@ -722,15 +965,29 @@ def run_payload_condition(
     median_absolute_deviation = 0.0
     if sufficient:
         deviation_accumulator = StreamingMetric("condition_absolute_deviation")
-        with rasterio.open(condition_score_path) as condition_source:
+        if persist_rasters:
+            condition_source_context = rasterio.open(condition_score_path)
+        else:
+            condition_source_context = None
+            assert condition_product is not None
+        with ExitStack() as stack:
+            condition_source = (
+                stack.enter_context(condition_source_context)
+                if condition_source_context is not None
+                else None
+            )
             for window in _iter_windows(width, height, tile_size):
                 pixel_ids = _window_pixel_ids(window, width)
-                score = condition_source.read(
-                    1,
-                    window=window,
-                    out_dtype="float32",
-                )
-                score[score == FLOAT_NODATA] = np.nan
+                if condition_source is not None:
+                    score = condition_source.read(
+                        1,
+                        window=window,
+                        out_dtype="float32",
+                    )
+                    score[score == FLOAT_NODATA] = np.nan
+                else:
+                    row_slice, column_slice = window.toslices()
+                    score = condition_product[row_slice, column_slice]
                 deviation_accumulator.update(
                     np.abs(score - float(median_score)),
                     sample_ids=pixel_ids,
@@ -742,27 +999,58 @@ def run_payload_condition(
     low_vigor_pixels = 0
     spatial_pass_started = time.perf_counter()
     with ExitStack() as stack:
-        condition_source = stack.enter_context(rasterio.open(condition_score_path))
-        float_profile = _raster_profile(condition_source, dtype="float32", nodata=FLOAT_NODATA)
-        byte_profile = _raster_profile(condition_source, dtype="uint8", nodata=BYTE_NODATA)
-        deficit_output = stack.enter_context(rasterio.open(deficit_path, "w", **float_profile))
-        relative_output = stack.enter_context(
-            rasterio.open(relative_anomaly_path, "w", **byte_profile)
-        )
-        low_output = stack.enter_context(rasterio.open(low_vigor_path, "w", **byte_profile))
-        alert_output = stack.enter_context(rasterio.open(alert_path, "w", **byte_profile))
-        deficit_output.set_band_description(1, "robust deficit z; -9999 excluded")
-        relative_output.set_band_description(1, "0 normal, 1 relative anomaly")
-        low_output.set_band_description(1, "0 above, 1 below absolute low-vigor threshold")
-        alert_output.set_band_description(1, "0 no alert, 1 spectral condition alert")
+        if persist_rasters:
+            condition_source = stack.enter_context(rasterio.open(condition_score_path))
+            float_profile = _raster_profile(
+                condition_source, dtype="float32", nodata=FLOAT_NODATA
+            )
+            byte_profile = _raster_profile(
+                condition_source, dtype="uint8", nodata=BYTE_NODATA
+            )
+            deficit_output = stack.enter_context(
+                rasterio.open(deficit_path, "w", **float_profile)
+            )
+            relative_output = stack.enter_context(
+                rasterio.open(relative_anomaly_path, "w", **byte_profile)
+            )
+            low_output = stack.enter_context(
+                rasterio.open(low_vigor_path, "w", **byte_profile)
+            )
+            alert_output = stack.enter_context(
+                rasterio.open(alert_path, "w", **byte_profile)
+            )
+            deficit_output.set_band_description(
+                1, "robust deficit z; -9999 excluded"
+            )
+            relative_output.set_band_description(1, "0 normal, 1 relative anomaly")
+            low_output.set_band_description(
+                1, "0 above, 1 below absolute low-vigor threshold"
+            )
+            alert_output.set_band_description(
+                1, "0 no alert, 1 spectral condition alert"
+            )
+            alert_product = None
+        else:
+            condition_source = None
+            deficit_output = None
+            relative_output = None
+            low_output = None
+            alert_output = None
+            alert_product = np.zeros((height, width), dtype=np.uint8)
 
         for window in _iter_windows(width, height, tile_size):
-            score = condition_source.read(
-                1,
-                window=window,
-                out_dtype="float32",
-            )
-            valid = np.isfinite(score) & (score != FLOAT_NODATA)
+            row_slice, column_slice = window.toslices()
+            if condition_source is not None:
+                score = condition_source.read(
+                    1,
+                    window=window,
+                    out_dtype="float32",
+                )
+                valid = np.isfinite(score) & (score != FLOAT_NODATA)
+            else:
+                assert condition_product is not None
+                score = condition_product[row_slice, column_slice]
+                valid = np.isfinite(score)
             if sufficient:
                 spatial = calculate_spatial_condition_layers(
                     score,
@@ -773,23 +1061,46 @@ def run_payload_condition(
                 )
                 relative_anomaly_pixels += int(np.count_nonzero(spatial.relative_anomaly_mask))
                 low_vigor_pixels += int(np.count_nonzero(spatial.low_vigor_mask))
-                _write_float_tile(deficit_output, spatial.robust_deficit_z, window)
-                relative_output.write(
-                    spatial.relative_anomaly_mask.astype(np.uint8), 1, window=window
-                )
-                low_output.write(spatial.low_vigor_mask.astype(np.uint8), 1, window=window)
-                alert_output.write(spatial.alert_mask.astype(np.uint8), 1, window=window)
+                if persist_rasters:
+                    assert deficit_output is not None
+                    assert relative_output is not None
+                    assert low_output is not None
+                    assert alert_output is not None
+                    _write_float_tile(
+                        deficit_output, spatial.robust_deficit_z, window
+                    )
+                    relative_output.write(
+                        spatial.relative_anomaly_mask.astype(np.uint8),
+                        1,
+                        window=window,
+                    )
+                    low_output.write(
+                        spatial.low_vigor_mask.astype(np.uint8), 1, window=window
+                    )
+                    alert_output.write(
+                        spatial.alert_mask.astype(np.uint8), 1, window=window
+                    )
+                else:
+                    assert alert_product is not None
+                    alert_product[row_slice, column_slice] = (
+                        spatial.alert_mask.astype(np.uint8)
+                    )
             else:
                 shape = (round(window.height), round(window.width))
-                _write_float_tile(
-                    deficit_output,
-                    np.full(shape, np.nan, dtype=np.float32),
-                    window,
-                )
-                zeros = np.zeros(shape, dtype=np.uint8)
-                relative_output.write(zeros, 1, window=window)
-                low_output.write(zeros, 1, window=window)
-                alert_output.write(zeros, 1, window=window)
+                if persist_rasters:
+                    assert deficit_output is not None
+                    assert relative_output is not None
+                    assert low_output is not None
+                    assert alert_output is not None
+                    _write_float_tile(
+                        deficit_output,
+                        np.full(shape, np.nan, dtype=np.float32),
+                        window,
+                    )
+                    zeros = np.zeros(shape, dtype=np.uint8)
+                    relative_output.write(zeros, 1, window=window)
+                    low_output.write(zeros, 1, window=window)
+                    alert_output.write(zeros, 1, window=window)
     spatial_pass_seconds = time.perf_counter() - spatial_pass_started
 
     component_medians = {
@@ -825,29 +1136,42 @@ def run_payload_condition(
         )
     preview_seconds = time.perf_counter() - preview_started
 
-    assets = {
-        **{name: health_paths[name] for name in HEALTH_LAYER_NAMES},
-        "condition_score": condition_score_path,
-        "valid_crop_mask": valid_mask_path,
-        "robust_deficit_z": deficit_path,
-        "relative_anomaly_mask": relative_anomaly_path,
-        "low_vigor_mask": low_vigor_path,
-        "alert_mask": alert_path,
-        **({"quicklook": quicklook_path} if save_diagnostic_preview else {}),
-    }
+    assets = (
+        {
+            **{name: health_paths[name] for name in HEALTH_LAYER_NAMES},
+            "condition_score": condition_score_path,
+            "valid_crop_mask": valid_mask_path,
+            "robust_deficit_z": deficit_path,
+            "relative_anomaly_mask": relative_anomaly_path,
+            "low_vigor_mask": low_vigor_path,
+            "alert_mask": alert_path,
+            **({"quicklook": quicklook_path} if save_diagnostic_preview else {}),
+        }
+        if persist_rasters
+        else {}
+    )
     raster_assets = {
         name: path.relative_to(output).as_posix() for name, path in sorted(assets.items())
     }
-    warnings.append(
-        "Percentiles use a deterministic priority-reservoir sample of at most "
-        "50,000 valid pixels per metric; means and standard deviations use all pixels."
-    )
+    if exact_percentiles:
+        warnings.append(
+            "Percentiles, means and standard deviations use every valid analysis pixel."
+        )
+    else:
+        warnings.append(
+            "Percentiles use a deterministic priority-reservoir sample of at most "
+            "50,000 valid pixels per metric; means and standard deviations use all pixels."
+        )
     warnings.append(
         "Single-scene condition labels are screening priorities, not disease diagnoses."
     )
     report = {
         "schema_version": "1.0",
-        "algorithm_version": PAYLOAD_CONDITION_ALGORITHM_VERSION,
+        "algorithm_version": (
+            "payload-condition-v2-exact-percentiles"
+            if exact_percentiles
+            else PAYLOAD_CONDITION_ALGORITHM_VERSION
+        ),
         "index_algorithm_version": INDEX_ALGORITHM_VERSION,
         "condition_algorithm_version": CONDITION_ALGORITHM_VERSION,
         "scene_id": scene_id,
@@ -891,9 +1215,21 @@ def run_payload_condition(
             "payload_result": str(result_path),
             "source_scene": str(original_source_path),
             "analysis_scene": str(source_path),
-            "unusable_mask": str(unusable_path),
-            "crop_binary": str(crop_binary_path),
-            "crop_probability": str(crop_probability_path),
+            "unusable_mask": (
+                str(unusable_path)
+                if unusable_path is not None
+                else "ephemeral_memory"
+            ),
+            "crop_binary": (
+                str(crop_binary_path)
+                if crop_binary_path is not None
+                else "ephemeral_memory"
+            ),
+            "crop_probability": (
+                str(crop_probability_path)
+                if crop_probability_path is not None
+                else "ephemeral_memory"
+            ),
         },
         "runtime": {
             "seconds": time.perf_counter() - started,
@@ -901,11 +1237,47 @@ def run_payload_condition(
             "first_pass_windows": window_count,
             "passes": 3 if sufficient else 2,
             "first_pass_seconds": first_pass_seconds,
+            "input_read_seconds": input_read_seconds,
+            "health_calculation_seconds": health_calculation_seconds,
+            "score_calculation_seconds": score_calculation_seconds,
+            "metric_aggregation_seconds": metric_aggregation_seconds,
+            "product_materialization_seconds": product_materialization_seconds,
             "robust_statistics_seconds": robust_statistics_seconds,
             "spatial_pass_seconds": spatial_pass_seconds,
             "preview_seconds": preview_seconds,
+            "product_storage": (
+                "geotiff" if persist_rasters else "ephemeral_memory"
+            ),
         },
         "warnings": warnings,
     }
-    _write_json_atomic(report_path, report)
+    if not persist_rasters:
+        assert health_products is not None
+        assert condition_product is not None
+        assert valid_product is not None
+        assert alert_product is not None
+        assert crop_binary_product is not None
+        report["_products"] = {
+            **health_products,
+            "condition_score": condition_product,
+            "valid_crop_mask": valid_product,
+            "alert_mask": alert_product,
+            "crop_binary": crop_binary_product,
+            "unusable_mask": unusable_product,
+            "source_bands": source_band_product,
+            "source_band_indices": product_band_indices,
+            "source_valid_mask": source_valid_product,
+            **(
+                {
+                    "semantic_mask": crop_products["semantic_mask"],
+                    "invalid_mask": crop_products["invalid_mask"],
+                }
+                if crop_products is not None
+                and "semantic_mask" in crop_products
+                and "invalid_mask" in crop_products
+                else {}
+            ),
+        }
+    serializable_report = {key: value for key, value in report.items() if key != "_products"}
+    _write_json_atomic(report_path, serializable_report)
     return report

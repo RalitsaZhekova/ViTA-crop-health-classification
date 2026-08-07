@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 from cloud_detection.backend import CloudBackend
 from cloud_detection.config import load_config
 
+from prithvi_payload.balkan_crop_calibration import ADAPTER_MODE
 from prithvi_payload.cloud_classifier import DEFAULT_CLOUD_CONFIG, load_cloud_model
 from prithvi_payload.cloud_executor import execute_cloud_stage
 from prithvi_payload.cloud_stage import build_cloud_stage_plan
@@ -19,7 +21,13 @@ from prithvi_payload.crop_stage import (
     build_crop_stage_plan,
 )
 from prithvi_payload.downlink import DEFAULT_GRID_SIZE, DEFAULT_MAX_IMAGE_DIMENSION
+from prithvi_payload.runtime_config import environment_flag
 from prithvi_payload.scene_intake import inspect_scene
+
+_CPU_OVERLAP_POOL = ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="payload-overlap",
+)
 
 
 def _write_json(path: Path, value: dict[str, Any]) -> None:
@@ -65,6 +73,9 @@ def run_scene(
         raise ValueError("condition_tile_size must be positive")
     if downlink_max_image_dimension <= 0 or downlink_grid_size <= 0:
         raise ValueError("Downlink image and grid dimensions must be positive")
+    compact_payload = stop_after == "downlink" and environment_flag(
+        "VITA_COMPACT_PAYLOAD_PIPELINE", False
+    )
     output_root = Path(output_root)
     intake_started = time.perf_counter()
     intake = inspect_scene(
@@ -145,6 +156,45 @@ def run_scene(
         result["status"] = "BLOCKED_AT_CLOUD_PLAN"
         return _finish(output_root, result)
 
+    prepared_rgb_future: Future[dict[str, Any]] | None = None
+    if compact_payload:
+        from prithvi_payload.downlink import prepare_rgb_preview
+
+        analysis = intake.get("analysis")
+        use_shared_analysis = sensor == "balkan-1" and isinstance(analysis, dict)
+        rgb_source = (
+            analysis["source_path"] if use_shared_analysis else intake["source_path"]
+        )
+        rgb_mapping = (
+            analysis.get("logical_band_mapping", {})
+            if use_shared_analysis
+            else intake.get("logical_band_mapping", {})
+        )
+        crop_route = intake.get("model_band_routes", {}).get(
+            "crop_classification", {}
+        )
+        spectral_adapter = crop_route.get("spectral_adapter")
+        calibrated_balkan = (
+            sensor == "balkan-1"
+            and isinstance(spectral_adapter, dict)
+            and spectral_adapter.get("mode") == ADAPTER_MODE
+        )
+        rgb_scale = 10_000.0 if calibrated_balkan else float(
+            plan["input"]["reflectance_scale"]
+        )
+        prepared_rgb_future = _CPU_OVERLAP_POOL.submit(
+            prepare_rgb_preview,
+            rgb_source,
+            mapping=rgb_mapping,
+            spectral_adapter=(
+                spectral_adapter if isinstance(spectral_adapter, dict) else None
+            ),
+            original_source_path=Path(intake["source_path"]),
+            sensor=sensor,
+            reflectance_scale=rgb_scale,
+            maximum_dimension=downlink_max_image_dimension,
+        )
+
     if cloud_backend is None:
         runtime = load_cloud_model(cloud_config_path)
         cloud_backend = runtime.backend
@@ -156,7 +206,9 @@ def run_scene(
         output_root=output_root,
         backend=cloud_backend,
         config=cloud_config,
+        persist_rasters=not compact_payload,
     )
+    cloud_products = cloud_metadata.pop("_products", None)
     result["completed_stages"].append("cloud")
     result["status"] = "CLOUD_COMPLETE"
     result["cloud_decision"] = cloud_metadata["decision"]
@@ -190,6 +242,8 @@ def run_scene(
         crop_model=crop_model,
         acquisition_metadata=acquisition_metadata,
         progress_callback=progress_callback,
+        cloud_products=cloud_products,
+        prepared_rgb_future=prepared_rgb_future,
     )
 
 
@@ -206,6 +260,8 @@ def continue_scene_from_cloud(
     crop_model: Any | None = None,
     acquisition_metadata: dict[str, Any] | None = None,
     progress_callback: Callable[[str], None] | None = None,
+    cloud_products: dict[str, Any] | None = None,
+    prepared_rgb_future: Future[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Continue from one completed cloud stage without executing cloud inference again."""
     if stop_after not in {"crop", "condition", "downlink"}:
@@ -249,6 +305,7 @@ def continue_scene_from_cloud(
         plan,
         cloud_metadata,
         max_cloud_percentage=max_cloud_percentage,
+        unusable_mask_available=cloud_products is not None,
     )
     crop_plan_path = output_root / "metadata" / f"{resolved_scene_id}_crop_plan.json"
     _write_json(crop_plan_path, crop_plan)
@@ -275,11 +332,17 @@ def continue_scene_from_cloud(
 
     if progress_callback is not None:
         progress_callback("running_crop")
+    compact_payload = stop_after == "downlink" and environment_flag(
+        "VITA_COMPACT_PAYLOAD_PIPELINE", False
+    )
     crop_metadata = execute_crop_stage(
         crop_plan,
         output_root=output_root,
         model=crop_model,
+        persist_rasters=not compact_payload,
+        cloud_products=cloud_products,
     )
+    crop_products = crop_metadata.pop("_products", None)
     result["completed_stages"].append("crop")
     result["status"] = "CROP_COMPLETE"
     result["crop_decision"] = "CLASSIFIED"
@@ -313,7 +376,10 @@ def continue_scene_from_cloud(
         region_id=region_id,
         tile_size=condition_tile_size,
         overwrite=overwrite,
+        crop_products=crop_products,
+        persist_rasters=not compact_payload,
     )
+    condition_products = condition_report.pop("_products", None)
     condition_report_path = condition_root / "crop_condition_report.json"
     result["completed_stages"].append("condition")
     result["status"] = "CONDITION_COMPLETE"
@@ -347,7 +413,14 @@ def continue_scene_from_cloud(
         max_image_dimension=downlink_max_image_dimension,
         grid_size=downlink_grid_size,
         overwrite=overwrite,
+        products=condition_products,
+        prepared_rgb=(
+            prepared_rgb_future.result()
+            if prepared_rgb_future is not None
+            else None
+        ),
     )
+    packaging_detail = downlink.pop("_runtime", {})
     packaging_seconds = time.perf_counter() - packaging_started
     downlink_files = {
         "metadata": downlink_root / "scene.json",
@@ -373,6 +446,6 @@ def continue_scene_from_cloud(
         "product_type": downlink["product_type"],
         "algorithm_version": downlink["algorithm_version"],
         "package": downlink["package"],
-        "runtime": {"seconds": packaging_seconds},
+        "runtime": {"seconds": packaging_seconds, **packaging_detail},
     }
     return _finish(output_root, result)

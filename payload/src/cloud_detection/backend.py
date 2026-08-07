@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -126,6 +127,10 @@ class OmniCloudMaskBackend:
         self.patch_overlap = patch_overlap
         self.batch_size = batch_size
         self.weights_folder = Path(weights_folder)
+        requested_backend = os.environ.get("VITA_CLOUD_BACKEND", "pytorch").strip().casefold()
+        if requested_backend not in {"pytorch", "tensorrt"}:
+            raise BackendError("VITA_CLOUD_BACKEND must be pytorch or tensorrt")
+        self.execution_backend = requested_backend
 
         actual_ensemble_sha256 = ensemble_sha256(self.weights_folder)
         if expected_sha256 is not None and actual_ensemble_sha256 != expected_sha256:
@@ -135,7 +140,7 @@ class OmniCloudMaskBackend:
             )
 
         try:
-            self.models = collect_models(
+            models = collect_models(
                 custom_models=None,
                 inference_device=self.device,
                 inference_dtype=self._torch_dtype,
@@ -146,6 +151,18 @@ class OmniCloudMaskBackend:
                 patch_size=self.patch_size,
                 batch_size=self.batch_size,
             )
+            if requested_backend == "tensorrt":
+                from cloud_detection.tensorrt_backend import CloudTensorRTRouter
+
+                self._tensorrt_router = CloudTensorRTRouter(
+                    models,
+                    device=self.device,
+                    dtype=self._torch_dtype,
+                )
+                self.models = [self._tensorrt_router]
+            else:
+                self._tensorrt_router = None
+                self.models = models
         except Exception as exc:
             raise BackendError(
                 "Could not load the verified OmniCloudMask V4 ensemble. Run "
@@ -264,3 +281,17 @@ class OmniCloudMaskBackend:
             {"batch_size": batch_size, "patch_size": patch_size}
             for batch_size, patch_size in sorted(profiles)
         ]
+
+    @property
+    def tensorrt_engine_count(self) -> int:
+        router = self._tensorrt_router
+        return router.engine_count if router is not None else 0
+
+    @property
+    def tensorrt_profiles(self) -> list[dict[str, object]]:
+        router = self._tensorrt_router
+        return router.profiles if router is not None else []
+
+    def freeze_tensorrt_profiles(self) -> None:
+        if self._tensorrt_router is not None:
+            self._tensorrt_router.freeze()

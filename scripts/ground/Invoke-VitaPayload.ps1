@@ -203,10 +203,10 @@ if (-not $SkipDashboard) {
     status = 'MVP_READY'
     job_id = $JobId
     payload_seconds = $response.payload_seconds
+    under_two_seconds = $response.under_two_seconds
     under_five_seconds = $response.under_five_seconds
     acceleration = $response.stack
     downlink = $downlinkRoot
     ingest = $ingest
     dashboard = if ($SkipDashboard) { $null } else { 'http://127.0.0.1:8000/' }
 } | ConvertTo-Json -Depth 8
-

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from contextlib import ExitStack
 from pathlib import Path
@@ -24,7 +25,8 @@ from prithvi_payload.balkan_crop_calibration import (
     load_calibration,
 )
 from prithvi_payload.inference import PayloadCropModel
-from prithvi_payload.raster_ops import read_padded_tile
+from prithvi_payload.raster_ops import read_padded_array, read_padded_tile
+from prithvi_payload.runtime_config import environment_flag
 
 FLOAT_NODATA = -9999.0
 BYTE_NODATA = 255
@@ -97,12 +99,18 @@ def _probability_profile(source: rasterio.DatasetReader) -> dict[str, Any]:
         count=1,
         dtype="float32",
         nodata=FLOAT_NODATA,
-        compress="deflate",
-        predictor=3,
-        zlevel=1,
-        num_threads="ALL_CPUS",
         BIGTIFF="IF_SAFER",
     )
+    if environment_flag("VITA_FAST_INTERMEDIATE_RASTERS", False):
+        for option in ("compress", "predictor", "zlevel", "num_threads"):
+            profile.pop(option, None)
+    else:
+        profile.update(
+            compress="deflate",
+            predictor=3,
+            zlevel=1,
+            num_threads="ALL_CPUS",
+        )
     return profile
 
 
@@ -112,12 +120,18 @@ def _binary_profile(source: rasterio.DatasetReader) -> dict[str, Any]:
         count=1,
         dtype="uint8",
         nodata=BYTE_NODATA,
-        compress="deflate",
-        predictor=2,
-        zlevel=1,
-        num_threads="ALL_CPUS",
         BIGTIFF="IF_SAFER",
     )
+    if environment_flag("VITA_FAST_INTERMEDIATE_RASTERS", False):
+        for option in ("compress", "predictor", "zlevel", "num_threads"):
+            profile.pop(option, None)
+    else:
+        profile.update(
+            compress="deflate",
+            predictor=2,
+            zlevel=1,
+            num_threads="ALL_CPUS",
+        )
     return profile
 
 
@@ -243,6 +257,8 @@ def _execute_native_crop_stage(
     *,
     output_root: str | Path,
     model: PayloadCropModel | None = None,
+    persist_rasters: bool = True,
+    cloud_products: dict[str, np.ndarray] | None = None,
 ) -> dict[str, Any]:
     """Execute a ready crop plan and mask every unusable output pixel."""
     if plan.get("readiness") != "READY":
@@ -258,7 +274,13 @@ def _execute_native_crop_stage(
     preview_path = output_root / "visualisations" / f"{stem}_crop.png"
     metadata_path = output_root / "metadata" / f"{stem}_crop.json"
     save_diagnostic_preview = bool(plan.get("execution", {}).get("save_preview", False))
-    output_paths = [probability_path, binary_path, confidence_path, metadata_path]
+    if save_diagnostic_preview and not persist_rasters:
+        raise ValueError("Diagnostic crop previews require persisted crop rasters")
+    output_paths = (
+        [probability_path, binary_path, confidence_path, metadata_path]
+        if persist_rasters
+        else [metadata_path]
+    )
     if save_diagnostic_preview:
         output_paths.append(preview_path)
     for path in output_paths:
@@ -267,7 +289,10 @@ def _execute_native_crop_stage(
     blend_weight_path.unlink(missing_ok=True)
 
     source_path = Path(plan["source_path"])
-    unusable_path = Path(plan["input"]["unusable_mask"])
+    unusable_value = plan["input"].get("unusable_mask")
+    unusable_path = Path(unusable_value) if isinstance(unusable_value, str) else None
+    if unusable_path is None and cloud_products is None:
+        raise ValueError("Crop execution requires a persisted or in-memory unusable mask")
     indices = list(plan["input"]["source_band_indices_1_based"])
     multiplier = float(plan["input"]["training_scale_multiplier"])
     adapter = plan["input"].get("spectral_adapter")
@@ -309,52 +334,128 @@ def _execute_native_crop_stage(
     skipped_tile_count = 0
     inference_seconds = 0.0
 
-    with (
-        rasterio.open(source_path) as source,
-        rasterio.open(unusable_path) as unusable_source,
-        ExitStack() as stack,
-    ):
+    with rasterio.open(source_path) as source, ExitStack() as stack:
+        unusable_source = (
+            stack.enter_context(rasterio.open(unusable_path))
+            if unusable_path is not None
+            else None
+        )
         if max(indices) > source.count or len(set(indices)) != 4:
             raise ValueError("Crop source-band indices do not match the GeoTIFF")
-        if (
-            source.width != unusable_source.width
-            or source.height != unusable_source.height
-            or source.crs != unusable_source.crs
-            or source.transform != unusable_source.transform
-        ):
-            raise ValueError("Crop input and unusable mask are not on the same grid")
+        if unusable_source is not None:
+            if (
+                source.width != unusable_source.width
+                or source.height != unusable_source.height
+                or source.crs != unusable_source.crs
+                or source.transform != unusable_source.transform
+            ):
+                raise ValueError("Crop input and unusable mask are not on the same grid")
+            cloud_unusable_product = None
+        else:
+            assert cloud_products is not None
+            cloud_unusable_product = np.asarray(
+                cloud_products["unusable_mask"], dtype=np.uint8
+            )
+            if cloud_unusable_product.shape != (source.height, source.width):
+                raise ValueError("In-memory unusable mask is not on the crop grid")
 
-        probability_output = stack.enter_context(
-            rasterio.open(probability_path, "w", **_probability_profile(source))
-        )
-        binary_output = stack.enter_context(
-            rasterio.open(binary_path, "w", **_binary_profile(source))
-        )
-        confidence_output = stack.enter_context(
-            rasterio.open(confidence_path, "w", **_probability_profile(source))
-        )
-        probability_output.set_band_description(1, "crop probability; -9999 unusable")
-        binary_output.set_band_description(1, "0 non-crop, 1 crop, 255 unusable")
-        confidence_output.set_band_description(1, "winning-class confidence; -9999 unusable")
+        probability_output = None
+        binary_output = None
+        confidence_output = None
+        if persist_rasters:
+            probability_output = stack.enter_context(
+                rasterio.open(probability_path, "w", **_probability_profile(source))
+            )
+            binary_output = stack.enter_context(
+                rasterio.open(binary_path, "w", **_binary_profile(source))
+            )
+            confidence_output = stack.enter_context(
+                rasterio.open(confidence_path, "w", **_probability_profile(source))
+            )
+            probability_output.set_band_description(1, "crop probability; -9999 unusable")
+            binary_output.set_band_description(1, "0 non-crop, 1 crop, 255 unusable")
+            confidence_output.set_band_description(
+                1, "winning-class confidence; -9999 unusable"
+            )
+            probability_product = None
+            binary_product = None
+        else:
+            probability_product = np.full(
+                (source.height, source.width), FLOAT_NODATA, dtype=np.float32
+            )
+            binary_product = np.full(
+                (source.height, source.width), BYTE_NODATA, dtype=np.uint8
+            )
+            if cloud_products is not None and "source_bands" in cloud_products:
+                cloud_indices = tuple(
+                    int(value) for value in cloud_products["source_band_indices"]
+                )
+                try:
+                    source_positions = [cloud_indices.index(index) for index in indices]
+                except ValueError as error:
+                    raise ValueError(
+                        "In-memory cloud source does not provide all crop bands"
+                    ) from error
+                source_band_product = np.asarray(
+                    cloud_products["source_bands"], dtype=np.float32
+                )[source_positions]
+                source_valid_product = np.asarray(
+                    cloud_products["source_valid_mask"], dtype=bool
+                )
+            else:
+                source_band_product = source.read(
+                    indices,
+                    out_dtype="float32",
+                )
+                source_valid_product = np.all(
+                    source.read_masks(indices) > 0,
+                    axis=0,
+                )
+            if (
+                source_band_product.shape != (4, source.height, source.width)
+                or source_valid_product.shape != (source.height, source.width)
+            ):
+                raise ValueError("In-memory source bands are not on the crop grid")
+            model_band_product = source_band_product * np.float32(multiplier)
+            if calibration is not None:
+                model_band_product = apply_calibration(
+                    model_band_product,
+                    calibration,
+                )
+            unusable_product = np.ones(
+                (source.height, source.width), dtype=np.uint8
+            )
 
-        probability_sum = np.memmap(
-            blend_sum_path,
-            mode="w+",
-            dtype=np.float32,
-            shape=(source.height, source.width),
+        blend_bytes = source.height * source.width * np.dtype(np.float32).itemsize * 2
+        in_memory_limit = int(
+            os.environ.get("VITA_CROP_IN_MEMORY_MAX_BYTES", str(1024**3))
         )
-        probability_sum[:] = 0.0
-        stack.callback(blend_sum_path.unlink, missing_ok=True)
-        stack.callback(probability_sum._mmap.close)
-        probability_weight = np.memmap(
-            blend_weight_path,
-            mode="w+",
-            dtype=np.float32,
-            shape=(source.height, source.width),
+        use_in_memory_blend = (
+            environment_flag("VITA_CROP_IN_MEMORY", True)
+            and blend_bytes <= in_memory_limit
         )
-        probability_weight[:] = 0.0
-        stack.callback(blend_weight_path.unlink, missing_ok=True)
-        stack.callback(probability_weight._mmap.close)
+        if use_in_memory_blend:
+            probability_sum = np.zeros((source.height, source.width), dtype=np.float32)
+            probability_weight = np.zeros_like(probability_sum)
+        else:
+            probability_sum = np.memmap(
+                blend_sum_path,
+                mode="w+",
+                dtype=np.float32,
+                shape=(source.height, source.width),
+            )
+            probability_sum[:] = 0.0
+            stack.callback(blend_sum_path.unlink, missing_ok=True)
+            stack.callback(probability_sum._mmap.close)
+            probability_weight = np.memmap(
+                blend_weight_path,
+                mode="w+",
+                dtype=np.float32,
+                shape=(source.height, source.width),
+            )
+            probability_weight[:] = 0.0
+            stack.callback(blend_weight_path.unlink, missing_ok=True)
+            stack.callback(probability_weight._mmap.close)
         tile_weight = _tile_blend_weights(tile_size, halo)
 
         pending: list[dict[str, Any]] = []
@@ -402,54 +503,104 @@ def _execute_native_crop_stage(
             core_height = min(core_size, source.height - y)
             for x in range(0, source.width, core_size):
                 core_width = min(core_size, source.width - x)
-                unusable_tile = read_padded_tile(
-                    unusable_source,
-                    [1],
-                    y=y,
-                    x=x,
-                    tile_size=tile_size,
-                    halo=halo,
-                    out_dtype="float32",
-                )[0].astype(bool)
+                unusable_tile = (
+                    read_padded_tile(
+                        unusable_source,
+                        [1],
+                        y=y,
+                        x=x,
+                        tile_size=tile_size,
+                        halo=halo,
+                        out_dtype="float32",
+                    )[0].astype(bool)
+                    if unusable_source is not None
+                    else read_padded_array(
+                        cloud_unusable_product[np.newaxis, ...],
+                        y=y,
+                        x=x,
+                        tile_size=tile_size,
+                        halo=halo,
+                    )[0].astype(bool)
+                )
                 core_slice = (
                     slice(halo, halo + core_height),
                     slice(halo, halo + core_width),
                 )
                 unusable_core = unusable_tile[core_slice]
                 output_window = RasterWindow(x, y, core_width, core_height)
+                if not persist_rasters:
+                    assert unusable_product is not None
+                    unusable_product[
+                        y : y + core_height,
+                        x : x + core_width,
+                    ] = unusable_core.astype(np.uint8)
                 usable_in_core = int(np.count_nonzero(~unusable_core))
                 tile_count += 1
                 if usable_in_core == 0:
-                    probability_output.write(
-                        np.full((core_height, core_width), FLOAT_NODATA, dtype=np.float32),
-                        1,
-                        window=output_window,
-                    )
-                    binary_output.write(
-                        np.full((core_height, core_width), BYTE_NODATA, dtype=np.uint8),
-                        1,
-                        window=output_window,
-                    )
-                    confidence_output.write(
-                        np.full((core_height, core_width), FLOAT_NODATA, dtype=np.float32),
-                        1,
-                        window=output_window,
-                    )
+                    if persist_rasters:
+                        assert probability_output is not None
+                        assert binary_output is not None
+                        assert confidence_output is not None
+                        probability_output.write(
+                            np.full(
+                                (core_height, core_width),
+                                FLOAT_NODATA,
+                                dtype=np.float32,
+                            ),
+                            1,
+                            window=output_window,
+                        )
+                        binary_output.write(
+                            np.full(
+                                (core_height, core_width),
+                                BYTE_NODATA,
+                                dtype=np.uint8,
+                            ),
+                            1,
+                            window=output_window,
+                        )
+                        confidence_output.write(
+                            np.full(
+                                (core_height, core_width),
+                                FLOAT_NODATA,
+                                dtype=np.float32,
+                            ),
+                            1,
+                            window=output_window,
+                        )
                     skipped_tile_count += 1
                     continue
 
-                raw_tile = read_padded_tile(
-                    source,
-                    indices,
-                    y=y,
-                    x=x,
-                    tile_size=tile_size,
-                    halo=halo,
-                    out_dtype="float32",
-                )
-                image = raw_tile * np.float32(multiplier)
-                if calibration is not None:
-                    image = apply_calibration(image, calibration)
+                if persist_rasters:
+                    raw_tile = read_padded_tile(
+                        source,
+                        indices,
+                        y=y,
+                        x=x,
+                        tile_size=tile_size,
+                        halo=halo,
+                        out_dtype="float32",
+                    )
+                    image = raw_tile * np.float32(multiplier)
+                    if calibration is not None:
+                        image = apply_calibration(image, calibration)
+                else:
+                    assert source_band_product is not None
+                    assert model_band_product is not None
+                    raw_tile = read_padded_array(
+                        source_band_product,
+                        y=y,
+                        x=x,
+                        tile_size=tile_size,
+                        halo=halo,
+                    )
+                    image = read_padded_array(
+                        model_band_product,
+                        y=y,
+                        x=x,
+                        tile_size=tile_size,
+                        halo=halo,
+                    )
                 invalid = ~np.isfinite(image).all(axis=0)
                 if source.nodata is not None:
                     if calibration is not None:
@@ -475,14 +626,20 @@ def _execute_native_crop_stage(
                 if len(pending) >= batch_size:
                     flush_pending()
         flush_pending()
-        probability_sum.flush()
-        probability_weight.flush()
+        if isinstance(probability_sum, np.memmap):
+            probability_sum.flush()
+        if isinstance(probability_weight, np.memmap):
+            probability_weight.flush()
 
         for _, window in source.block_windows(1):
             row_slice, column_slice = window.toslices()
             weights = np.asarray(probability_weight[row_slice, column_slice])
             sums = np.asarray(probability_sum[row_slice, column_slice])
-            unusable = unusable_source.read(1, window=window).astype(bool)
+            unusable = (
+                unusable_source.read(1, window=window).astype(bool)
+                if unusable_source is not None
+                else cloud_unusable_product[row_slice, column_slice].astype(bool)
+            )
             has_prediction = weights > 0
             if np.any(~unusable & ~has_prediction):
                 raise RuntimeError("Crop probability blending left usable pixels uncovered")
@@ -502,9 +659,18 @@ def _execute_native_crop_stage(
             probability[~usable] = FLOAT_NODATA
             binary[~usable] = BYTE_NODATA
             confidence[~usable] = FLOAT_NODATA
-            probability_output.write(probability, 1, window=window)
-            binary_output.write(binary, 1, window=window)
-            confidence_output.write(confidence, 1, window=window)
+            if persist_rasters:
+                assert probability_output is not None
+                assert binary_output is not None
+                assert confidence_output is not None
+                probability_output.write(probability, 1, window=window)
+                binary_output.write(binary, 1, window=window)
+                confidence_output.write(confidence, 1, window=window)
+            else:
+                assert probability_product is not None
+                assert binary_product is not None
+                probability_product[row_slice, column_slice] = probability
+                binary_product[row_slice, column_slice] = binary
         width, height = source.width, source.height
 
         if save_diagnostic_preview:
@@ -571,7 +737,11 @@ def _execute_native_crop_stage(
             else None
         ),
         "mask_application": {
-            "source": str(unusable_path.resolve()),
+            "source": (
+                str(unusable_path.resolve())
+                if unusable_path is not None
+                else "ephemeral_memory"
+            ),
             "semantics": "0 usable, 1 unusable",
             "unusable_pixels_excluded_from_inference_output": True,
             "cloud_pixels_preserved_during_inference": True,
@@ -592,6 +762,8 @@ def _execute_native_crop_stage(
             "stitching_policy": "linear_overlap_weighted_probability",
             "overlap_pixels": 2 * halo,
             "batch_size": batch_size,
+            "blend_storage": "memory" if use_in_memory_blend else "disk_memmap",
+            "blend_buffer_bytes": blend_bytes,
         },
         "usable_pixels": usable_count,
         "usable_percentage": 100.0 * usable_count / total_pixels if total_pixels else 0.0,
@@ -603,9 +775,15 @@ def _execute_native_crop_stage(
         ),
         "mean_confidence_usable": confidence_total / usable_count if usable_count else None,
         "output_files": {
-            "crop_probability": str(probability_path.resolve()),
-            "crop_binary": str(binary_path.resolve()),
-            "crop_confidence": str(confidence_path.resolve()),
+            **(
+                {
+                    "crop_probability": str(probability_path.resolve()),
+                    "crop_binary": str(binary_path.resolve()),
+                    "crop_confidence": str(confidence_path.resolve()),
+                }
+                if persist_rasters
+                else {}
+            ),
             "metadata": str(metadata_path.resolve()),
             **(
                 {"preview": str(preview_path.resolve())}
@@ -615,7 +793,30 @@ def _execute_native_crop_stage(
         },
         "warnings": plan.get("warnings", []),
     }
-    metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+    if not persist_rasters:
+        metadata["runtime"]["product_storage"] = "ephemeral_memory"
+        metadata["_products"] = {
+            "crop_probability": probability_product,
+            "crop_binary": binary_product,
+            "source_bands": source_band_product,
+            "model_bands": model_band_product,
+            "model_scale_multiplier": multiplier,
+            "source_band_indices": tuple(indices),
+            "source_valid_mask": source_valid_product,
+            "unusable_mask": unusable_product,
+            **(
+                {
+                    "semantic_mask": cloud_products["semantic_mask"],
+                    "invalid_mask": cloud_products["invalid_mask"],
+                }
+                if cloud_products is not None
+                else {}
+            ),
+        }
+    serializable_metadata = {key: value for key, value in metadata.items() if key != "_products"}
+    metadata_path.write_text(
+        json.dumps(serializable_metadata, indent=2) + "\n", encoding="utf-8"
+    )
     return metadata
 
 
@@ -624,6 +825,14 @@ def execute_crop_stage(
     *,
     output_root: str | Path,
     model: PayloadCropModel | None = None,
+    persist_rasters: bool = True,
+    cloud_products: dict[str, np.ndarray] | None = None,
 ) -> dict[str, Any]:
     """Execute crop inference on the plan's already prepared science grid."""
-    return _execute_native_crop_stage(plan, output_root=output_root, model=model)
+    return _execute_native_crop_stage(
+        plan,
+        output_root=output_root,
+        model=model,
+        persist_rasters=persist_rasters,
+        cloud_products=cloud_products,
+    )

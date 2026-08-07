@@ -26,7 +26,9 @@ from prithvi_shared import (
 from torch import Tensor, nn
 
 PAYLOAD_ROOT = Path(__file__).resolve().parents[2]
-OPTIMIZED_BATCH_SIZE = 4
+OPTIMIZED_BATCH_SIZE = int(os.environ.get("VITA_CROP_BATCH_SIZE", "4"))
+if not 1 <= OPTIMIZED_BATCH_SIZE <= 16:
+    raise RuntimeError("VITA_CROP_BATCH_SIZE must be within 1..16")
 
 
 def _environment_flag(name: str, default: bool) -> bool:
@@ -102,7 +104,8 @@ def _optimized_model_path(model_directory: Path, device: torch.device) -> Path:
     version = SELECTED_CHECKPOINT_SHA256[:12]
     torch_version = torch.__version__.split("+", maxsplit=1)[0].replace(".", "_")
     return _model_cache_directory(model_directory) / (
-        f"{checkpoint_stem}.{version}.torch_{torch_version}.{device.type}.export.pt2"
+        f"{checkpoint_stem}.{version}.torch_{torch_version}.{device.type}."
+        f"batch_{OPTIMIZED_BATCH_SIZE}.export.pt2"
     )
 
 
@@ -148,7 +151,7 @@ def _compile_tensorrt(
     exported_program: Any,
     *,
     device: torch.device,
-) -> tuple[nn.Module, int]:
+) -> tuple[nn.Module, int, dict[str, float]]:
     """Compile and cache the fixed crop graph with the Jetson Torch-TensorRT stack."""
     if device.type != "cuda":
         raise RuntimeError("TensorRT crop inference requires a CUDA device")
@@ -172,6 +175,9 @@ def _compile_tensorrt(
         require_full_compilation=_environment_flag("VITA_TRT_REQUIRE_FULL", False),
         pass_through_build_failures=True,
         optimization_level=int(os.environ.get("VITA_TRT_OPTIMIZATION_LEVEL", "3")),
+        num_avg_timing_iters=int(
+            os.environ.get("VITA_TRT_NUM_AVG_TIMING_ITERS", "3")
+        ),
         workspace_size=int(os.environ.get("VITA_TRT_WORKSPACE_BYTES", str(2 * 1024**3))),
         timing_cache_path=str(cache_root / "timing-cache.bin"),
         cache_built_engines=True,
@@ -192,7 +198,57 @@ def _compile_tensorrt(
     engine_count = max(engine_nodes, engine_modules)
     if engine_count < 1:
         raise RuntimeError("Torch-TensorRT produced no TensorRT engine partitions")
-    return compiled, engine_count
+
+    # Validate the exact compiled fixed-batch contract against the exported
+    # PyTorch graph before discarding the reference implementation. The probe is
+    # deterministic and exercises non-zero reflectance, time, and location inputs.
+    generator = torch.Generator(device=device).manual_seed(17)
+    parity_inputs = list(_example_inputs(device))
+    parity_inputs[0].normal_(mean=0.0, std=1.0, generator=generator)
+    parity_inputs[1][:, :, 0] = 2026.0
+    parity_inputs[1][:, :, 1] = 187.0
+    parity_inputs[2][:, 0] = 42.7
+    parity_inputs[2][:, 1] = 23.3
+    reference_model = exported_program.module().to(device)
+    with torch.inference_mode():
+        reference = reference_model(*parity_inputs)
+        accelerated = compiled(*parity_inputs)
+    if (
+        not isinstance(reference, Tensor)
+        or not isinstance(accelerated, Tensor)
+        or accelerated.shape != reference.shape
+    ):
+        raise RuntimeError("Crop TensorRT output contract does not match PyTorch")
+    if not bool(torch.isfinite(accelerated).all()):
+        raise RuntimeError("Crop TensorRT produced non-finite logits")
+    reference_probability = reference.float().softmax(dim=1)[:, 1]
+    accelerated_probability = accelerated.float().softmax(dim=1)[:, 1]
+    reference_crop = reference_probability >= CROP_CLASSIFICATION_THRESHOLD
+    accelerated_crop = accelerated_probability >= CROP_CLASSIFICATION_THRESHOLD
+    mismatch = float((reference_crop != accelerated_crop).float().mean().item())
+    absolute_error = (reference_probability - accelerated_probability).abs()
+    mean_error = float(absolute_error.mean().item())
+    maximum_mismatch = float(
+        os.environ.get("VITA_CROP_TRT_MAX_CLASS_MISMATCH", "0.002")
+    )
+    maximum_mean_error = float(
+        os.environ.get("VITA_CROP_TRT_MAX_MEAN_PROBABILITY_ERROR", "0.005")
+    )
+    if not 0.0 <= maximum_mismatch <= 1.0 or maximum_mean_error < 0.0:
+        raise RuntimeError("Crop TensorRT parity tolerances are invalid")
+    if mismatch > maximum_mismatch or mean_error > maximum_mean_error:
+        raise RuntimeError(
+            "Crop TensorRT parity failed: "
+            f"decision mismatch {mismatch:.8f}/{maximum_mismatch:.8f}, "
+            f"mean probability error {mean_error:.8f}/{maximum_mean_error:.8f}"
+        )
+    parity = {
+        "class_mismatch_fraction": mismatch,
+        "mean_absolute_probability_error": mean_error,
+        "maximum_absolute_probability_error": float(absolute_error.max().item()),
+    }
+    del reference_model, reference, accelerated, parity_inputs
+    return compiled, engine_count, parity
 
 
 def _model_state(checkpoint: dict[str, Any]) -> dict[str, Tensor]:
@@ -226,6 +282,7 @@ class PayloadCropModel:
         exported: bool = False,
         backend: str = "pytorch",
         tensorrt_engine_count: int = 0,
+        tensorrt_parity: dict[str, float] | None = None,
     ) -> None:
         # Torch-TensorRT returns an already placed graph containing initialized
         # engine modules; applying nn.Module.to() again can invalidate runtime state.
@@ -235,6 +292,7 @@ class PayloadCropModel:
         self.device = device
         self.backend = backend
         self.tensorrt_engine_count = tensorrt_engine_count
+        self.tensorrt_parity = tensorrt_parity or {}
         self.fixed_batch_size = fixed_batch_size
         self._means = torch.tensor(
             NORMALIZATION_MEANS,
@@ -303,7 +361,7 @@ class PayloadCropModel:
             raise ValueError("VITA_CROP_BACKEND must be pytorch or tensorrt")
         if backend == "tensorrt":
             try:
-                optimized, tensorrt_engine_count = _compile_tensorrt(
+                optimized, tensorrt_engine_count, tensorrt_parity = _compile_tensorrt(
                     exported_program,
                     device=requested_device,
                 )
@@ -316,9 +374,11 @@ class PayloadCropModel:
                 )
                 backend = "pytorch"
                 tensorrt_engine_count = 0
+                tensorrt_parity = {}
                 optimized = exported_program.module()
         else:
             tensorrt_engine_count = 0
+            tensorrt_parity = {}
             optimized = exported_program.module()
         return cls(
             optimized,
@@ -327,6 +387,7 @@ class PayloadCropModel:
             exported=True,
             backend=backend,
             tensorrt_engine_count=tensorrt_engine_count,
+            tensorrt_parity=tensorrt_parity,
         )
 
     def _validate_inputs(

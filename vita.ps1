@@ -85,7 +85,29 @@ function Start-LocalPayload {
 
     $listenerPid = Get-ListeningProcessId $PayloadPort
     if ($listenerPid) {
-        throw "Port $PayloadPort is occupied by a service that is not a healthy ViTA payload."
+        $recordPath = Join-Path $localRoot 'payload-process.json'
+        $recordedListenerPid = $null
+        if (Test-Path -LiteralPath $recordPath) {
+            try {
+                $record = Get-Content -LiteralPath $recordPath -Raw | ConvertFrom-Json
+                $recordedListenerPid = [int]$record.listener_pid
+            } catch {
+                $recordedListenerPid = $null
+            }
+        }
+        if ($recordedListenerPid -and $listenerPid -eq $recordedListenerPid) {
+            Write-Host 'The recorded payload service failed its active CUDA readiness probe; restarting it.'
+            Stop-RecordedProcess $recordPath 'payload service'
+            foreach ($attempt in 1..50) {
+                if (-not (Get-ListeningProcessId $PayloadPort)) { break }
+                Start-Sleep -Milliseconds 100
+            }
+            if (Get-ListeningProcessId $PayloadPort) {
+                throw "The unhealthy ViTA payload did not release port $PayloadPort."
+            }
+        } else {
+            throw "Port $PayloadPort is occupied by a service that is not a healthy ViTA payload."
+        }
     }
 
     $payloadServer = Get-LocalTool 'vita-payload-server'
@@ -107,11 +129,22 @@ function Start-LocalPayload {
         VITA_MODEL_CACHE_DIR = Join-Path $engineCache 'torch-export'
         VITA_TRT_CACHE_DIR = Join-Path $engineCache 'tensorrt'
         VITA_CROP_BACKEND = Get-EnvironmentDefault 'VITA_CROP_BACKEND' 'pytorch'
+        VITA_CROP_BATCH_SIZE = Get-EnvironmentDefault 'VITA_CROP_BATCH_SIZE' '4'
+        VITA_CLOUD_BACKEND = Get-EnvironmentDefault 'VITA_CLOUD_BACKEND' 'pytorch'
         VITA_CLOUD_INFERENCE_DTYPE = Get-EnvironmentDefault 'VITA_CLOUD_INFERENCE_DTYPE' 'fp32'
         VITA_CLOUD_BATCH_SIZE = Get-EnvironmentDefault 'VITA_CLOUD_BATCH_SIZE' '2'
         VITA_CLOUD_WARMUP_PATCH_SIZES = Get-EnvironmentDefault 'VITA_CLOUD_WARMUP_PATCH_SIZES' '869'
         VITA_WARMUP = '1'
         VITA_CPU_THREADS = Get-EnvironmentDefault 'VITA_CPU_THREADS' '8'
+        VITA_CONDITION_TILE_SIZE = Get-EnvironmentDefault 'VITA_CONDITION_TILE_SIZE' '4096'
+        VITA_CONDITION_METRIC_THREADS = Get-EnvironmentDefault 'VITA_CONDITION_METRIC_THREADS' '4'
+        VITA_CONDITION_EXACT_PERCENTILES = Get-EnvironmentDefault 'VITA_CONDITION_EXACT_PERCENTILES' '1'
+        VITA_CROP_IN_MEMORY = Get-EnvironmentDefault 'VITA_CROP_IN_MEMORY' '1'
+        VITA_CROP_IN_MEMORY_MAX_BYTES = Get-EnvironmentDefault 'VITA_CROP_IN_MEMORY_MAX_BYTES' '1073741824'
+        VITA_DOWNLINK_GRID_IN_MEMORY = Get-EnvironmentDefault 'VITA_DOWNLINK_GRID_IN_MEMORY' '1'
+        VITA_DOWNLINK_GRID_IN_MEMORY_MAX_BYTES = Get-EnvironmentDefault 'VITA_DOWNLINK_GRID_IN_MEMORY_MAX_BYTES' '536870912'
+        VITA_FAST_INTERMEDIATE_RASTERS = Get-EnvironmentDefault 'VITA_FAST_INTERMEDIATE_RASTERS' '1'
+        VITA_COMPACT_PAYLOAD_PIPELINE = Get-EnvironmentDefault 'VITA_COMPACT_PAYLOAD_PIPELINE' '1'
         PRITHVI_MODEL_DIR = Join-Path $repositoryRoot 'payload\models'
         OMNICLOUDMASK_MODEL_DIR = Join-Path $repositoryRoot 'payload\models\omnicloudmask'
     }
@@ -194,6 +227,7 @@ function Write-TimingBreakdown($Response) {
         }
     }
     Write-Host ('{0,-34} {1,9:N4} s' -f 'PAYLOAD TOTAL', [double]$Response.payload_seconds)
+    Write-Host ('Under two seconds: {0}' -f $Response.under_two_seconds)
     Write-Host ('Under five seconds: {0}' -f $Response.under_five_seconds)
 }
 

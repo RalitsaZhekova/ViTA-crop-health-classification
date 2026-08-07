@@ -132,6 +132,26 @@ def _balkan_prepare_inputs() -> tuple[str, ...]:
     return values
 
 
+def _sentinel_demo_inputs() -> tuple[str, ...]:
+    raw = os.environ.get("VITA_DEMO_SENTINEL_IMAGES", "")
+    values = tuple(value.strip() for value in raw.split(",") if value.strip())
+    if len(values) != len(set(values)):
+        raise RuntimeError("Configured Sentinel demo inputs must be distinct")
+    return values
+
+
+def _configure_tensorrt_cudagraphs() -> bool:
+    """Enable static-shape CUDA graph replay before the service warmup calls."""
+    if not environment_flag("VITA_TRT_CUDAGRAPHS", False):
+        return False
+    try:
+        import torch_tensorrt
+    except ImportError as error:
+        raise RuntimeError("VITA_TRT_CUDAGRAPHS requires Torch-TensorRT") from error
+    torch_tensorrt.runtime.set_cudagraphs_mode(True)
+    return True
+
+
 class JobRequest(BaseModel):
     """Only metadata crosses the uplink; image paths are payload-local."""
 
@@ -160,9 +180,10 @@ class PayloadRuntime:
 
         started = time.perf_counter()
         pipeline_import_seconds = _preload_pipeline_modules()
-        self._balkan_cloud_warmups: list[dict[str, Any]] = []
+        self._scene_cloud_warmups: list[dict[str, Any]] = []
         balkan_cache_started = time.perf_counter()
         self.balkan_analysis_caches = self._prepare_balkan_analysis_caches()
+        self._prepare_sentinel_cloud_warmups()
         self.balkan_analysis_cache = (
             self.balkan_analysis_caches[0] if self.balkan_analysis_caches else None
         )
@@ -174,6 +195,7 @@ class PayloadRuntime:
         device = "cuda" if torch.cuda.is_available() else "cpu"
         self.crop = PayloadCropModel.load(device=device)
         crop_seconds = time.perf_counter() - crop_started
+        self.tensorrt_cudagraphs = _configure_tensorrt_cudagraphs()
         self.cloud_warmup_profiles: list[dict[str, int]] = []
         self.cloud_scene_warmup_profiles: list[dict[str, Any]] = []
         self.cloud_scene_warmup_profile: dict[str, Any] | None = None
@@ -227,7 +249,7 @@ class PayloadRuntime:
             intake,
             output_root=self.output_root.parent / ".startup-balkan-cache" / source.stem,
         )
-        self._balkan_cloud_warmups.append(
+        self._scene_cloud_warmups.append(
             {
                 "source_path": analysis["source_path"],
                 "source_band_indices": analysis["model_band_routes"]["cloud_detection"][
@@ -251,8 +273,39 @@ class PayloadRuntime:
             "overview_factor": analysis.get("preprocessing", {}).get("overview_factor"),
         }
 
-    def _warm_balkan_cloud_profile(self, profile: dict[str, Any]) -> dict[str, Any]:
-        """Exercise one fixed Balkan CUDA path without retaining its prediction."""
+    def _prepare_sentinel_cloud_warmups(self) -> None:
+        from prithvi_payload.scene_intake import inspect_scene
+
+        for index, relative_input in enumerate(_sentinel_demo_inputs(), start=1):
+            source = _safe_relative(
+                self.input_root,
+                relative_input,
+                name="Sentinel demo input",
+            )
+            if not source.is_file():
+                raise RuntimeError(f"Configured Sentinel demo input is missing: {source}")
+            intake = inspect_scene(
+                source,
+                sensor="sentinel-2",
+                scene_id=f"startup-sentinel-warmup-{index}",
+            )
+            if intake.get("readiness", {}).get("intake") != "READY":
+                raise RuntimeError("Configured Sentinel demo input failed intake validation")
+            route = intake["model_band_routes"]["cloud_detection"]
+            self._scene_cloud_warmups.append(
+                {
+                    "source_path": intake["source_path"],
+                    "source_band_indices": route["source_band_indices"],
+                    "reflectance_scale": float(
+                        intake["radiometry"]["cloud_reflectance_divisor"]
+                    ),
+                    "nodata_value": intake["raster"].get("nodata"),
+                    "input": relative_input.replace("\\", "/"),
+                }
+            )
+
+    def _warm_scene_cloud_profile(self, profile: dict[str, Any]) -> dict[str, Any]:
+        """Exercise one fixed scene path without retaining its prediction."""
 
         import numpy as np
         import rasterio
@@ -316,14 +369,20 @@ class PayloadRuntime:
         # The large crop model can displace CUDA convolution/workspace state used
         # by the cloud ensemble. Warm the stage that runs first in a job last.
         self.cloud_scene_warmup_profiles = [
-            self._warm_balkan_cloud_profile(profile)
-            for profile in self._balkan_cloud_warmups
+            self._warm_scene_cloud_profile(profile)
+            for profile in self._scene_cloud_warmups
         ]
         self.cloud_scene_warmup_profile = (
             self.cloud_scene_warmup_profiles[-1]
             if self.cloud_scene_warmup_profiles
             else None
         )
+        freeze_profiles = getattr(self.cloud.backend, "freeze_tensorrt_profiles", None)
+        if callable(freeze_profiles):
+            freeze_profiles()
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         return time.perf_counter() - started
 
     def _stack_record(self) -> dict[str, Any]:
@@ -343,9 +402,21 @@ class PayloadRuntime:
             "modelopt": _package_version("nvidia-modelopt"),
             "crop_backend": self.crop.backend,
             "crop_tensorrt_engine_count": self.crop.tensorrt_engine_count,
-            "cloud_backend": "omnicloudmask_cuda_"
-            + str(self.cloud.backend.inference_dtype),
+            "crop_tensorrt_parity": self.crop.tensorrt_parity,
+            "crop_batch_size": self.crop.fixed_batch_size,
+            "tensorrt_cudagraphs": self.tensorrt_cudagraphs,
+            "cloud_backend": (
+                "omnicloudmask_tensorrt_" + str(self.cloud.backend.inference_dtype)
+                if getattr(self.cloud.backend, "execution_backend", "pytorch") == "tensorrt"
+                else "omnicloudmask_cuda_" + str(self.cloud.backend.inference_dtype)
+            ),
             "cloud_batch_size": self.cloud.backend.batch_size,
+            "cloud_tensorrt_engine_count": int(
+                getattr(self.cloud.backend, "tensorrt_engine_count", 0)
+            ),
+            "cloud_tensorrt_profiles": list(
+                getattr(self.cloud.backend, "tensorrt_profiles", [])
+            ),
             "cloud_warmup_profiles": self.cloud_warmup_profiles,
             "cloud_scene_warmup_profile": self.cloud_scene_warmup_profile,
             "cloud_scene_warmup_profiles": self.cloud_scene_warmup_profiles,
@@ -354,8 +425,29 @@ class PayloadRuntime:
         }
 
     def health(self) -> dict[str, Any]:
+        cuda_probe: dict[str, Any] = {"status": "not_available"}
+        status = "ready"
+        if self.stack["cuda_available"]:
+            try:
+                # torch.cuda.is_available() only describes initialization-time
+                # capability. A laptop sleep, driver reset, or GPU switch can
+                # invalidate a long-lived CUDA context while it still returns
+                # True, so readiness must execute and synchronize real work.
+                probe = torch.ones(1, device="cuda")
+                torch.cuda.synchronize()
+                cuda_probe = {
+                    "status": "ready",
+                    "device": probe.device.type,
+                }
+            except RuntimeError as error:
+                status = "error"
+                cuda_probe = {
+                    "status": "error",
+                    "detail": str(error),
+                }
         return {
-            "status": "ready",
+            "status": status,
+            "cuda_probe": cuda_probe,
             "stack": self.stack,
             "startup_timing_seconds": self.startup_timing,
         }
@@ -423,6 +515,9 @@ class PayloadRuntime:
             cloud_backend=self.cloud.backend,
             cloud_config=self.cloud.config,
             crop_model=self.crop,
+            condition_tile_size=int(
+                os.environ.get("VITA_CONDITION_TILE_SIZE", "4096")
+            ),
             progress_callback=progress.append,
         )
         payload_seconds = time.perf_counter() - started
@@ -442,6 +537,7 @@ class PayloadRuntime:
             "bundle_relative": f"runs/{request.job_id}/downlink",
             "files": files,
             "payload_seconds": payload_seconds,
+            "under_two_seconds": payload_seconds < 2.0,
             "under_five_seconds": payload_seconds < 5.0,
             "pipeline_timing_seconds": _pipeline_timings(
                 result,
@@ -478,7 +574,9 @@ app = FastAPI(
 
 @app.get("/healthz")
 async def health() -> dict[str, Any]:
-    return app.state.payload.health()
+    # Use the same single worker thread that constructs and executes the
+    # models so the probe validates the CUDA context used by real jobs.
+    return await run_in_threadpool(app.state.payload.health)
 
 
 @app.post("/v1/jobs")

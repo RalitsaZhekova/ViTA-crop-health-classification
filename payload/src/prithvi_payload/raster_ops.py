@@ -59,3 +59,30 @@ def read_padded_tile(
     right = requested_x + tile_size - read_x_end
     mode = "reflect" if values.shape[-2] > 1 and values.shape[-1] > 1 else "edge"
     return np.pad(values, ((0, 0), (top, bottom), (left, right)), mode=mode)
+
+
+def read_padded_array(
+    values: np.ndarray,
+    *,
+    y: int,
+    x: int,
+    tile_size: int,
+    halo: int,
+) -> np.ndarray:
+    """Slice a channel-first array with the exact padding policy of raster reads."""
+    array = np.asarray(values)
+    if array.ndim != 3:
+        raise ValueError("Padded source arrays must be channel-first and three-dimensional")
+    requested_y = y - halo
+    requested_x = x - halo
+    read_y_start = max(0, requested_y)
+    read_x_start = max(0, requested_x)
+    read_y_end = min(array.shape[-2], requested_y + tile_size)
+    read_x_end = min(array.shape[-1], requested_x + tile_size)
+    selected = array[:, read_y_start:read_y_end, read_x_start:read_x_end]
+    top = read_y_start - requested_y
+    left = read_x_start - requested_x
+    bottom = requested_y + tile_size - read_y_end
+    right = requested_x + tile_size - read_x_end
+    mode = "reflect" if selected.shape[-2] > 1 and selected.shape[-1] > 1 else "edge"
+    return np.pad(selected, ((0, 0), (top, bottom), (left, right)), mode=mode)

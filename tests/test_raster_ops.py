@@ -4,7 +4,11 @@ from pathlib import Path
 
 import numpy as np
 import rasterio
-from prithvi_payload.raster_ops import read_padded_tile, utm_crs_for_bounds
+from prithvi_payload.raster_ops import (
+    read_padded_array,
+    read_padded_tile,
+    utm_crs_for_bounds,
+)
 from rasterio.coords import BoundingBox
 from rasterio.crs import CRS
 from rasterio.transform import from_origin
@@ -52,3 +56,12 @@ def test_padded_tile_preserves_the_existing_reflect_padding_contract(tmp_path: P
     np.testing.assert_array_equal(float_values, expected.astype(np.float32))
     assert native.dtype == np.uint16
     assert float_values.dtype == np.float32
+
+
+def test_padded_array_matches_raster_padding() -> None:
+    values = np.arange(6, dtype=np.float32).reshape(1, 2, 3)
+
+    result = read_padded_array(values, y=0, x=0, tile_size=4, halo=1)
+
+    expected = np.pad(values, ((0, 0), (1, 1), (1, 0)), mode="reflect")
+    np.testing.assert_array_equal(result, expected)

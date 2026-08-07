@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from pathlib import Path
@@ -15,6 +16,7 @@ import rasterio
 from PIL import Image, features
 from prithvi_shared.files import sha256_file
 from rasterio.enums import Resampling
+from rasterio.io import MemoryFile
 from rasterio.warp import transform_bounds
 from rasterio.windows import Window
 from rasterio.windows import bounds as window_bounds
@@ -24,6 +26,7 @@ from prithvi_payload.balkan_crop_calibration import (
     load_calibration,
 )
 from prithvi_payload.cloud_classifier import CLOUD_MODEL_NAME, CLOUD_MODEL_SHA256
+from prithvi_payload.runtime_config import environment_flag
 
 DOWNLINK_SCHEMA_VERSION = "1.0"
 DOWNLINK_PRODUCT_TYPE = "vita.crop-condition.web-bundle"
@@ -139,13 +142,6 @@ def _calibrated_balkan_rgb(
     roles = ("RED", "GREEN", "BLUE")
     if any(role not in mapping for role in roles):
         raise ValueError("Balkan display calibration requires RED, GREEN, and BLUE")
-    calibration_path = spectral_adapter.get("calibration_path")
-    if not isinstance(calibration_path, str) or not calibration_path:
-        raise ValueError("Balkan display calibration path is missing")
-    calibration = load_calibration(
-        calibration_path,
-        source_path=original_source_path,
-    )
     indices = [int(mapping[role]["index"]) for role in roles]
     raw = source.read(
         indices,
@@ -154,7 +150,28 @@ def _calibrated_balkan_rgb(
         out_dtype="float32",
         masked=True,
     )
-    model_units = raw.filled(np.nan) * np.float32(
+    return _apply_balkan_rgb_calibration(
+        raw.filled(np.nan),
+        spectral_adapter=spectral_adapter,
+        original_source_path=original_source_path,
+    )
+
+
+def _apply_balkan_rgb_calibration(
+    raw: np.ndarray,
+    *,
+    spectral_adapter: dict[str, Any],
+    original_source_path: Path,
+) -> np.ndarray:
+    roles = ("RED", "GREEN", "BLUE")
+    calibration_path = spectral_adapter.get("calibration_path")
+    if not isinstance(calibration_path, str) or not calibration_path:
+        raise ValueError("Balkan display calibration path is missing")
+    calibration = load_calibration(
+        calibration_path,
+        source_path=original_source_path,
+    )
+    model_units = np.asarray(raw, dtype=np.float32) * np.float32(
         calibration["source_scale_to_model_units"]
     )
     curves = {curve["band"]: curve for curve in calibration["curves"]}
@@ -167,6 +184,70 @@ def _calibrated_balkan_rgb(
             np.asarray(curve["target_values"], dtype=np.float32),
         )
     return calibrated / np.float32(10_000.0)
+
+
+def prepare_rgb_preview(
+    source_path: str | Path,
+    *,
+    mapping: dict[str, Any],
+    spectral_adapter: dict[str, Any] | None,
+    original_source_path: Path,
+    sensor: str,
+    reflectance_scale: float,
+    maximum_dimension: int,
+    channel_limits: list[list[float]] | None = None,
+) -> dict[str, Any]:
+    """Prepare the final RGB pixels independently of condition analysis."""
+    started = time.perf_counter()
+    roles = ("RED", "GREEN", "BLUE")
+    if any(role not in mapping for role in roles):
+        raise ValueError("RGB preview requires RED, GREEN, and BLUE bands")
+    rgb_indices = [int(mapping[role]["index"]) for role in roles]
+    calibrated_balkan = (
+        sensor == "balkan-1"
+        and isinstance(spectral_adapter, dict)
+        and spectral_adapter.get("mode") == ADAPTER_MODE
+    )
+    read_started = time.perf_counter()
+    with rasterio.open(source_path) as source:
+        width, height = _preview_dimensions(
+            source.width,
+            source.height,
+            maximum_dimension,
+        )
+        if calibrated_balkan:
+            rgb = _calibrated_balkan_rgb(
+                source,
+                mapping=mapping,
+                spectral_adapter=spectral_adapter,
+                original_source_path=original_source_path,
+                preview_height=height,
+                preview_width=width,
+            )
+        else:
+            rgb = source.read(
+                rgb_indices,
+                out_shape=(3, height, width),
+                resampling=Resampling.bilinear,
+                out_dtype="float32",
+            )
+            rgb /= float(reflectance_scale)
+    read_seconds = time.perf_counter() - read_started
+    stretch_started = time.perf_counter()
+    preview = _stretch_rgb(
+        rgb,
+        channelwise=sensor == "balkan-1" and not calibrated_balkan,
+        channel_limits=channel_limits,
+    )
+    return {
+        "pixels": preview,
+        "width": width,
+        "height": height,
+        "calibrated_balkan_display": calibrated_balkan,
+        "read_seconds": read_seconds,
+        "stretch_seconds": time.perf_counter() - stretch_started,
+        "seconds": time.perf_counter() - started,
+    }
 
 
 def _condition_colors(values: np.ndarray) -> np.ndarray:
@@ -194,7 +275,7 @@ def _build_overlay(
         raise ValueError("Preview arrays must have identical shapes")
     overlay = np.zeros((*shape, 4), dtype=np.uint8)
     measured = (valid_crop == 1) & np.isfinite(condition)
-    overlay[measured, :3] = _condition_colors(condition)[measured]
+    overlay[measured, :3] = _condition_colors(condition[measured])
     overlay[measured, 3] = 205
     return overlay
 
@@ -275,6 +356,7 @@ def _build_interaction_grid(
     rasters: dict[str, rasterio.DatasetReader],
     *,
     grid_size: int,
+    products: dict[str, np.ndarray] | None = None,
 ) -> dict[str, Any]:
     if grid_size <= 0:
         raise ValueError("grid_size must be positive")
@@ -284,30 +366,78 @@ def _build_interaction_grid(
     column_edges = np.rint(np.linspace(0, source.width, columns + 1)).astype(int)
     cells: list[dict[str, Any]] = []
     metric_names = ("ndvi", "gndvi", "evi", "savi")
+    byte_names = (
+        "alert_mask",
+        "crop_binary",
+        "unusable_mask",
+        "semantic_mask",
+        "invalid_mask",
+    )
+    full_grid_bytes = source.width * source.height * (
+        np.dtype(np.float32).itemsize * (1 + len(metric_names))
+        + np.dtype(np.uint8).itemsize * len(byte_names)
+    )
+    in_memory_limit = int(
+        os.environ.get("VITA_DOWNLINK_GRID_IN_MEMORY_MAX_BYTES", str(512 * 1024**2))
+    )
+    use_in_memory_grid = products is not None or (
+        environment_flag("VITA_DOWNLINK_GRID_IN_MEMORY", True)
+        and full_grid_bytes <= in_memory_limit
+    )
+    if use_in_memory_grid:
+        if products is None:
+            full_condition = (
+                rasters["condition_score"].read(1, masked=True).filled(np.nan)
+            )
+            full_bytes = {name: rasters[name].read(1) for name in byte_names}
+            full_metrics = {
+                name: rasters[name].read(1, masked=True).filled(np.nan)
+                for name in metric_names
+            }
+        else:
+            required = {"condition_score", *byte_names, *metric_names}
+            missing = sorted(required.difference(products))
+            if missing:
+                raise ValueError(f"In-memory downlink products are missing: {missing}")
+            expected_shape = (source.height, source.width)
+            if any(np.asarray(products[name]).shape != expected_shape for name in required):
+                raise ValueError("In-memory downlink products do not match the source grid")
+            full_condition = np.asarray(products["condition_score"], dtype=np.float32)
+            full_bytes = {
+                name: np.asarray(products[name], dtype=np.uint8) for name in byte_names
+            }
+            full_metrics = {
+                name: np.asarray(products[name], dtype=np.float32)
+                for name in metric_names
+            }
+
     for row in range(rows):
         row_start, row_stop = row_edges[row : row + 2]
-        row_window = Window(0, row_start, source.width, row_stop - row_start)
-        # Read each compressed raster once per interaction-grid row instead of
-        # reopening 10 small windows for every one of the 16 columns.
-        condition_row = (
-            rasters["condition_score"]
-            .read(1, window=row_window, masked=True)
-            .filled(np.nan)
-        )
-        byte_rows = {
-            name: rasters[name].read(1, window=row_window)
-            for name in (
-                "alert_mask",
-                "crop_binary",
-                "unusable_mask",
-                "semantic_mask",
-                "invalid_mask",
+        if use_in_memory_grid:
+            condition_row = full_condition[row_start:row_stop]
+            byte_rows = {
+                name: values[row_start:row_stop] for name, values in full_bytes.items()
+            }
+            metric_rows = {
+                name: values[row_start:row_stop]
+                for name, values in full_metrics.items()
+            }
+        else:
+            row_window = Window(0, row_start, source.width, row_stop - row_start)
+            condition_row = (
+                rasters["condition_score"]
+                .read(1, window=row_window, masked=True)
+                .filled(np.nan)
             )
-        }
-        metric_rows = {
-            name: rasters[name].read(1, window=row_window, masked=True).filled(np.nan)
-            for name in metric_names
-        }
+            byte_rows = {
+                name: rasters[name].read(1, window=row_window) for name in byte_names
+            }
+            metric_rows = {
+                name: rasters[name]
+                .read(1, window=row_window, masked=True)
+                .filled(np.nan)
+                for name in metric_names
+            }
         for column in range(columns):
             column_start, column_stop = column_edges[column : column + 2]
             window = Window(
@@ -374,6 +504,46 @@ def _build_interaction_grid(
     }
 
 
+def _resample_product(
+    source: rasterio.DatasetReader,
+    values: np.ndarray,
+    *,
+    width: int,
+    height: int,
+    resampling: Resampling,
+) -> np.ndarray:
+    """Resample an ephemeral science layer with the same GDAL kernel as disk mode."""
+    source_values = np.asarray(values)
+    floating = np.issubdtype(source_values.dtype, np.floating)
+    nodata = -9999.0 if floating else 255
+    encoded = (
+        np.where(np.isfinite(source_values), source_values, nodata).astype(np.float32)
+        if floating
+        else source_values.astype(np.uint8, copy=False)
+    )
+    profile = source.profile.copy()
+    profile.update(
+        driver="GTiff",
+        count=1,
+        dtype=str(encoded.dtype),
+        nodata=nodata,
+        BIGTIFF="IF_SAFER",
+    )
+    for option in ("compress", "predictor", "zlevel", "num_threads"):
+        profile.pop(option, None)
+    with MemoryFile() as memory:
+        with memory.open(**profile) as destination:
+            destination.write(encoded, 1)
+        with memory.open() as ephemeral:
+            result = ephemeral.read(
+                1,
+                out_shape=(height, width),
+                masked=floating,
+                resampling=resampling,
+            )
+            return result.filled(np.nan) if floating else result
+
+
 def _write_manifest(path: Path, manifest: dict[str, Any], asset_bytes: int) -> None:
     metadata_bytes = -1
     while True:
@@ -402,8 +572,11 @@ def build_downlink_bundle(
     max_image_dimension: int = DEFAULT_MAX_IMAGE_DIMENSION,
     grid_size: int = DEFAULT_GRID_SIZE,
     overwrite: bool = False,
+    products: dict[str, np.ndarray] | None = None,
+    prepared_rgb: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Write exactly two web images and one authoritative metadata document."""
+    started = time.perf_counter()
     if not features.check("webp"):
         raise RuntimeError("The installed Pillow build does not support WebP")
     result_path = Path(payload_result_path).resolve()
@@ -439,21 +612,16 @@ def build_downlink_bundle(
         else original_source_path
     )
     cloud_assets = artifacts.get("cloud", {})
-    crop_assets = artifacts.get("crop", {})
-    raster_paths = {
-        "semantic_mask": _resolve_asset(
-            cloud_assets.get("semantic_mask"), result_root, name="semantic mask"
-        ),
-        "unusable_mask": _resolve_asset(
-            cloud_assets.get("unusable_mask"), result_root, name="unusable mask"
-        ),
-        "invalid_mask": _resolve_asset(
-            cloud_assets.get("invalid_mask"), result_root, name="invalid mask"
-        ),
-        "crop_binary": _resolve_asset(
-            crop_assets.get("crop_binary"), result_root, name="crop mask"
-        ),
-    }
+    raster_paths = {}
+    for name, label in (
+        ("semantic_mask", "semantic mask"),
+        ("unusable_mask", "unusable mask"),
+        ("invalid_mask", "invalid mask"),
+    ):
+        if products is None or name not in products:
+            raster_paths[name] = _resolve_asset(
+                cloud_assets.get(name), result_root, name=label
+            )
     condition_assets = (
         "condition_score",
         "valid_crop_mask",
@@ -463,12 +631,17 @@ def build_downlink_bundle(
         "evi",
         "savi",
     )
-    for name in condition_assets:
-        raster_paths[name] = _resolve_asset(
-            condition_report.get("raster_assets", {}).get(name),
-            condition_report_path.parent,
-            name=name,
+    if products is None:
+        crop_assets = artifacts.get("crop", {})
+        raster_paths["crop_binary"] = _resolve_asset(
+            crop_assets.get("crop_binary"), result_root, name="crop mask"
         )
+        for name in condition_assets:
+            raster_paths[name] = _resolve_asset(
+                condition_report.get("raster_assets", {}).get(name),
+                condition_report_path.parent,
+                name=name,
+            )
 
     mapping = (
         analysis.get("logical_band_mapping", {})
@@ -477,13 +650,13 @@ def build_downlink_bundle(
     )
     if any(role not in mapping for role in ("RED", "GREEN", "BLUE")):
         raise ValueError("Payload intake metadata is missing RGB band mapping")
-    rgb_indices = [int(mapping[role]["index"]) for role in ("RED", "GREEN", "BLUE")]
     reflectance_scale = condition_report.get("radiometry", {}).get("input_scale_divisor")
     if not isinstance(reflectance_scale, (int, float)) or reflectance_scale <= 0:
         raise ValueError("Condition report is missing a positive reflectance scale")
 
     rgb_path = output / "scene.webp"
     overlay_path = output / "condition.png"
+    image_preparation_started = time.perf_counter()
     with ExitStack() as stack:
         source = stack.enter_context(rasterio.open(source_path))
         if source.crs is None:
@@ -500,6 +673,13 @@ def build_downlink_bundle(
         }
         for raster in rasters.values():
             _validate_grid(source, raster)
+        interaction_products = None
+        if products is not None:
+            interaction_products = dict(products)
+            for name in ("semantic_mask", "unusable_mask", "invalid_mask"):
+                if name not in interaction_products:
+                    interaction_products[name] = rasters[name].read(1)
+        resource_setup_seconds = time.perf_counter() - image_preparation_started
         preview_width, preview_height = _preview_dimensions(
             source.width, source.height, max_image_dimension
         )
@@ -508,26 +688,6 @@ def build_downlink_bundle(
             use_shared_analysis
             and isinstance(spectral_adapter, dict)
             and spectral_adapter.get("mode") == ADAPTER_MODE
-        )
-        if calibrated_balkan_display:
-            rgb = _calibrated_balkan_rgb(
-                source,
-                mapping=mapping,
-                spectral_adapter=spectral_adapter,
-                original_source_path=original_source_path,
-                preview_height=preview_height,
-                preview_width=preview_width,
-            )
-        else:
-            rgb = source.read(
-                rgb_indices,
-                out_shape=(3, preview_height, preview_width),
-                resampling=Resampling.bilinear,
-                out_dtype="float32",
-            )
-            rgb /= float(reflectance_scale)
-        balkan_channelwise_display = (
-            payload.get("sensor") == "balkan-1" and not calibrated_balkan_display
         )
         channel_limits = None
         if use_shared_analysis:
@@ -539,40 +699,137 @@ def build_downlink_bundle(
                     [float(value) / float(reflectance_scale) for value in limits]
                     for limits in raw_limits
                 ]
-        rgb_preview = _stretch_rgb(
-            rgb,
-            channelwise=balkan_channelwise_display,
-            channel_limits=channel_limits,
-        )
 
-        condition = (
-            rasters["condition_score"]
-            .read(
+        def prepare_rgb() -> tuple[np.ndarray, float, float]:
+            prepared = prepare_rgb_preview(
+                source_path,
+                mapping=mapping,
+                spectral_adapter=(
+                    spectral_adapter if isinstance(spectral_adapter, dict) else None
+                ),
+                original_source_path=original_source_path,
+                sensor=str(payload.get("sensor")),
+                reflectance_scale=float(reflectance_scale),
+                maximum_dimension=max_image_dimension,
+                channel_limits=channel_limits,
+            )
+            return (
+                np.asarray(prepared["pixels"], dtype=np.uint8),
+                float(prepared["read_seconds"]),
+                float(prepared["stretch_seconds"]),
+            )
+
+        def prepare_compact_overlay() -> tuple[np.ndarray, float, float]:
+            assert products is not None
+            condition_preview_started = time.perf_counter()
+            with rasterio.open(source_path) as overlay_source:
+                condition = _resample_product(
+                    overlay_source,
+                    products["condition_score"],
+                    width=preview_width,
+                    height=preview_height,
+                    resampling=Resampling.bilinear,
+                )
+                valid_crop = _resample_product(
+                    overlay_source,
+                    products["valid_crop_mask"],
+                    width=preview_width,
+                    height=preview_height,
+                    resampling=Resampling.nearest,
+                ).astype(np.uint8)
+            condition_seconds = time.perf_counter() - condition_preview_started
+            overlay_started = time.perf_counter()
+            prepared = _build_overlay(condition, valid_crop)
+            return prepared, condition_seconds, time.perf_counter() - overlay_started
+
+        if products is not None:
+            parallel_started = time.perf_counter()
+            with ThreadPoolExecutor(
+                max_workers=4,
+                thread_name_prefix="downlink",
+            ) as pool:
+                if prepared_rgb is None:
+                    rgb_preparation_future = pool.submit(prepare_rgb)
+                    rgb_preview = None
+                else:
+                    if (
+                        int(prepared_rgb.get("width", 0)) != preview_width
+                        or int(prepared_rgb.get("height", 0)) != preview_height
+                        or bool(prepared_rgb.get("calibrated_balkan_display"))
+                        != calibrated_balkan_display
+                    ):
+                        raise ValueError("Prepared RGB preview does not match the bundle")
+                    rgb_preparation_future = None
+                    rgb_preview = np.asarray(prepared_rgb["pixels"], dtype=np.uint8)
+                    if rgb_preview.shape != (preview_height, preview_width, 3):
+                        raise ValueError("Prepared RGB preview has an invalid shape")
+                    rgb_read_seconds = float(prepared_rgb["read_seconds"])
+                    rgb_stretch_seconds = float(prepared_rgb["stretch_seconds"])
+                overlay_preparation_future = pool.submit(prepare_compact_overlay)
+                grid_started = time.perf_counter()
+                grid_future = pool.submit(
+                    _build_interaction_grid,
+                    source,
+                    rasters,
+                    grid_size=grid_size,
+                    products=interaction_products,
+                )
+                if rgb_preparation_future is not None:
+                    rgb_preview, rgb_read_seconds, rgb_stretch_seconds = (
+                        rgb_preparation_future.result()
+                    )
+                overlay, condition_preview_seconds, overlay_seconds = (
+                    overlay_preparation_future.result()
+                )
+                image_preparation_seconds = time.perf_counter() - parallel_started
+                assert rgb_preview is not None
+                rgb_future = pool.submit(_save_webp, rgb_path, rgb_preview)
+                overlay_future = pool.submit(_save_png, overlay_path, overlay)
+                grid = grid_future.result()
+                grid_seconds = time.perf_counter() - grid_started
+                rgb_future.result()
+                overlay_future.result()
+                encoding_and_grid_seconds = time.perf_counter() - parallel_started
+        else:
+            rgb_preview, rgb_read_seconds, rgb_stretch_seconds = prepare_rgb()
+            condition_preview_started = time.perf_counter()
+            condition = (
+                rasters["condition_score"]
+                .read(
+                    1,
+                    out_shape=(preview_height, preview_width),
+                    masked=True,
+                    resampling=Resampling.bilinear,
+                )
+                .filled(np.nan)
+            )
+            valid_crop = rasters["valid_crop_mask"].read(
                 1,
                 out_shape=(preview_height, preview_width),
-                masked=True,
-                resampling=Resampling.bilinear,
+                resampling=Resampling.nearest,
             )
-            .filled(np.nan)
-        )
-        valid_crop = rasters["valid_crop_mask"].read(
-            1,
-            out_shape=(preview_height, preview_width),
-            resampling=Resampling.nearest,
-        )
-        overlay = _build_overlay(
-            condition,
-            valid_crop,
-        )
-        # Image encoding and interaction-grid aggregation are independent CPU
-        # work. Overlap them so packaging pays roughly the slower path, not all
-        # three paths serially.
-        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="downlink-encode") as pool:
-            rgb_future = pool.submit(_save_webp, rgb_path, rgb_preview)
-            overlay_future = pool.submit(_save_png, overlay_path, overlay)
-            grid = _build_interaction_grid(source, rasters, grid_size=grid_size)
-            rgb_future.result()
-            overlay_future.result()
+            condition_preview_seconds = time.perf_counter() - condition_preview_started
+            overlay_started = time.perf_counter()
+            overlay = _build_overlay(condition, valid_crop)
+            overlay_seconds = time.perf_counter() - overlay_started
+            image_preparation_seconds = time.perf_counter() - image_preparation_started
+            with ThreadPoolExecutor(
+                max_workers=2,
+                thread_name_prefix="downlink-encode",
+            ) as pool:
+                encoding_started = time.perf_counter()
+                rgb_future = pool.submit(_save_webp, rgb_path, rgb_preview)
+                overlay_future = pool.submit(_save_png, overlay_path, overlay)
+                grid_started = time.perf_counter()
+                grid = _build_interaction_grid(
+                    source,
+                    rasters,
+                    grid_size=grid_size,
+                )
+                grid_seconds = time.perf_counter() - grid_started
+                rgb_future.result()
+                overlay_future.result()
+                encoding_and_grid_seconds = time.perf_counter() - encoding_started
         native_bounds = [float(value) for value in source.bounds]
         wgs84_bounds = [
             round(value, 8)
@@ -589,6 +846,7 @@ def build_downlink_bundle(
             "web_overlay_contract": "north-up bounds; images share dimensions and pixel alignment",
         }
 
+    manifest_started = time.perf_counter()
     assets = {
         "rgb_preview": _asset_record(
             rgb_path,
@@ -683,4 +941,18 @@ def build_downlink_bundle(
         },
     }
     _write_manifest(metadata_path, manifest, asset_bytes)
-    return _read_json(metadata_path)
+    manifest_seconds = time.perf_counter() - manifest_started
+    result = _read_json(metadata_path)
+    result["_runtime"] = {
+        "seconds": time.perf_counter() - started,
+        "image_preparation_seconds": image_preparation_seconds,
+        "resource_setup_seconds": resource_setup_seconds,
+        "rgb_read_seconds": rgb_read_seconds,
+        "rgb_stretch_seconds": rgb_stretch_seconds,
+        "condition_preview_seconds": condition_preview_seconds,
+        "overlay_seconds": overlay_seconds,
+        "interaction_grid_seconds": grid_seconds,
+        "encoding_and_grid_seconds": encoding_and_grid_seconds,
+        "manifest_seconds": manifest_seconds,
+    }
+    return result

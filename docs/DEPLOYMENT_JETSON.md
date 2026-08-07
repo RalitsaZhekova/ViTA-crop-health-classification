@@ -16,7 +16,7 @@ Invoke-VitaPayload.ps1              /data/code/VITA/data (read-only)
         | SSH local forward          |
         +===========================>| 127.0.0.1:8090
         |     small JSON request     | warm FastAPI worker
-        |                            |  cloud: CUDA FP16
+        |                            |  cloud: Torch-TensorRT FP16
         |                            |  crop: Torch-TensorRT FP16
         |                            |  health/indices: CPU + GDAL threads
         |                            |  package exactly 3 artifacts
@@ -38,10 +38,10 @@ The acceleration policy is:
 
 | Stage | MVP execution | Reason |
 |---|---|---|
-| OmniCloudMask ensemble | CUDA FP16, batch 2, warm/resident models, semantic-only GPU output | Low-risk acceleration supported by the existing package |
-| Prithvi crop segmentation | FP16 Torch-TensorRT, fixed batch 4, engine/timing cache | TensorRT targets the largest crop neural network while preserving the PyTorch integration |
+| OmniCloudMask ensemble | FP16 Torch-TensorRT, fixed static profiles, batch up to 4, engine/timing cache | The exact two-model mean-logit graph is compiled and parity-checked for every demo-scene shape before readiness |
+| Prithvi crop segmentation | FP16 Torch-TensorRT, fixed batch 16, engine/timing cache | The 64 GB Orin amortizes dispatch across more tiles; a deterministic probability/decision parity probe runs before readiness |
 | Balkan 10 m preparation | Embedded overview read, one multiband average GDAL warp, checksum-keyed persistent grid | Avoids decoding four full-resolution bands separately while preserving the existing 10 m UTM, band-order, nodata, and reflectance contracts |
-| Health indices and packaging | Vectorized NumPy/Rasterio, all-CPU GeoTIFF compression, concurrent web encoders | These are I/O/scientific raster operations; GPU transfer can cost more than it saves at MVP scale |
+| Health indices and packaging | Exact vectorized NumPy statistics in RAM, concurrent RGB/overlay/grid/codec work | Routine runs avoid non-downlinked science rasters; lossless PNG level 1 and WebP method 0 favor the two-second latency contract |
 
 The optimized Balkan warp remains on the CPU deliberately. Its measured reprojection
 is only about 0.41 seconds after the overview read, while NVIDIA
@@ -141,7 +141,7 @@ sudo nvpmodel -q --verbose
 sudo jetson_clocks --show
 ```
 
-Select the approved maximum-performance profile for this specific module/carrier and run `sudo jetson_clocks` before benchmarking. Profile IDs vary by JetPack/device configuration, so this guide intentionally does not hard-code an `nvpmodel -m` number. Ensure adequate cooling; otherwise thermal throttling makes a five-second acceptance result meaningless.
+Select the approved maximum-performance profile for this specific module/carrier and run `sudo jetson_clocks` before benchmarking. Profile IDs vary by JetPack/device configuration, so this guide intentionally does not hard-code an `nvpmodel -m` number. Ensure adequate cooling; otherwise thermal throttling makes a two-second acceptance result meaningless.
 
 ## 2. Build and start the payload
 
@@ -152,7 +152,7 @@ cp deploy/payload.env.example deploy/payload.env  # skip if already configured
 ./deploy/payload/deploy.sh
 ```
 
-The script runs preflight, builds the app layer on the already-installed NVIDIA image, validates all four sensor contracts from inside the final image, starts Compose with `runtime: nvidia`, and waits up to 30 minutes for the first model export, TensorRT build, both Balkan analysis-grid preparations, and warmup. First startup can be slow. Subsequent restarts reuse the export, TensorRT engine, timing, and checksum-keyed Balkan analysis caches.
+The script runs preflight, builds the app layer on the already-installed NVIDIA image, validates all four sensor contracts from inside the final image, starts Compose with `runtime: nvidia`, and waits up to 90 minutes for first-time export, all target-built TensorRT profiles, parity validation, both Balkan analysis grids, and exact-scene warmup. It then runs fail-closed acceleration checks and three timed repetitions of all four scenes. First startup can be slow; subsequent restarts reuse export, engine, timing, and checksum-keyed Balkan grid caches.
 
 Check status and logs:
 
@@ -168,23 +168,26 @@ A production-ready health response must show:
 - the expected PyTorch/CUDA/TensorRT/Torch-TensorRT versions;
 - `crop_backend: "tensorrt"`;
 - `crop_tensorrt_engine_count` greater than zero;
-- `cloud_backend: "omnicloudmask_cuda_fp16"`;
-- `cloud_batch_size: 2`;
-- cloud warmup profiles for batch 1 at 1,000 px and batches 1 and 2 at 869 px;
-- two `cloud_scene_warmup_profiles`, each with `kind: "fixed_input_profile"` and `prediction_retained: false`;
-- two `balkan_analysis_caches` entries with `cache_hit: true` after the caches have been built once;
+- `crop_batch_size: 16` and a crop parity record within the configured decision/probability tolerances;
+- `tensorrt_cudagraphs: true`, captured during warmup for lower fixed-shape launch overhead;
+- `cloud_backend: "omnicloudmask_tensorrt_fp16"`;
+- `cloud_batch_size: 4`, a positive cloud TensorRT engine count, and a parity record for every static profile;
+- cloud warmup profiles for batch 1 at 1,000 px and batches 1 and 4 at 869 px, plus profiles discovered by exact-scene warmup;
+- four distinct `cloud_scene_warmup_profiles`, each with `kind: "fixed_input_profile"` and `prediction_retained: false`;
+- two `balkan_analysis_caches` entries (a first build may report `cache_hit: false`; later startups report true);
 - each Balkan cache reports `preprocessing_mode: "embedded_overview_then_average"` and `overview_factor: 4`.
 
 The 1,000 px profile is the fixed Sentinel path. For the proof-of-concept Balkan grid,
 OmniCloudMask's reviewed no-data rule reduces its model patch to 869 px. The service
-also reads the cached fixed input once and runs a discarded cloud prediction so that
-the exact mosaic path is ready. Model construction, warmup, and inference are pinned
+also reads each fixed input and runs a discarded cloud prediction so that every exact
+Sentinel and Balkan mosaic shape has a validated static engine. Model construction,
+warmup, and inference are pinned
 to one long-lived worker thread because CUDA/cuDNN setup includes thread-local state;
 warming on the application thread and inferring on a different FastAPI worker made the
-first request pay about four extra seconds locally. No semantic mask or crop result is
-retained from warmup. If the fixed Balkan images change, update
-`VITA_BALKAN_PREPARE_INPUTS`, the six-file checksum manifest, and the provisioning
-script inputs, then inspect both health profiles before benchmarking.
+first request pay about four extra seconds locally. No prediction, semantic mask, crop
+result, condition map, or downlink is retained from warmup. If a fixed scene changes,
+update `VITA_BALKAN_PREPARE_INPUTS` or `VITA_DEMO_SENTINEL_IMAGES`, the checksum
+manifest, and the provisioning script inputs, then rebuild and rerun acceptance.
 
 The service has one worker and rejects a concurrent job with HTTP 409. This prevents two 100M-parameter pipelines from competing for GPU memory and corrupting latency measurements. It binds to Jetson `127.0.0.1`; do not expose port 8090 in the firewall.
 
@@ -280,9 +283,22 @@ Ground receipt:     runtime/downlink/<job-id>/
 Ground catalog:     runtime/ground/scenes/<job-id>/
 ```
 
-## 5. Five-second performance acceptance
+## 5. Two-second performance acceptance
 
-The returned `payload_seconds` is the warm payload execution from scene intake through three-file packaging. It excludes SSH setup, service startup/model load/TensorRT build/warmup, SCP, and ground ingest. `under_five_seconds` is computed from that value; no deployment should claim the target until all four proof-of-concept scenes pass on the actual Orin. Check `/healthz` before starting the clock: a request sent before readiness is a cold-start test, not a warm payload test.
+The returned `payload_seconds` is the ready-service execution from scene intake through three-file packaging. It excludes SSH setup, service startup/model load/target engine build/warmup, SCP, and ground ingest. `under_two_seconds` is computed from that value. No prediction or output is cached: each request still executes cloud, crop, condition, and packaging. Check `/healthz` before starting the clock; a request before readiness is a cold-start test.
+
+`./deploy/payload/deploy.sh` automatically validates both TensorRT backends, fixed
+batches, compiler parity, four discarded scene warmups, both Balkan grids, and every
+required RAM fast path. It then runs all four scenes three times and fails if **any**
+run is 2.0 seconds or slower. Rerun the gate manually with:
+
+```bash
+docker compose --env-file deploy/payload.env -f deploy/compose.payload.yaml exec -T payload \
+  python -m prithvi_payload.performance_acceptance
+```
+
+`VITA_SKIP_PERFORMANCE_ACCEPTANCE=1` is for diagnosis only; a deployment started with
+it has not passed production acceptance.
 
 Do not use the one-shot `vita-mvp` command as the payload latency benchmark. A local
 profile attributed about 3.37 seconds of a 4.39-second cloud load to importing
@@ -291,7 +307,9 @@ actual two-checkpoint construction/load was about 0.81 seconds. A new Python pro
 must pay those imports again. The single-worker `vita-payload-server` is therefore the
 latency architecture: it loads and warms once, reports ready, then reuses both models.
 
-Run each fixed scene at least five times with unique job IDs after `jetson_clocks`, and retain the JSON output. Watch the payload concurrently:
+The automatic gate uses three repetitions per scene. Increase
+`VITA_PERFORMANCE_REPETITIONS` for release characterization and retain the JSON report.
+Watch the payload concurrently:
 
 ```bash
 tegrastats --interval 500
@@ -303,17 +321,18 @@ Use the stage timings in the response and payload `result.json`, not only the to
   `orchestration_seconds` is the measured remainder, so they add back to
   `payload_seconds`; cloud/crop inference and mask-processing values are nested inside
   their corresponding stage totals and must not be added a second time;
-- high `cloud_inference_seconds`: validate FP16, batch 2, and all three cloud warmup profiles in `/healthz`; a later, accuracy-gated task can TensorRT-compile both OmniCloudMask ensemble members;
+- high `cloud_inference_seconds`: validate FP16 TensorRT, batch 4, positive engine counts, and parity for every exact static profile in `/healthz`;
 - high `crop_inference_seconds`: confirm the health response reports TensorRT engine partitions and cache hits appear in logs;
 - high `shared_analysis_grid_seconds`: verify `/healthz` reports
   `embedded_overview_then_average`, factor 4, the expected Balkan cache key, and a
   persistent writable `runtime/payload/cache/balkan-analysis` directory;
-- high condition or packaging time: profile raster I/O/compression before moving NumPy math to CUDA;
+- high condition or packaging time: inspect their detailed internal timings; the routine path uses exact in-memory science products, concurrent preparation/encoding, WebP method 0, and lossless PNG level 1;
 - high total only on the first request: warmup or engine caching is incomplete.
 
 Before accepting FP16/TensorRT, run the same scenes with `VITA_CROP_BACKEND=pytorch` and `VITA_CLOUD_INFERENCE_DTYPE=fp32`, then compare class percentages, crop percentage, condition score/label, and visual masks against the accelerated output. Quantization is out of scope until this parity check and a representative calibration dataset are formalized. Do not enable `torch.backends.cudnn.benchmark` without measuring startup as well as steady state; fixed-shape autotuning can make service warmup much longer.
 
-On the RTX 3060 development machine, the reviewed FP32 change reduced the already
+Historical optimization measurements on the RTX 3060 development machine showed that
+the reviewed FP32 change reduced the already
 materialized cloud stage to about 0.31 seconds for the 526×681 Sentinel scene and
 1.19 seconds for the 1,739×2,132 Balkan grid. Both optimized semantic rasters matched
 the saved FP32 class masks pixel-for-pixel in the controlled validation run. A warm
@@ -324,12 +343,21 @@ shared-grid lookup 0.004, cloud 1.16, crop 1.32, condition 2.58, packaging 1.51,
 reported orchestration 0.05 seconds. The generated WebP, PNG, interaction grid,
 metrics, and condition result matched the prior optimized bundle exactly. These are
 diagnostic results, not Orin acceptance
-numbers; repeat the five-run protocol on the payload. The local FP16 parity pass changed
+numbers. The current compact FP32/PyTorch upper baseline is about 3.3 seconds for
+Balkan 3408 (cloud 1.27, crop 0.74, exact condition 0.76, packaging 0.42) and below one
+second for Sentinel. TensorRT can only be validated on the target Orin. The local FP16
+parity pass changed
 43 of 358,206 valid Sentinel classes (0.0120%) and 3 of 2,077,729 valid Balkan classes
 (0.00014%) relative to the saved FP32 masks. The project still requires an explicit
 mission accuracy tolerance before FP16 is declared scientifically accepted.
 
-Input dimensions fundamentally bound runtime. A fixed five-second service-level objective needs an explicit maximum pixel count per supported sensor; this code already bounds the Balkan cloud analysis grid at 25 million pixels, and final acceptance records the exact four MVP raster dimensions and bytes.
+Changing the fixed crop batch from 8 to 16 changes CUDA reduction order slightly but
+not the model or threshold. On Balkan 3408 the measured crop-coverage delta was
+0.00130 percentage points, the condition-score delta was 0.00472 points, and the label
+remained `High anomaly`. The production parity probe uses the same fixed batch-16
+contract as inference.
+
+Input dimensions fundamentally bound runtime. The fixed two-second service-level objective therefore applies to the four checksum-pinned scenes and their reviewed size envelope; the code bounds the Balkan cloud analysis grid at 25 million pixels and acceptance records the exact dimensions and bytes.
 
 The two packaged Sentinel scenes are each 700 x 700 pixels and 3.3--3.5 MiB. Balkan `3370_L1ORT.tif` is 10,943 x 13,627 pixels and 1.14 GiB; its shared 10 m grid is 1,783 x 2,190 pixels. Balkan `3408_L1ORT.tif` is 10,745 x 13,340 pixels and 1.13 GiB; its shared 10 m grid is 1,739 x 2,132 pixels. The original local 3408 response was about 30.03 seconds, including 13.09 seconds of grid preparation, 5.70 seconds of condition work, and 2.53 seconds of packaging.
 
@@ -340,9 +368,9 @@ full-resolution warps, an 86--89% reduction. Full source SHA-256 verification re
 in intake and took about 3.0--4.2 seconds locally for this 1.16 GiB file; it is
 intentionally not skipped or hidden. Therefore a genuinely unseen cold local file is
 still expected to take roughly 10--11 seconds end to end, while the fixed
-checksum-verified startup cache keeps normal warm requests near the measured 6.6
-seconds. Only the Orin five-run protocol can
-establish whether that warm path is below five seconds.
+checksum-verified startup cache keeps normal requests on the prepared grid. Only the
+automatic repeated Orin acceptance can establish whether every fixed scene is below
+two seconds.
 
 This is a controlled speed/accuracy trade, not a claim of bitwise equivalence. Against
 the previous full-resolution average grid on the supplied scene, reflectance-band
@@ -385,6 +413,15 @@ Keep the NGC base and GHCR app image immutable in a release record. Never publis
 
 `Torch-TensorRT produced no TensorRT engine partitions` means compilation technically returned but did not accelerate any graph segment. This is treated as failure rather than silently claiming TensorRT.
 
+`Cloud TensorRT received an unwarmed profile after readiness` means the request shape
+was not one of the four accepted MVP paths. Add the new checksum-pinned scene to
+startup warmup and re-run parity/latency acceptance; never compile a new engine inside
+a timed request.
+
+`PERFORMANCE_SLO_FAILED` includes every repetition and the minimum, median, and maximum
+for each scene. Use the returned stage breakdown and `tegrastats` to diagnose the
+failure. Do not raise the target or skip the gate to label the deployment production.
+
 The ModelOpt quantization warning can be ignored for FP16. Do not install ModelOpt merely to suppress the warning.
 
 HTTP 422 with a cloud-gate status means the scientific pipeline did not produce a complete downlink; inspect that job's payload `result.json`. It is not a transport failure.
@@ -401,9 +438,9 @@ If port 18090 is occupied on ground, pass a different `-LocalTunnelPort`. If por
 
 - Payload preflight passes with the recorded JetPack/L4T and base-image digest.
 - Payload Docker build succeeds without replacing the NVIDIA PyTorch/CUDA/TensorRT stack.
-- Health reports CUDA, FP16 cloud execution, TensorRT crop execution, and at least one engine partition.
-- All four fixed input scenes complete five warm repetitions without errors.
-- All four scenes meet the agreed pixel-size envelope and the measured payload latency target.
+- Health reports CUDA, FP16 TensorRT cloud and crop execution, positive engine counts, fixed batch 4/16, and passing compiler parity.
+- All four fixed input scenes complete every configured acceptance repetition without errors.
+- Every measured `payload_seconds` value is below 2.0 seconds for the agreed pixel-size envelope.
 - Accelerated scientific outputs pass the approved FP32/PyTorch parity tolerances.
 - Ground receives exactly WebP, PNG, and JSON and verifies all SHA-256 values.
 - Ground catalog validation passes and all four scenes render in the dashboard.

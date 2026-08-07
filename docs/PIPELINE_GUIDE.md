@@ -110,8 +110,11 @@ execution state.
 4. It loads the two OmniCloudMask ensemble checkpoints once.
 5. It loads the selected Prithvi crop model once and optionally compiles/caches its
    Torch-TensorRT representation.
-6. It warms cloud shapes, crop batches, and both exact fixed Balkan cloud paths.
-7. Only then does `/healthz` report `status: ready`.
+6. It builds/loads target TensorRT engines, validates compiler parity, and warms the
+   exact two Sentinel and two Balkan cloud paths plus the fixed crop batch.
+7. Only then does `/healthz` report `status: ready`. Readiness includes a tiny
+   synchronized CUDA operation on the model worker, so a stale context after a
+   laptop sleep, driver reset, or GPU switch is detected before a job starts.
 
 FastAPI is limited to one worker-thread token and `job_lock` rejects concurrent jobs.
 This is deliberate: CUDA/cuDNN state can be thread-local, and competing 100M-parameter
@@ -189,11 +192,13 @@ reflectance divisor, model compatibility, output contract, and cloud class mappi
 
 - reads bounded raster windows with a 150-pixel halo;
 - normalizes reflectance and builds strict invalid-pixel masks;
-- invokes the resident OmniCloudMask backend;
+- invokes the resident two-model mean-logit OmniCloudMask backend; Jetson routes every
+  pre-warmed static shape through FP16 Torch-TensorRT;
 - requests semantic classes directly when supported, avoiding unused probability
   tensors and CPU transfers;
 - converts configured cloud classes, shadows and invalid pixels into the unusable mask;
-- writes semantic, unusable, and invalid rasters on the analysis grid;
+- retains semantic, unusable, invalid, source-band, and validity arrays in bounded RAM
+  for routine downlink jobs; full/debug runs still write the equivalent GeoTIFFs;
 - counts classes while tiles are already in memory.
 
 The supplied Sentinel scene and shared Balkan grid each use one model tile in the
@@ -209,12 +214,14 @@ reflectance multiplier, and unusable mask.
 
 - reads 224×224 tiles with a 16-pixel halo;
 - skips fully unusable tiles without invoking the model;
-- groups real tiles into batches of four;
+- groups real tiles into fixed batches of 16 on the 64 GB Orin (four locally by
+  default); the final batch is padded and only real outputs are retained;
 - applies the validated Balkan monotonic calibration when required;
 - supplies temporal year/day-of-year and geographic coordinates to Prithvi;
 - pads only the final incomplete batch to the fixed optimized shape;
 - blends overlapping probability tiles with deterministic linear edge weights;
-- writes crop probability, binary decision, and confidence rasters;
+- retains probability, binary decision, calibrated bands, and masks in bounded RAM on
+  the routine path; full/debug runs write the equivalent rasters;
 - calculates summary statistics during the existing output pass.
 
 `PayloadCropModel` in `inference.py` owns checkpoint validation, export caching,
@@ -229,14 +236,16 @@ cloud, crop-probability and crop-binary grids. The transparent formulas live in
 
 It calculates NDVI, GNDVI, EVI, SAVI, CVI, VARI, excess green and RGB brightness, then
 combines absolute and relative evidence into the condition score, anomaly layers,
-quality label and screening label. Processing is windowed and deterministic:
+quality label and screening label. Production uses one bounded 4,096-pixel window for
+the reviewed grids and exact all-valid-pixel statistics:
 
-- pass 1 writes indices and gathers exact moments plus bounded percentile samples;
+- pass 1 calculates indices, exact moments, and exact percentile values;
 - the statistics step derives robust centres/scales;
 - the spatial pass produces relative anomaly and final condition layers.
 
-The percentile reservoir uses stable pixel identifiers, so results do not depend on
-window iteration order. Outputs are screening priorities, not disease diagnoses.
+The original deterministic bounded reservoir remains available for larger offline
+inputs, but production uses exact percentiles because they are both more accurate and
+faster at this MVP size. Outputs are screening priorities, not disease diagnoses.
 
 ### 4.7 Downlink packaging
 
@@ -248,9 +257,10 @@ same grid and produces exactly:
 - `scene.json`: checksums, summaries, provenance, region history fields, and a compact
   interaction grid used by the browser.
 
-The interaction grid reads one compressed row stripe per metric instead of reopening
-many tiny cell windows. WebP and PNG encoding run concurrently. SHA-256 and byte counts
-are returned for every file.
+The routine interaction grid reads the already computed arrays in RAM. RGB rendering
+starts early and overlaps model/science work; overlay preparation, grid aggregation,
+WebP, and lossless PNG encoding are concurrent. SHA-256 and byte counts are returned
+for every file.
 
 Sentinel context uses a combined RGB 2–98% display stretch. For calibrated Balkan-1
 scenes, the WebP renderer first applies the same validated Balkan-to-Sentinel monotonic
@@ -281,12 +291,12 @@ accepted requests. `/healthz` exposes startup costs separately.
 
 ### Explicit warmup and correct warmup shapes
 
-Cloud warmup includes batch 1 at 1,000 pixels for Sentinel, plus batch 1 and batch 2 at
-869 pixels for the Balkan mask geometry. Crop warmup uses the fixed 224×224 input
-contract. The fixed Balkan service path is exercised last because loading/running the
-large crop model can displace convolution and workspace state needed by the cloud
-ensemble. Warmup predictions are discarded; no scientific output is cached as a
-substitute for inference.
+Cloud warmup includes batch 1 at 1,000 pixels for Sentinel, batches 1 and 4 at 869
+pixels for Balkan, and every additional static shape encountered by the exact four
+scene paths. Crop warmup uses fixed batch 16 at 224×224. The crop model runs before
+the final exact cloud warmups because it can displace convolution/workspace state.
+Warmup predictions are discarded; no scientific output is cached as a substitute for
+inference.
 
 ### Single-worker CUDA ownership
 
@@ -295,20 +305,31 @@ lock returns HTTP 409 for concurrent work instead of letting two GPU pipelines c
 This eliminated severe first-request and multi-process timing variance observed during
 local validation.
 
-### Cloud semantic-only inference and batching
+### Cloud TensorRT, semantic-only inference, and batching
 
-The cloud executor prefers `predict_semantic()`, so the GPU reduces class scores before
-returning data to the CPU. Ensemble members operate in configured batches. Jetson uses
-FP16; local defaults remain conservative FP32. FP16 requires scene-level parity
-acceptance because it is not mathematically bitwise identical to FP32.
+The exact mean-logit ensemble is exported and compiled to one static FP16 TensorRT
+engine per observed `(batch, height, width)` profile. Engine/timing caches persist on
+the Orin. Every profile is compared to its PyTorch source before readiness, the source
+models are then released, and an unseen timed shape fails instead of compiling or
+falling back. `predict_semantic()` returns only class IDs to the CPU. Local defaults
+remain PyTorch FP32.
 
 ### Prithvi fixed batching and TensorRT
 
-Crop tiles run in batches of four. The final short batch is padded to the same static
-shape and only real outputs are retained. On Jetson, Torch-TensorRT compiles supported
+Crop tiles run in batches of 16 on Orin. The final short batch is padded to the same
+static shape and only real outputs are retained. Torch-TensorRT compiles supported
 Prithvi subgraphs to FP16 and persists export, engine, and timing caches under
-`runtime/engines`. Engines must be built on the target Orin and matched to its software
-stack; local RTX plans are not deployed.
+`runtime/engines`. A deterministic non-zero probe checks crop decisions and
+probabilities against the exported PyTorch graph before readiness. Engines must be
+built on this Orin; local RTX plans are not deployed.
+
+### CUDA graph replay
+
+After both TensorRT backends are built, the service enables Torch-TensorRT CUDA graph
+mode and then performs its exact-shape warmups. Static inference calls can therefore
+replay captured GPU work with less Python/kernel-launch overhead. This is safe here
+because one worker owns one GPU and all accepted MVP profiles are fixed before
+readiness.
 
 ### One Balkan grid instead of repeated preprocessing
 
@@ -323,22 +344,25 @@ area-average CPU implementation. A GPU linear remap would change the scientific
 resampling contract for little possible gain. GPU effort is reserved for the neural
 networks, where it materially changes latency.
 
-### Bounded, shared raster operations
+### Bounded, shared in-memory raster operations
 
 `raster_ops.py` contains the single UTM-zone and padded-window implementations used by
-the relevant stages. Cloud, crop and condition use windows rather than loading an
-arbitrary full-resolution source. Temporary files are replaced atomically, and output
-directories are job-specific.
+the relevant stages. The reviewed grids fit explicit memory limits, so routine jobs
+pass source bands, masks, probabilities, indices, and condition layers directly
+between stages. Arbitrary/full debug paths remain windowed and disk-backed. Temporary
+files are replaced atomically, and output directories are job-specific.
 
 ### Work avoidance inside raster stages
 
 - Fully unusable crop tiles never reach Prithvi.
 - Class, probability and confidence statistics reuse arrays already being written.
-- Condition statistics use exact streaming moments and a bounded deterministic sample.
+- Production condition statistics use exact moments and every valid value for
+  percentiles; the bounded deterministic sample remains an offline fallback.
 - Display limits reuse the prepared Balkan grid instead of rereading the 1.16 GiB
   source.
-- The interaction grid uses row stripes instead of per-cell raster reads.
-- WebP and PNG encoders run concurrently with tuned, configurable effort levels.
+- The interaction grid uses the already computed RAM arrays instead of raster reads.
+- RGB work overlaps neural/science work; overlay, grid, WebP, and PNG work are
+  concurrent. WebP method 0 and lossless PNG level 1 minimize packaging latency.
 
 ### Persistent, identity-bound caches
 
@@ -349,9 +373,9 @@ caches accepts only a filename as proof of equivalence.
 
 ### Compact routine downlink
 
-Only WebP, PNG and JSON cross the routine ground link. Full scientific GeoTIFFs remain
-on the payload for audit and diagnosis. This reduces transfer volume without changing
-the computed payload products.
+Only WebP, PNG and JSON are written by the timed routine path and cross the ground
+link. Non-downlinked science layers remain ephemeral arrays. Full stage/debug commands
+still produce scientific GeoTIFFs for audit and diagnosis.
 
 ## 6. Reading the timing report correctly
 
@@ -391,8 +415,9 @@ For meaningful acceptance:
 1. start one service and wait for `/healthz`;
 2. use AC/max-performance mode and adequate cooling;
 3. ensure no second Python/CUDA service is alive;
-4. run each exact scene at least five times with unique job IDs;
-5. report median and worst case, not one unusually fast sample;
+4. let deployment run every exact scene three times (increase repetitions for release
+   characterization);
+5. require every repetition, not merely the median, to remain below two seconds;
 6. retain stack/backend fields with the timings.
 
 A cold, never-verified 1.16 GiB Balkan file must still pay full SHA-256 verification.
@@ -436,7 +461,7 @@ The next local command recreates the necessary runtime layout.
   scenes.
 - INT8/quantization remains disabled until a representative calibration dataset and
   mission tolerance exist. The optional ModelOpt warning does not affect FP16.
-- The five-second target applies to a ready payload and the approved image-size
+- The two-second target applies to a ready payload and the approved four-scene image-size
   envelope. It is not a model-loading, network-transfer or arbitrary-image guarantee.
 
 ## 9. Deployment path

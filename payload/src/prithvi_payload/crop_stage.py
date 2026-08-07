@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,7 @@ def build_crop_stage_plan(
     cloud_metadata: dict[str, Any],
     *,
     max_cloud_percentage: float = DEFAULT_MAX_CLOUD_PERCENTAGE,
+    unusable_mask_available: bool = False,
 ) -> dict[str, Any]:
     """Build a deterministic crop-stage plan without loading the crop model."""
     if not 0 < max_cloud_percentage <= 100:
@@ -111,7 +113,9 @@ def build_crop_stage_plan(
         errors.append("A verified reflectance scale is required for crop classification")
 
     unusable_mask = cloud_metadata.get("output_files", {}).get("unusable_mask")
-    if gate_passed and (not isinstance(unusable_mask, str) or not Path(unusable_mask).is_file()):
+    if gate_passed and not unusable_mask_available and (
+        not isinstance(unusable_mask, str) or not Path(unusable_mask).is_file()
+    ):
         errors.append("The cloud stage did not provide an unusable-pixel mask")
 
     if not gate_passed:
@@ -130,6 +134,9 @@ def build_crop_stage_plan(
         health_analysis_crop_threshold = HEALTH_ANALYSIS_CROP_THRESHOLD
         threshold_source = "selected_model_internal_validation"
 
+    batch_size = int(os.environ.get("VITA_CROP_BATCH_SIZE", "4"))
+    if not 1 <= batch_size <= 16:
+        raise ValueError("VITA_CROP_BATCH_SIZE must be within 1..16")
     return {
         "schema_version": CROP_STAGE_SCHEMA_VERSION,
         "stage": "crop_classification",
@@ -178,7 +185,7 @@ def build_crop_stage_plan(
             "full_scene_materialization_allowed": False,
             "tile_size": INPUT_HEIGHT,
             "halo": 16,
-            "batch_size": 4,
+            "batch_size": batch_size,
             # The dashboard builds its own final visualization from these rasters.
             "save_preview": False,
         },

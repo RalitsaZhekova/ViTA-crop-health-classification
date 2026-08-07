@@ -20,7 +20,11 @@ from rasterio.enums import Resampling
 from rasterio.warp import calculate_default_transform, reproject
 from rasterio.windows import Window as RasterWindow
 
-from prithvi_payload.raster_ops import read_padded_tile, utm_crs_for_bounds
+from prithvi_payload.raster_ops import (
+    read_padded_array,
+    read_padded_tile,
+    utm_crs_for_bounds,
+)
 
 GDAL_WARP_THREADS = max(1, min(4, os.cpu_count() or 1))
 
@@ -105,6 +109,7 @@ def execute_cloud_stage(
     output_root: str | Path,
     backend: CloudBackend,
     config: dict[str, Any],
+    persist_rasters: bool = True,
 ) -> dict[str, Any]:
     """Execute a ready cloud plan without materialising a full scene array."""
     if plan.get("readiness") != "READY":
@@ -134,7 +139,13 @@ def execute_cloud_stage(
     preview_path = output_root / "visualisations" / f"{stem}_cloud.png"
     metadata_path = output_root / "metadata" / f"{stem}.json"
     save_diagnostic_preview = bool(config.get("output", {}).get("save_preview", False))
-    output_paths = [semantic_path, unusable_path, invalid_path, metadata_path]
+    if save_diagnostic_preview and not persist_rasters:
+        raise ValueError("Diagnostic cloud previews require persisted cloud rasters")
+    output_paths = (
+        [semantic_path, unusable_path, invalid_path, metadata_path]
+        if persist_rasters
+        else [metadata_path]
+    )
     if save_diagnostic_preview:
         output_paths.append(preview_path)
     for path in output_paths:
@@ -152,6 +163,8 @@ def execute_cloud_stage(
     reprojection_seconds = 0.0
     analysis_grid_preparation_seconds = 0.0
     shared_balkan_grid = bool(plan["input"].get("analysis_grid_ready"))
+    if not persist_rasters and plan["sensor"] == "balkan-1" and not shared_balkan_grid:
+        raise ValueError("Compact Balkan cloud execution requires the shared analysis grid")
     analysis_grid_mode = (
         "balkan_1_shared_utm_10m" if shared_balkan_grid else "source_grid"
     )
@@ -246,20 +259,47 @@ def execute_cloud_stage(
         ]
         profile = _output_profile(analysis_source.profile)
         with ExitStack() as outputs:
-            semantic_output = outputs.enter_context(
-                rasterio.open(analysis_semantic_path, "w", **profile)
-            )
-            unusable_output = outputs.enter_context(
-                rasterio.open(analysis_unusable_path, "w", **profile)
-            )
-            invalid_output = outputs.enter_context(
-                rasterio.open(analysis_invalid_path, "w", **profile)
-            )
-            semantic_output.set_band_description(
-                1, "0 clear, 1 thick, 2 thin, 3 shadow, 255 invalid"
-            )
-            unusable_output.set_band_description(1, "0 usable, 1 unusable")
-            invalid_output.set_band_description(1, "0 valid input, 1 invalid input")
+            semantic_output = None
+            unusable_output = None
+            invalid_output = None
+            if persist_rasters:
+                semantic_output = outputs.enter_context(
+                    rasterio.open(analysis_semantic_path, "w", **profile)
+                )
+                unusable_output = outputs.enter_context(
+                    rasterio.open(analysis_unusable_path, "w", **profile)
+                )
+                invalid_output = outputs.enter_context(
+                    rasterio.open(analysis_invalid_path, "w", **profile)
+                )
+                semantic_output.set_band_description(
+                    1, "0 clear, 1 thick, 2 thin, 3 shadow, 255 invalid"
+                )
+                unusable_output.set_band_description(1, "0 usable, 1 unusable")
+                invalid_output.set_band_description(1, "0 valid input, 1 invalid input")
+                semantic_product = None
+                unusable_product = None
+                invalid_product = None
+                source_band_product = None
+                source_valid_product = None
+            else:
+                semantic_product = np.full(
+                    (analysis_height, analysis_width), 255, dtype=np.uint8
+                )
+                unusable_product = np.ones(
+                    (analysis_height, analysis_width), dtype=np.uint8
+                )
+                invalid_product = np.ones(
+                    (analysis_height, analysis_width), dtype=np.uint8
+                )
+                source_band_product = analysis_source.read(
+                    analysis_indices,
+                    out_dtype="float32",
+                )
+                source_valid_product = np.all(
+                    analysis_source.read_masks(analysis_indices) > 0,
+                    axis=0,
+                )
 
             use_full_analysis_grid = plan["sensor"] == "balkan-1"
             if use_full_analysis_grid:
@@ -269,7 +309,11 @@ def execute_cloud_stage(
                         "Balkan 10 m cloud-analysis grid exceeds the reviewed "
                         f"{maximum_pixels}-pixel memory bound"
                     )
-                raw_image = analysis_source.read(analysis_indices)
+                raw_image = (
+                    analysis_source.read(analysis_indices)
+                    if source_band_product is None
+                    else source_band_product
+                )
                 image, invalid = normalize_reflectance(
                     raw_image,
                     scale=scale,
@@ -301,22 +345,43 @@ def execute_cloud_stage(
                 invalid_count += int(invalid.sum())
                 unusable_count += int(unusable.sum())
                 semantic[invalid] = 255
-                semantic_output.write(semantic, 1)
-                unusable_output.write(unusable.astype(np.uint8), 1)
-                invalid_output.write(invalid.astype(np.uint8), 1)
+                if persist_rasters:
+                    assert semantic_output is not None
+                    assert unusable_output is not None
+                    assert invalid_output is not None
+                    semantic_output.write(semantic, 1)
+                    unusable_output.write(unusable.astype(np.uint8), 1)
+                    invalid_output.write(invalid.astype(np.uint8), 1)
+                else:
+                    assert semantic_product is not None
+                    assert unusable_product is not None
+                    assert invalid_product is not None
+                    semantic_product[:] = semantic
+                    unusable_product[:] = unusable.astype(np.uint8)
+                    invalid_product[:] = invalid.astype(np.uint8)
                 tile_count = 1
             else:
                 for y in range(0, analysis_height, core_size):
                     core_height = min(core_size, analysis_height - y)
                     for x in range(0, analysis_width, core_size):
                         core_width = min(core_size, analysis_width - x)
-                        raw_tile = read_padded_tile(
-                            analysis_source,
-                            analysis_indices,
-                            y=y,
-                            x=x,
-                            tile_size=tile_size,
-                            halo=halo,
+                        raw_tile = (
+                            read_padded_tile(
+                                analysis_source,
+                                analysis_indices,
+                                y=y,
+                                x=x,
+                                tile_size=tile_size,
+                                halo=halo,
+                            )
+                            if source_band_product is None
+                            else read_padded_array(
+                                source_band_product,
+                                y=y,
+                                x=x,
+                                tile_size=tile_size,
+                                halo=halo,
+                            )
                         )
                         image, invalid = normalize_reflectance(
                             raw_tile,
@@ -366,11 +431,29 @@ def execute_cloud_stage(
                         semantic_core[invalid_core] = 255
 
                         output_window = RasterWindow(x, y, core_width, core_height)
-                        semantic_output.write(semantic_core, 1, window=output_window)
-                        unusable_output.write(
-                            unusable_core.astype(np.uint8), 1, window=output_window
-                        )
-                        invalid_output.write(invalid_core.astype(np.uint8), 1, window=output_window)
+                        if persist_rasters:
+                            assert semantic_output is not None
+                            assert unusable_output is not None
+                            assert invalid_output is not None
+                            semantic_output.write(semantic_core, 1, window=output_window)
+                            unusable_output.write(
+                                unusable_core.astype(np.uint8), 1, window=output_window
+                            )
+                            invalid_output.write(
+                                invalid_core.astype(np.uint8), 1, window=output_window
+                            )
+                        else:
+                            assert semantic_product is not None
+                            assert unusable_product is not None
+                            assert invalid_product is not None
+                            row_slice, column_slice = output_window.toslices()
+                            semantic_product[row_slice, column_slice] = semantic_core
+                            unusable_product[row_slice, column_slice] = (
+                                unusable_core.astype(np.uint8)
+                            )
+                            invalid_product[row_slice, column_slice] = (
+                                invalid_core.astype(np.uint8)
+                            )
                         tile_count += 1
 
         if analysis_grid_mode == "balkan_1_utm_10m":
@@ -511,9 +594,15 @@ def execute_cloud_stage(
         "unusable_percentage": unusable_percentage,
         "decision": decision,
         "output_files": {
-            "semantic_mask": str(semantic_path.resolve()),
-            "unusable_mask": str(unusable_path.resolve()),
-            "invalid_mask": str(invalid_path.resolve()),
+            **(
+                {
+                    "semantic_mask": str(semantic_path.resolve()),
+                    "unusable_mask": str(unusable_path.resolve()),
+                    "invalid_mask": str(invalid_path.resolve()),
+                }
+                if persist_rasters
+                else {}
+            ),
             "metadata": str(metadata_path.resolve()),
             **(
                 {"preview": str(preview_path.resolve())}
@@ -523,5 +612,24 @@ def execute_cloud_stage(
         },
         "warnings": plan.get("warnings", []),
     }
-    metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+    if not persist_rasters:
+        assert semantic_product is not None
+        assert unusable_product is not None
+        assert invalid_product is not None
+        assert source_band_product is not None
+        assert source_valid_product is not None
+        metadata["runtime"]["product_storage"] = "ephemeral_memory"
+        metadata["_products"] = {
+            "semantic_mask": semantic_product,
+            "unusable_mask": unusable_product,
+            "invalid_mask": invalid_product,
+            "source_bands": source_band_product,
+            "source_band_indices": tuple(int(value) for value in analysis_indices),
+            "source_valid_mask": source_valid_product,
+        }
+    serializable_metadata = {key: value for key, value in metadata.items() if key != "_products"}
+    metadata_path.write_text(
+        json.dumps(serializable_metadata, indent=2) + "\n",
+        encoding="utf-8",
+    )
     return metadata

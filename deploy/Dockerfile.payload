@@ -48,7 +48,7 @@ RUN python -m pip install --no-cache-dir --no-deps . \
     && python -c "import numpy, tensorrt, torch, torch_tensorrt; assert numpy.__version__ == '1.26.4', numpy.__version__; assert torch.__version__.startswith('2.6.0a0+ecf3bae40a'), torch.__version__; assert torch.version.cuda == '12.8', torch.version.cuda; assert tensorrt.__version__.startswith('10.8.'), tensorrt.__version__; assert torch_tensorrt.__version__.startswith('2.6.0a0'), torch_tensorrt.__version__; print('Validated NVIDIA stack:', numpy.__version__, torch.__version__, torch.version.cuda, tensorrt.__version__)"
 
 EXPOSE 8090
-HEALTHCHECK --interval=10s --timeout=5s --start-period=30m --retries=6 \
+HEALTHCHECK --interval=10s --timeout=5s --start-period=90m --retries=6 \
     CMD curl --fail --silent http://127.0.0.1:8090/healthz >/dev/null || exit 1
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["vita-payload-server"]
