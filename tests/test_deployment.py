@@ -3,8 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from prithvi_payload.deployment_check import _paths_from_environment
 from prithvi_payload.inference import _environment_flag
-from prithvi_payload.service import JobRequest, _pipeline_timings, _safe_relative
+from prithvi_payload.service import (
+    JobRequest,
+    _balkan_prepare_inputs,
+    _pipeline_timings,
+    _safe_relative,
+)
 from pydantic import ValidationError
 from vita_integration.ingest import parser as ingest_parser
 
@@ -66,3 +72,46 @@ def test_payload_response_flattens_stage_timings() -> None:
     assert timing["downlink_packaging_seconds"] == 0.2
     assert timing["reported_stage_total_seconds"] == pytest.approx(2.3)
     assert timing["orchestration_seconds"] == pytest.approx(0.2)
+
+
+def test_balkan_startup_accepts_two_fixed_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(
+        "VITA_BALKAN_PREPARE_INPUTS",
+        "balkan1/preprocessed/3370_L1ORT.tif,balkan1/preprocessed/3408_L1ORT.tif",
+    )
+    assert _balkan_prepare_inputs() == (
+        "balkan1/preprocessed/3370_L1ORT.tif",
+        "balkan1/preprocessed/3408_L1ORT.tif",
+    )
+
+
+def test_balkan_startup_rejects_duplicate_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VITA_BALKAN_PREPARE_INPUTS", "same.tif,same.tif")
+    with pytest.raises(RuntimeError, match="distinct"):
+        _balkan_prepare_inputs()
+
+
+def test_deployment_requires_exactly_two_distinct_sensor_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VITA_TEST_INPUTS", "first.tif,second.tif")
+    assert _paths_from_environment("VITA_TEST_INPUTS") == ("first.tif", "second.tif")
+    monkeypatch.setenv("VITA_TEST_INPUTS", "first.tif")
+    with pytest.raises(RuntimeError, match="exactly two distinct"):
+        _paths_from_environment("VITA_TEST_INPUTS")
+
+
+def test_payload_demo_manifest_contains_only_four_scenes_and_two_calibrations() -> None:
+    repository_root = Path(__file__).resolve().parents[1]
+    manifest = repository_root / "deploy" / "payload" / "demo-assets.sha256"
+    paths = [line.split("  ", 1)[1] for line in manifest.read_text().splitlines()]
+
+    assert len(paths) == 6
+    assert sum(path.endswith(".tif") and "/sentinel2/" in path for path in paths) == 2
+    assert sum(path.endswith(".tif") and "/balkan1/" in path for path in paths) == 2
+    assert sum(path.endswith(".crop_calibration.json") for path in paths) == 2
+
+    model_manifest = repository_root / "deploy" / "payload" / "model-assets.sha256"
+    model_paths = [line.split("  ", 1)[1] for line in model_manifest.read_text().splitlines()]
+    assert len(model_paths) == 3
+    assert all(path.startswith("payload/models/") for path in model_paths)

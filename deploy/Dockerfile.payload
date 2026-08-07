@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
-# This is the NVIDIA JetPack 6.1 iGPU image already validated on the target Orin.
-# Override VITA_PAYLOAD_BASE_IMAGE only after matching it to the host JetPack release.
+# This is the NVIDIA Jetson/iGPU image whose framework stack was observed on the target.
+# The payload probe must still confirm that its L4T host and NVIDIA runtime can launch it.
 ARG VITA_PAYLOAD_BASE_IMAGE=nvcr.io/nvidia/pytorch:25.01-py3-igpu
 FROM ${VITA_PAYLOAD_BASE_IMAGE}
 
@@ -29,12 +29,14 @@ RUN apt-get update \
 WORKDIR /opt/vita
 COPY deploy/requirements-payload.txt /tmp/requirements-payload.txt
 RUN set -eux; \
+    : > /tmp/vita-constraint.txt; \
     if [ -f /etc/pip/constraint.txt ]; then \
-        python -m pip install --no-cache-dir --constraint /etc/pip/constraint.txt \
-            --requirement /tmp/requirements-payload.txt; \
-    else \
-        python -m pip install --no-cache-dir --requirement /tmp/requirements-payload.txt; \
-    fi
+        grep -viE '^[[:space:]]*numpy([[:space:]<>=!~]|$)' \
+            /etc/pip/constraint.txt > /tmp/vita-constraint.txt || true; \
+    fi; \
+    printf 'numpy==1.26.4\n' >> /tmp/vita-constraint.txt; \
+    python -m pip install --no-cache-dir --constraint /tmp/vita-constraint.txt \
+        --requirement /tmp/requirements-payload.txt
 
 COPY pyproject.toml ./
 COPY payload ./payload
@@ -43,7 +45,7 @@ COPY integration ./integration
 COPY ground ./ground
 RUN python -m pip install --no-cache-dir --no-deps . \
     && python -m pip check \
-    && python -c "import tensorrt, torch, torch_tensorrt; assert torch.__version__.startswith('2.6.0a0+ecf3bae40a'), torch.__version__; assert torch.version.cuda == '12.8', torch.version.cuda; assert tensorrt.__version__.startswith('10.8.'), tensorrt.__version__; assert torch_tensorrt.__version__.startswith('2.6.0a0'), torch_tensorrt.__version__; print('Validated NVIDIA stack:', torch.__version__, torch.version.cuda, tensorrt.__version__)"
+    && python -c "import numpy, tensorrt, torch, torch_tensorrt; assert numpy.__version__ == '1.26.4', numpy.__version__; assert torch.__version__.startswith('2.6.0a0+ecf3bae40a'), torch.__version__; assert torch.version.cuda == '12.8', torch.version.cuda; assert tensorrt.__version__.startswith('10.8.'), tensorrt.__version__; assert torch_tensorrt.__version__.startswith('2.6.0a0'), torch_tensorrt.__version__; print('Validated NVIDIA stack:', numpy.__version__, torch.__version__, torch.version.cuda, tensorrt.__version__)"
 
 EXPOSE 8090
 HEALTHCHECK --interval=10s --timeout=5s --start-period=30m --retries=6 \

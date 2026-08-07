@@ -21,6 +21,9 @@ fi
 if [ "${VITA_SKIP_BUILD:-0}" != "1" ]; then
     docker compose "${compose_args[@]}" build
 fi
+echo "Validating the two Sentinel and two Balkan payload inputs inside the final image."
+docker compose "${compose_args[@]}" run --rm --no-deps \
+    --entrypoint python payload -m prithvi_payload.deployment_check
 docker compose "${compose_args[@]}" up -d
 
 container_id="$(docker compose "${compose_args[@]}" ps -q payload)"

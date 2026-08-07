@@ -104,13 +104,13 @@ execution state.
 1. It validates CUDA when `CUDA_REQUIRED=1`.
 2. It pre-imports modules that would otherwise make the first accepted request pay
    Python import and TorchDynamo initialization costs.
-3. If `VITA_BALKAN_PREPARE_INPUT` is configured, it validates the fixed Balkan scene,
-   verifies the calibration SHA-256, and creates or validates the persistent shared
-   grid cache.
+3. If `VITA_BALKAN_PREPARE_INPUTS` is configured, it validates each fixed Balkan
+   scene, verifies its calibration SHA-256, and creates or validates both persistent
+   shared-grid caches. The former singular variable remains supported for local use.
 4. It loads the two OmniCloudMask ensemble checkpoints once.
 5. It loads the selected Prithvi crop model once and optionally compiles/caches its
    Torch-TensorRT representation.
-6. It warms cloud shapes, crop batches, and the exact fixed Balkan cloud path.
+6. It warms cloud shapes, crop batches, and both exact fixed Balkan cloud paths.
 7. Only then does `/healthz` report `status: ready`.
 
 FastAPI is limited to one worker-thread token and `job_lock` rejects concurrent jobs.

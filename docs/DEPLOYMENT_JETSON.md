@@ -1,6 +1,6 @@
 # Jetson AGX Orin payload deployment
 
-This is the end-to-end MVP deployment for a ground Windows computer and an NVIDIA Jetson AGX Orin 64 GB payload at `/data/code/VITA`. Source imagery is never uplinked. A ground job transmits only sensor, payload-local path, region, and job identifiers through an SSH tunnel. The payload returns exactly three verified files: `scene.webp`, `condition.png`, and `scene.json`.
+This is the end-to-end MVP deployment for a ground Windows computer and an NVIDIA Jetson AGX Orin 64 GB payload at `/data/code/VITA`. The four fixed demo scenes are provisioned once; source imagery is never uploaded as part of a job. A ground job transmits only sensor, payload-local path, region, and job identifiers through an SSH tunnel. The payload returns exactly three verified files: `scene.webp`, `condition.png`, and `scene.json`.
 
 For the sensor contracts, stage-by-stage code map, local three-command workflow,
 timing definitions, runtime artifacts, and detailed explanation of every optimization,
@@ -9,7 +9,7 @@ read the [pipeline and optimization guide](PIPELINE_GUIDE.md) first.
 ## Architecture and deployment choices
 
 ```text
-Ground Windows                       Jetson AGX Orin
+Ground Windows                       Jetson AGX Orin 64 GB
 ----------------                    ---------------------------------
 Invoke-VitaPayload.ps1              /data/code/VITA/data (read-only)
         |                           /data/code/VITA/payload/models (ro)
@@ -26,9 +26,11 @@ validate + catalog ingest
 ground dashboard on 127.0.0.1:8000
 ```
 
-The payload image extends `nvcr.io/nvidia/pytorch:25.01-py3-igpu`, matching the stack already verified on the target: PyTorch `2.6.0a0+ecf3bae40a.nv25.01`, CUDA 12.8, TensorRT 10.8.0.40, and Torch-TensorRT 2.6.0a0. The Docker build asserts these versions and fails if the wrong base is selected.
+The payload image extends `nvcr.io/nvidia/pytorch:25.01-py3-igpu`, matching the stack verified inside the target Orin's NVIDIA runtime: NumPy 1.26.4, PyTorch `2.6.0a0+ecf3bae40a.nv25.01`, CUDA 12.8, TensorRT 10.8.0.40, and Torch-TensorRT 2.6.0a0. The Docker build pins NumPy 1.26.4 and asserts every accelerated-stack version, failing if dependency resolution changes it.
 
-This follows NVIDIA's [Jetson container tutorial](https://developer.nvidia.com/embedded/learn/tutorials/jetson-container): use an NVIDIA Jetson/NGC base, launch it with the NVIDIA runtime, and bind-mount payload data. It also adopts the relevant guidance from NVIDIA's [DeepStream Docker documentation](https://docs.nvidia.com/metropolis/deepstream/dev-guide/text/DS_docker_containers.html): Jetson and generic ARM images are distinct, the NVIDIA container toolkit is required, and modern Jetson containers carry their user-space CUDA/TensorRT libraries.
+The target host is JetPack 7.2 / L4T R39.2. NVIDIA's published Jetson PyTorch compatibility table originally paired container 25.01 with JetPack 6.1, so this is not a vendor-certified version pairing. It is retained for the MVP because both the unmodified NGC image and the local NumPy-1.26 derivative passed a live `--runtime nvidia` CUDA check on this exact Orin, while moving to PyTorch 2.11 would change the inference/compiler stack. Record this exception in the release evidence and requalify against a JetPack-7.2-supported framework image before a mission production release.
+
+This follows NVIDIA's [Jetson container tutorial](https://developer.nvidia.com/embedded/learn/tutorials/jetson-container): use an NVIDIA Jetson/NGC base, launch it with the NVIDIA runtime, and bind-mount payload data. It also adopts the relevant guidance from NVIDIA's [DeepStream Docker documentation](https://docs.nvidia.com/metropolis/deepstream/dev-guide/text/DS_docker_containers.html): Jetson and generic ARM images are distinct, the NVIDIA container toolkit is required, and the image must match the payload platform. The TIFFs, calibration sidecars, weights, runtime results, and target-built TensorRT caches are bind-mounted rather than copied into the application image.
 
 DeepStream itself is deliberately not in this image. DeepStream is a GStreamer/video analytics pipeline; these inputs are scientific multi-band GeoTIFF rasters. It would add video codecs and plugins without accelerating Rasterio reprojection, spectral-index calculations, or this PyTorch segmentation graph. The NVIDIA PyTorch iGPU image is the smaller and better-matched base. If the project later ingests live video, DeepStream should be a separate service.
 
@@ -51,29 +53,51 @@ Jetson and is a sensible later C++ optimization if profiling on Orin still ident
 TIFF decode as material; it does not itself implement the GeoTIFF reprojection or the
 Python Rasterio contract used by the models.
 
-ModelOpt is not required for FP16 TensorRT. The import warning about the missing quantization operator is harmless here. INT8 should only be introduced after a representative calibration set and an accuracy acceptance test exist.
+ModelOpt is not required for FP16 TensorRT. The observed `Unable to import quantization op` warning is harmless here: the deployment never requests a quantized graph. INT8 should only be introduced after a representative calibration set and an accuracy acceptance test exist.
 
 TensorRT engines are created on the Orin and persisted in `runtime/engines`. Do not build or publish those caches from another GPU: NVIDIA documents that serialized engines are tied to their platform, TensorRT version, and target GPU, and JetPack does not support TensorRT hardware-compatibility mode. The repository's GitHub images contain code and dependencies only—not imagery, weights, or engine plans.
 
 An installed TensorRT SDK or `trtexec` binary is not itself a model engine. If the payload also contains a `.engine`/`.plan` file, reuse it only after proving that it was built from this exact crop/cloud graph and weights on this Orin with TensorRT 10.8. The deployment therefore builds model-specific Torch-TensorRT partitions rather than silently trusting an unidentified plan.
 
-## 1. Payload prerequisites
+## 1. Provision exactly four demo scenes
 
-On the Orin, confirm that the project, one scene per proof of concept, calibrations, and weights exist:
+The reviewed payload package is recorded in `deploy/payload/demo-assets.sha256` and contains exactly:
+
+- Sentinel-2 Bulgaria/Thrace and Brazil/Mato Grosso GeoTIFFs;
+- Balkan-1 3370 and 3408 GeoTIFFs;
+- the adjacent validated calibration JSON for each Balkan image.
+
+Sentinel metadata--acquisition time, reflectance scale, CRS, nodata, and band order--is embedded in each GeoTIFF, so Sentinel does not use a separate sidecar JSON. Balkan needs its `.crop_calibration.json` for scientific harmonisation and for the corrected web preview.
+
+From the ground checkout, this command verifies all six data files and the three required model files, skips any identical remote files, copies only missing assets through SSH, verifies each temporary upload, and atomically installs it:
+
+```powershell
+.\scripts\ground\Install-VitaPayloadAssets.ps1 `
+  -SshTarget payload-user@payload-host
+```
+
+Use `-SshPort` or `-IdentityFile` when needed. A mismatched existing remote file is never overwritten unless `-Force` is explicitly supplied. The two Balkan TIFFs total about 2.44 GB; no other imagery is transferred. The three model weights add about 440 MB and are skipped when their remote hashes already match. Use `-SkipModels` only after independently provisioning those exact weights.
+Run `.\scripts\ground\Install-VitaPayloadAssets.ps1 -ValidateOnly` to verify the complete local package without opening an SSH connection.
+
+On the Orin, confirm that the project, all four scenes, calibrations, and weights exist:
 
 ```bash
 cd /data/code/VITA
-test -f data/sentinel2/S2_20260712T170851_T14TPL_cloudy.tif
+test -f data/sentinel2/S2_20260610T091331_T35TLG_bulgaria-thrace.tif
+test -f data/sentinel2/S2_20260115T135659_T21LXF_brazil-mato-grosso.tif
+test -f data/balkan1/preprocessed/3370_L1ORT.tif
+test -f data/balkan1/preprocessed/3370_L1ORT.crop_calibration.json
 test -f data/balkan1/preprocessed/3408_L1ORT.tif
 test -f data/balkan1/preprocessed/3408_L1ORT.crop_calibration.json
 test -f payload/models/prithvi_crop_binary_single_frame_v1_weights.pt
 ```
 
 The fast Balkan path requires a common embedded overview in the four reflectance
-bands. The proof-of-concept TIFF already contains factors 4, 8, 16, and 32. If GDAL is
-available on the host, verify the file before deployment:
+bands. Both proof-of-concept TIFFs contain factors 4, 8, 16, and 32. If GDAL is
+available on the host, verify both files before deployment:
 
 ```bash
+gdalinfo data/balkan1/preprocessed/3370_L1ORT.tif | grep -m 4 'Overviews:'
 gdalinfo data/balkan1/preprocessed/3408_L1ORT.tif | grep -m 4 'Overviews:'
 ```
 
@@ -104,10 +128,11 @@ Make the payload helpers executable after the first checkout (Git normally prese
 
 ```bash
 chmod +x deploy/payload/*.sh
+./deploy/payload/probe.sh
 ./deploy/payload/preflight.sh
 ```
 
-The preflight is successful only when the machine is `aarch64`, the expected base image is local, the model files exist, the NVIDIA Docker runtime works, CUDA is visible, and TensorRT/Torch-TensorRT import.
+`probe.sh` is read-only and can run before the data package is present. Save its complete output for the deployment record. The preflight is successful only when the machine is a 64 GB Jetson Orin running `aarch64`, at least 10 GiB is free, the exact six-file demo manifest and model checksums pass, the exact validated ARM64 base-image ID is local, the NVIDIA Docker runtime works, CUDA is visible, and the expected PyTorch/CUDA/TensorRT/Torch-TensorRT versions import. It also performs disposable-container Ubuntu index refresh, simulated OS-package installation, and Python dependency-resolution checks, then validates the resolved Compose configuration before building. These checks do not change the base image or payload files.
 
 For timing runs, inspect the current Orin power policy:
 
@@ -127,7 +152,7 @@ cp deploy/payload.env.example deploy/payload.env  # skip if already configured
 ./deploy/payload/deploy.sh
 ```
 
-The script runs preflight, builds the app layer on the already-installed NVIDIA image, starts Compose with `runtime: nvidia`, and waits up to 30 minutes for the first model export, TensorRT build, Balkan analysis-grid preparation, and warmup. First startup can be slow. Subsequent restarts reuse the export, TensorRT engine, timing, and checksum-keyed Balkan analysis caches.
+The script runs preflight, builds the app layer on the already-installed NVIDIA image, validates all four sensor contracts from inside the final image, starts Compose with `runtime: nvidia`, and waits up to 30 minutes for the first model export, TensorRT build, both Balkan analysis-grid preparations, and warmup. First startup can be slow. Subsequent restarts reuse the export, TensorRT engine, timing, and checksum-keyed Balkan analysis caches.
 
 Check status and logs:
 
@@ -146,10 +171,9 @@ A production-ready health response must show:
 - `cloud_backend: "omnicloudmask_cuda_fp16"`;
 - `cloud_batch_size: 2`;
 - cloud warmup profiles for batch 1 at 1,000 px and batches 1 and 2 at 869 px;
-- `cloud_scene_warmup_profile.kind: "fixed_input_profile"` with `prediction_retained: false`;
-- `balkan_analysis_cache.cache_hit: true` after the cache has been built once;
-- `balkan_analysis_cache.preprocessing_mode: "embedded_overview_then_average"` and
-  `overview_factor: 4` for the supplied Balkan scene.
+- two `cloud_scene_warmup_profiles`, each with `kind: "fixed_input_profile"` and `prediction_retained: false`;
+- two `balkan_analysis_caches` entries with `cache_hit: true` after the caches have been built once;
+- each Balkan cache reports `preprocessing_mode: "embedded_overview_then_average"` and `overview_factor: 4`.
 
 The 1,000 px profile is the fixed Sentinel path. For the proof-of-concept Balkan grid,
 OmniCloudMask's reviewed no-data rule reduces its model patch to 869 px. The service
@@ -158,8 +182,9 @@ the exact mosaic path is ready. Model construction, warmup, and inference are pi
 to one long-lived worker thread because CUDA/cuDNN setup includes thread-local state;
 warming on the application thread and inferring on a different FastAPI worker made the
 first request pay about four extra seconds locally. No semantic mask or crop result is
-retained from warmup. If the fixed Balkan image changes, update
-`VITA_BALKAN_PREPARE_INPUT` and inspect the health profile before benchmarking.
+retained from warmup. If the fixed Balkan images change, update
+`VITA_BALKAN_PREPARE_INPUTS`, the six-file checksum manifest, and the provisioning
+script inputs, then inspect both health profiles before benchmarking.
 
 The service has one worker and rejects a concurrent job with HTTP 409. This prevents two 100M-parameter pipelines from competing for GPU memory and corrupting latency measurements. It binds to Jetson `127.0.0.1`; do not expose port 8090 in the firewall.
 
@@ -185,25 +210,46 @@ Only TCP SSH needs to be reachable from ground to payload. The job API travels i
 
 ## 4. Run the proof-of-concept jobs from ground
 
-Sentinel-2:
+Sentinel-2 Bulgaria/Thrace:
 
 ```powershell
 .\scripts\ground\Invoke-VitaPayload.ps1 `
   -SshTarget payload-user@payload-host `
   -Sensor sentinel-2 `
   -Input sentinel2 `
-  -Image S2_20260712T170851_T14TPL_cloudy.tif `
-  -RegionId sentinel-local-cloudy
+  -Image S2_20260610T091331_T35TLG_bulgaria-thrace.tif `
+  -RegionId sentinel-bulgaria-thrace
 ```
 
-Balkan-1:
+Sentinel-2 Brazil/Mato Grosso:
+
+```powershell
+.\scripts\ground\Invoke-VitaPayload.ps1 `
+  -SshTarget payload-user@payload-host `
+  -Sensor sentinel-2 `
+  -Input sentinel2 `
+  -Image S2_20260115T135659_T21LXF_brazil-mato-grosso.tif `
+  -RegionId sentinel-brazil-mato-grosso
+```
+
+Balkan-1 3370:
+
+```powershell
+.\scripts\ground\Invoke-VitaPayload.ps1 `
+  -SshTarget payload-user@payload-host `
+  -Sensor balkan-1 `
+  -Input balkan1/preprocessed/3370_L1ORT.tif `
+  -RegionId balkan-3370
+```
+
+Balkan-1 3408:
 
 ```powershell
 .\scripts\ground\Invoke-VitaPayload.ps1 `
   -SshTarget payload-user@payload-host `
   -Sensor balkan-1 `
   -Input balkan1/preprocessed/3408_L1ORT.tif `
-  -RegionId balkan-test-3408
+  -RegionId balkan-3408
 ```
 
 `Input` is relative to the payload's `/data/code/VITA/data` mount, so it must not start with `data/`. The Balkan calibration sidecar is discovered beside the TIFF; use `-CropCalibration` only for a different payload-local relative path.
@@ -236,7 +282,7 @@ Ground catalog:     runtime/ground/scenes/<job-id>/
 
 ## 5. Five-second performance acceptance
 
-The returned `payload_seconds` is the warm payload execution from scene intake through three-file packaging. It excludes SSH setup, service startup/model load/TensorRT build/warmup, SCP, and ground ingest. `under_five_seconds` is computed from that value; no deployment should claim the target until both real proof-of-concept scenes pass on the actual Orin. Check `/healthz` before starting the clock: a request sent before readiness is a cold-start test, not a warm payload test.
+The returned `payload_seconds` is the warm payload execution from scene intake through three-file packaging. It excludes SSH setup, service startup/model load/TensorRT build/warmup, SCP, and ground ingest. `under_five_seconds` is computed from that value; no deployment should claim the target until all four proof-of-concept scenes pass on the actual Orin. Check `/healthz` before starting the clock: a request sent before readiness is a cold-start test, not a warm payload test.
 
 Do not use the one-shot `vita-mvp` command as the payload latency benchmark. A local
 profile attributed about 3.37 seconds of a 4.39-second cloud load to importing
@@ -283,9 +329,9 @@ numbers; repeat the five-run protocol on the payload. The local FP16 parity pass
 (0.00014%) relative to the saved FP32 masks. The project still requires an explicit
 mission accuracy tolerance before FP16 is declared scientifically accepted.
 
-Input dimensions fundamentally bound runtime. A fixed five-second service-level objective needs an explicit maximum pixel count per supported sensor; this code already bounds the Balkan cloud analysis grid at 25 million pixels, but final acceptance should record the exact two MVP raster dimensions and bytes.
+Input dimensions fundamentally bound runtime. A fixed five-second service-level objective needs an explicit maximum pixel count per supported sensor; this code already bounds the Balkan cloud analysis grid at 25 million pixels, and final acceptance records the exact four MVP raster dimensions and bytes.
 
-For the files currently in this workspace, Sentinel is 526×681 pixels and about 2.4 MiB. Balkan `3408_L1ORT.tif` is 10,745×13,340 pixels and about 1.16 GiB; its shared 10 m grid is 1,739×2,132 pixels. The original local Balkan response was about 30.03 seconds, including 13.09 seconds of grid preparation, 5.70 seconds of condition work, and 2.53 seconds of packaging.
+The two packaged Sentinel scenes are each 700 x 700 pixels and 3.3--3.5 MiB. Balkan `3370_L1ORT.tif` is 10,943 x 13,627 pixels and 1.14 GiB; its shared 10 m grid is 1,783 x 2,190 pixels. Balkan `3408_L1ORT.tif` is 10,745 x 13,340 pixels and 1.13 GiB; its shared 10 m grid is 1,739 x 2,132 pixels. The original local 3408 response was about 30.03 seconds, including 13.09 seconds of grid preparation, 5.70 seconds of condition work, and 2.53 seconds of packaging.
 
 The new cold grid build reads the TIFF's existing factor-4 overview once and performs
 one four-band average reprojection. On the RTX 3060 development machine repeated cold
@@ -356,10 +402,10 @@ If port 18090 is occupied on ground, pass a different `-LocalTunnelPort`. If por
 - Payload preflight passes with the recorded JetPack/L4T and base-image digest.
 - Payload Docker build succeeds without replacing the NVIDIA PyTorch/CUDA/TensorRT stack.
 - Health reports CUDA, FP16 cloud execution, TensorRT crop execution, and at least one engine partition.
-- Both fixed input scenes complete five warm repetitions without errors.
-- Both scenes meet the agreed pixel-size envelope and the measured payload latency target.
+- All four fixed input scenes complete five warm repetitions without errors.
+- All four scenes meet the agreed pixel-size envelope and the measured payload latency target.
 - Accelerated scientific outputs pass the approved FP32/PyTorch parity tolerances.
 - Ground receives exactly WebP, PNG, and JSON and verifies all SHA-256 values.
-- Ground catalog validation passes and both scenes render in the dashboard.
+- Ground catalog validation passes and all four scenes render in the dashboard.
 - Only SSH is network-reachable; payload and dashboard HTTP ports remain loopback-only.
 - GHCR images are pinned by commit SHA/digest; models and target-built TensorRT caches remain outside images.

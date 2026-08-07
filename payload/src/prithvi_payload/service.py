@@ -121,6 +121,17 @@ def _safe_relative(root: Path, value: str, *, name: str) -> Path:
     return candidate
 
 
+def _balkan_prepare_inputs() -> tuple[str, ...]:
+    """Return fixed Balkan inputs, accepting the old single-input variable."""
+    raw = os.environ.get("VITA_BALKAN_PREPARE_INPUTS")
+    if raw is None:
+        raw = os.environ.get("VITA_BALKAN_PREPARE_INPUT", "")
+    values = tuple(value.strip() for value in raw.split(",") if value.strip())
+    if len(values) != len(set(values)):
+        raise RuntimeError("Configured Balkan prepare inputs must be distinct")
+    return values
+
+
 class JobRequest(BaseModel):
     """Only metadata crosses the uplink; image paths are payload-local."""
 
@@ -149,9 +160,12 @@ class PayloadRuntime:
 
         started = time.perf_counter()
         pipeline_import_seconds = _preload_pipeline_modules()
-        self._balkan_cloud_warmup: dict[str, Any] | None = None
+        self._balkan_cloud_warmups: list[dict[str, Any]] = []
         balkan_cache_started = time.perf_counter()
-        self.balkan_analysis_cache = self._prepare_balkan_analysis_cache()
+        self.balkan_analysis_caches = self._prepare_balkan_analysis_caches()
+        self.balkan_analysis_cache = (
+            self.balkan_analysis_caches[0] if self.balkan_analysis_caches else None
+        )
         balkan_cache_seconds = time.perf_counter() - balkan_cache_started
         cloud_started = time.perf_counter()
         self.cloud = load_cloud_model()
@@ -161,6 +175,7 @@ class PayloadRuntime:
         self.crop = PayloadCropModel.load(device=device)
         crop_seconds = time.perf_counter() - crop_started
         self.cloud_warmup_profiles: list[dict[str, int]] = []
+        self.cloud_scene_warmup_profiles: list[dict[str, Any]] = []
         self.cloud_scene_warmup_profile: dict[str, Any] | None = None
         warmup_seconds = self._warmup() if environment_flag("VITA_WARMUP", True) else 0.0
         self.startup_timing = {
@@ -173,10 +188,18 @@ class PayloadRuntime:
         }
         self.stack = self._stack_record()
 
-    def _prepare_balkan_analysis_cache(self) -> dict[str, Any] | None:
-        relative_input = os.environ.get("VITA_BALKAN_PREPARE_INPUT", "").strip()
-        if not relative_input:
-            return None
+    def _prepare_balkan_analysis_caches(self) -> list[dict[str, Any]]:
+        return [
+            self._prepare_balkan_analysis_cache(relative_input, index=index)
+            for index, relative_input in enumerate(_balkan_prepare_inputs(), start=1)
+        ]
+
+    def _prepare_balkan_analysis_cache(
+        self,
+        relative_input: str,
+        *,
+        index: int,
+    ) -> dict[str, Any]:
         source = _safe_relative(self.input_root, relative_input, name="Balkan prepare input")
         calibration = source.with_name(f"{source.stem}.crop_calibration.json")
         if not source.is_file() or not calibration.is_file():
@@ -194,7 +217,7 @@ class PayloadRuntime:
             source,
             sensor="balkan-1",
             acquired_at=acquired_at,
-            scene_id="startup-balkan-cache",
+            scene_id=f"startup-balkan-cache-{index}",
             band_order=BALKAN_BAND_ORDER,
             crop_calibration_path=calibration,
         )
@@ -202,18 +225,21 @@ class PayloadRuntime:
             raise RuntimeError("Configured Balkan prepare input failed intake validation")
         analysis = materialize_balkan_analysis_grid(
             intake,
-            output_root=self.output_root.parent / ".startup-balkan-cache",
+            output_root=self.output_root.parent / ".startup-balkan-cache" / source.stem,
         )
-        self._balkan_cloud_warmup = {
-            "source_path": analysis["source_path"],
-            "source_band_indices": analysis["model_band_routes"]["cloud_detection"][
-                "source_band_indices"
-            ],
-            "reflectance_scale": float(
-                intake["radiometry"]["cloud_reflectance_divisor"]
-            ),
-            "nodata_value": analysis["raster"].get("nodata"),
-        }
+        self._balkan_cloud_warmups.append(
+            {
+                "source_path": analysis["source_path"],
+                "source_band_indices": analysis["model_band_routes"]["cloud_detection"][
+                    "source_band_indices"
+                ],
+                "reflectance_scale": float(
+                    intake["radiometry"]["cloud_reflectance_divisor"]
+                ),
+                "nodata_value": analysis["raster"].get("nodata"),
+                "input": relative_input.replace("\\", "/"),
+            }
+        )
         return {
             "input": relative_input.replace("\\", "/"),
             "cache_hit": bool(analysis["runtime"].get("cache_hit")),
@@ -225,11 +251,8 @@ class PayloadRuntime:
             "overview_factor": analysis.get("preprocessing", {}).get("overview_factor"),
         }
 
-    def _warm_balkan_cloud_profile(self) -> dict[str, Any] | None:
-        """Exercise the fixed Balkan CUDA path once without retaining its prediction."""
-        profile = self._balkan_cloud_warmup
-        if profile is None:
-            return None
+    def _warm_balkan_cloud_profile(self, profile: dict[str, Any]) -> dict[str, Any]:
+        """Exercise one fixed Balkan CUDA path without retaining its prediction."""
 
         import numpy as np
         import rasterio
@@ -255,6 +278,7 @@ class PayloadRuntime:
             torch.cuda.synchronize()
         result = {
             "kind": "fixed_input_profile",
+            "input": profile["input"],
             "height": int(image.shape[1]),
             "width": int(image.shape[2]),
             "prediction_retained": False,
@@ -291,7 +315,15 @@ class PayloadRuntime:
         gc.collect()
         # The large crop model can displace CUDA convolution/workspace state used
         # by the cloud ensemble. Warm the stage that runs first in a job last.
-        self.cloud_scene_warmup_profile = self._warm_balkan_cloud_profile()
+        self.cloud_scene_warmup_profiles = [
+            self._warm_balkan_cloud_profile(profile)
+            for profile in self._balkan_cloud_warmups
+        ]
+        self.cloud_scene_warmup_profile = (
+            self.cloud_scene_warmup_profiles[-1]
+            if self.cloud_scene_warmup_profiles
+            else None
+        )
         return time.perf_counter() - started
 
     def _stack_record(self) -> dict[str, Any]:
@@ -316,7 +348,9 @@ class PayloadRuntime:
             "cloud_batch_size": self.cloud.backend.batch_size,
             "cloud_warmup_profiles": self.cloud_warmup_profiles,
             "cloud_scene_warmup_profile": self.cloud_scene_warmup_profile,
+            "cloud_scene_warmup_profiles": self.cloud_scene_warmup_profiles,
             "balkan_analysis_cache": self.balkan_analysis_cache,
+            "balkan_analysis_caches": self.balkan_analysis_caches,
         }
 
     def health(self) -> dict[str, Any]:
