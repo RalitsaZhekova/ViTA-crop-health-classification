@@ -72,8 +72,8 @@ services:
     volumes:
       - ../data:/data:ro
       - ../payload/models:/models:ro
-      - ../runtime/payload:/runtime
-      - ../runtime/engines:/engine-cache
+      - ../runtime/payload:/runtime:Z
+      - ../runtime/engines:/engine-cache:Z
     tmpfs:
       - /tmp:size=2g,mode=1777
       - /root/.cache:size=512m,mode=0700
