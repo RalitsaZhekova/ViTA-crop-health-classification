@@ -8,6 +8,8 @@ services:
       dockerfile: deploy/Dockerfile.payload
       args:
         VITA_PAYLOAD_BASE_IMAGE: ${VITA_PAYLOAD_BASE_IMAGE:-nvcr.io/nvidia/pytorch:25.01-py3-igpu}
+        VITA_PAYLOAD_UID: ${VITA_PAYLOAD_UID:-2002}
+        VITA_PAYLOAD_GID: ${VITA_PAYLOAD_GID:-2002}
     runtime: nvidia
     user: "${VITA_PAYLOAD_UID:-2002}:${VITA_PAYLOAD_GID:-2002}"
     restart: unless-stopped
@@ -22,6 +24,8 @@ services:
     environment:
       CUDA_REQUIRED: "1"
       HOME: /home/vita
+      LOGNAME: vita-payload
+      USER: vita-payload
       XDG_CACHE_HOME: /home/vita/.cache
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility

@@ -46,6 +46,26 @@ RUN python -m pip install --no-cache-dir --no-deps . \
     && python -m pip check \
     && python -c "import importlib.metadata as metadata, cv2, matplotlib, numpy, omnicloudmask, rasterio, scipy, segmentation_models_pytorch, tensorrt, terratorch, torch; from prithvi_payload.cloud_classifier import DEFAULT_CLOUD_CONFIG; assert DEFAULT_CLOUD_CONFIG.is_file(), DEFAULT_CLOUD_CONFIG; assert numpy.__version__ == '1.26.4', numpy.__version__; assert metadata.version('terratorch') == '1.1.1', metadata.version('terratorch'); assert metadata.version('torchgeo') == '0.7.1', metadata.version('torchgeo'); assert metadata.version('lightly') == '1.5.22', metadata.version('lightly'); assert metadata.version('segmentation-models-pytorch') == '0.5.0', metadata.version('segmentation-models-pytorch'); assert metadata.version('torch-tensorrt').startswith('2.6.0a0'), metadata.version('torch-tensorrt'); assert torch.__version__.startswith('2.6.0a0+ecf3bae40a'), torch.__version__; assert torch.version.cuda == '12.8', torch.version.cuda; assert tensorrt.__version__.startswith('10.8.'), tensorrt.__version__; print('Validated build-time stack:', numpy.__version__, metadata.version('terratorch'), metadata.version('torchgeo'), metadata.version('lightly'), cv2.__version__, rasterio.__version__, scipy.__version__, torch.__version__, torch.version.cuda, tensorrt.__version__, metadata.version('torch-tensorrt'), DEFAULT_CLOUD_CONFIG)"
 
+ARG VITA_PAYLOAD_UID=2002
+ARG VITA_PAYLOAD_GID=2002
+RUN set -eux; \
+    if ! getent group "${VITA_PAYLOAD_GID}" >/dev/null; then \
+        groupadd --gid "${VITA_PAYLOAD_GID}" vita-payload; \
+    fi; \
+    if ! getent passwd "${VITA_PAYLOAD_UID}" >/dev/null; then \
+        useradd --uid "${VITA_PAYLOAD_UID}" --gid "${VITA_PAYLOAD_GID}" \
+            --home-dir /home/vita --no-create-home --shell /bin/false vita-payload; \
+    fi; \
+    install -d -m 0700 -o "${VITA_PAYLOAD_UID}" -g "${VITA_PAYLOAD_GID}" /home/vita; \
+    getent passwd "${VITA_PAYLOAD_UID}"
+
+ENV HOME=/home/vita \
+    LOGNAME=vita-payload \
+    USER=vita-payload \
+    XDG_CACHE_HOME=/home/vita/.cache
+USER ${VITA_PAYLOAD_UID}:${VITA_PAYLOAD_GID}
+RUN python -c "import getpass, os, pwd; record = pwd.getpwuid(os.getuid()); assert record.pw_uid == int('${VITA_PAYLOAD_UID}'), record; assert record.pw_gid == int('${VITA_PAYLOAD_GID}'), record; assert getpass.getuser() == 'vita-payload', getpass.getuser(); print('Validated runtime identity:', record)"
+
 EXPOSE 8090
 HEALTHCHECK --interval=10s --timeout=5s --start-period=90m --retries=6 \
     CMD curl --fail --silent http://127.0.0.1:8090/healthz >/dev/null || exit 1
