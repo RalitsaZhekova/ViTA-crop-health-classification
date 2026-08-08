@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import torch
-from prithvi_payload.inference import PayloadCropModel
+from prithvi_payload.inference import (
+    PayloadCropModel,
+    _functionalize_prithvi_export_for_tensorrt,
+)
 from torch import Tensor, nn
 
 
@@ -23,6 +26,16 @@ class _BatchRecordingModel(nn.Module):
         return logits
 
 
+class _FourTemporaryDivisions(nn.Module):
+    def forward(self, image: Tensor) -> Tensor:
+        vectors = []
+        for _ in range(4):
+            omega = torch.arange(4, dtype=image.dtype, device=image.device)
+            omega /= 2.0
+            vectors.append(omega)
+        return image + torch.stack(vectors).sum(dim=0)
+
+
 def test_optimized_model_pads_to_fixed_batch_and_returns_only_real_tiles() -> None:
     backend = _BatchRecordingModel()
     model = PayloadCropModel(
@@ -42,3 +55,20 @@ def test_optimized_model_pads_to_fixed_batch_and_returns_only_real_tiles() -> No
 
     assert backend.batch_size == 4
     assert result.crop_probability.shape == (1, 224, 224)
+
+
+def test_prithvi_export_functionalization_preserves_output_and_decomposes() -> None:
+    sample = torch.ones(4)
+    exported = torch.export.export(_FourTemporaryDivisions(), (sample,), strict=False)
+    reference = exported.module()(sample)
+
+    replacements = _functionalize_prithvi_export_for_tensorrt(exported)
+    result = exported.module()(sample)
+
+    assert replacements == 4
+    torch.testing.assert_close(result, reference)
+    assert all(
+        node.target != torch.ops.aten.div_.Tensor
+        for node in exported.graph_module.graph.nodes
+    )
+    exported.run_decompositions()

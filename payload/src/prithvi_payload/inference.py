@@ -155,6 +155,7 @@ def _compile_tensorrt(
     """Compile and cache the fixed crop graph with the Jetson Torch-TensorRT stack."""
     if device.type != "cuda":
         raise RuntimeError("TensorRT crop inference requires a CUDA device")
+    _functionalize_prithvi_export_for_tensorrt(exported_program)
     try:
         import torch_tensorrt
     except ImportError as error:
@@ -253,6 +254,39 @@ def _compile_tensorrt(
     }
     del reference_model, reference, accelerated, parity_inputs
     return compiled, engine_count, parity
+
+
+def _functionalize_prithvi_export_for_tensorrt(exported_program: Any) -> int:
+    """Replace the pinned Prithvi helper's safe, temporary in-place divisions.
+
+    TerraTorch 1.1.1 builds four sinusoidal-coordinate vectors with ``div_``.
+    PyTorch can execute that exported graph, but the PyTorch 2.6 decomposition
+    pass used by Torch-TensorRT rejects mutation of its frozen temporary storage.
+    Each temporary has exactly one user, so replacing ``div_`` with ``div`` is
+    mathematically identical and removes the unsupported mutation.
+    """
+    graph_module = exported_program.graph_module
+    replacements = 0
+    for node in graph_module.graph.nodes:
+        if node.op != "call_function" or node.target != torch.ops.aten.div_.Tensor:
+            continue
+        source = node.args[0] if node.args else None
+        if not isinstance(source, torch.fx.Node) or set(source.users) != {node}:
+            raise RuntimeError(
+                "Cannot safely functionalize an aliased in-place division in the crop export"
+            )
+        node.target = torch.ops.aten.div.Tensor
+        replacements += 1
+
+    if replacements not in {0, 4}:
+        raise RuntimeError(
+            "Unexpected Prithvi export mutation count: "
+            f"expected zero or four in-place divisions, got {replacements}"
+        )
+    if replacements:
+        graph_module.graph.lint()
+        graph_module.recompile()
+    return replacements
 
 
 def _model_state(checkpoint: dict[str, Any]) -> dict[str, Tensor]:
