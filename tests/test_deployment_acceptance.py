@@ -18,6 +18,7 @@ def _health() -> dict:
             "crop_tensorrt_parity": {
                 "class_mismatch_fraction": 0.0,
                 "mean_absolute_probability_error": 0.0,
+                "serialized_engine_reused": 0.0,
                 "validation_tile_count": 16.0,
                 "validation_pixel_count": 700_000.0,
                 "validation_decision_count": 1_400_000.0,

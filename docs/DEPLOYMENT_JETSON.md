@@ -39,7 +39,7 @@ The acceleration policy is:
 | Stage | MVP execution | Reason |
 |---|---|---|
 | OmniCloudMask ensemble | FP16 Torch-TensorRT, fixed static profiles, batch up to 4, engine/timing cache | The exact two-model mean-logit graph is compiled and parity-checked for every demo-scene shape before readiness |
-| Prithvi crop segmentation | FP16 Torch-TensorRT, TF32 disabled in fallback partitions, fixed batch 16, engine/timing cache | The 64 GB Orin amortizes dispatch across more tiles; a deterministic 16-tile parity batch drawn equally from the two Sentinel and two calibrated Balkan scenes validates probabilities and both operational thresholds before readiness |
+| Prithvi crop segmentation | FP16 Torch-TensorRT, TF32 disabled in fallback partitions, fixed batch 16, immutable serialized engine artifact plus timing cache | The 64 GB Orin amortizes dispatch across more tiles; a deterministic 16-tile parity batch drawn equally from the two Sentinel and two calibrated Balkan scenes validates probabilities and both operational thresholds before an engine artifact is persisted or admitted to readiness |
 | Balkan 10 m preparation | Embedded overview read, one multiband average GDAL warp, checksum-keyed persistent grid | Avoids decoding four full-resolution bands separately while preserving the existing 10 m UTM, band-order, nodata, and reflectance contracts |
 | Health indices and packaging | Exact vectorized NumPy statistics in RAM, concurrent RGB/overlay/grid/codec work | Routine runs avoid non-downlinked science rasters; lossless PNG level 1 and WebP method 0 favor the two-second latency contract |
 
@@ -154,7 +154,7 @@ cp deploy/payload.env.example deploy/payload.env  # skip if already configured
 ./deploy/payload/deploy.sh
 ```
 
-The script runs preflight, builds the app layer on the already-installed NVIDIA image, validates all four sensor contracts from inside the final image, starts Compose with `runtime: nvidia`, and waits up to 90 minutes for first-time export, all target-built TensorRT profiles, parity validation, both Balkan analysis grids, and exact-scene warmup. It then runs fail-closed acceleration checks and three timed repetitions of all four scenes. First startup can be slow; subsequent restarts reuse export, engine, timing, and checksum-keyed Balkan grid caches.
+The script runs preflight, builds the app layer on the already-installed NVIDIA image, validates all four sensor contracts from inside the final image, starts Compose with `runtime: nvidia`, and waits up to 90 minutes for first-time export, all target-built TensorRT profiles, parity validation, immutable crop-engine serialization, both Balkan analysis grids, and exact-scene warmup. It then runs fail-closed acceleration checks and three timed repetitions of all four scenes. First startup can be slow; subsequent restarts load the validated crop artifact without recompiling and reuse export, cloud-engine, timing, and checksum-keyed Balkan grid caches.
 
 If startup fails or the container restarts, the script prints the last 200 log lines and
 brings down only the explicitly named `vita-payload` Compose project. It retains the
@@ -162,8 +162,9 @@ bind-mounted export, TensorRT, and Balkan-grid caches; these are validated reusa
 deployment artifacts, not failed containers.
 
 After full parity and performance acceptance, the script removes only the rejected
-VITA crop cache directories from the earlier synthetic-probe experiments. It retains the
-accepted `crop-fp16-no-tf32` cache and never invokes a shared Docker prune.
+VITA refittable crop-cache directories from the earlier experiments. It retains the
+validated immutable artifact under `runtime/engines/tensorrt/crop-artifacts` and never
+invokes a shared Docker prune.
 
 Check status and logs:
 

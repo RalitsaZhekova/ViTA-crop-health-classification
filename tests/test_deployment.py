@@ -130,15 +130,7 @@ def test_default_cloud_configuration_is_installed_package_data() -> None:
     assert load_config(DEFAULT_CLOUD_CONFIG)["model"]["name"] == "omnicloudmask_v4"
 
 
-@pytest.mark.parametrize(
-    "relative_path",
-    (
-        "payload/src/prithvi_payload/inference.py",
-        "payload/src/cloud_detection/tensorrt_backend.py",
-    ),
-)
-def test_tensorrt_engine_caches_build_refittable_engines(relative_path: str) -> None:
-    """Keep the Torch-TensorRT 2.6 cache contract paired at both call sites."""
+def _tensorrt_compile_keywords(relative_path: str) -> dict[str | None, ast.expr]:
     repository_root = Path(__file__).resolve().parents[1]
     tree = ast.parse((repository_root / relative_path).read_text(encoding="utf-8"))
     compile_calls = [
@@ -152,7 +144,45 @@ def test_tensorrt_engine_caches_build_refittable_engines(relative_path: str) -> 
     ]
 
     assert len(compile_calls) == 1
-    keywords = {keyword.arg: keyword.value for keyword in compile_calls[0].keywords}
+    return {keyword.arg: keyword.value for keyword in compile_calls[0].keywords}
+
+
+def test_crop_tensorrt_builds_immutable_engines_before_serializing() -> None:
+    keywords = _tensorrt_compile_keywords("payload/src/prithvi_payload/inference.py")
+
+    for name in ("cache_built_engines", "reuse_cached_engines", "make_refittable"):
+        assert isinstance(keywords.get(name), ast.Constant)
+        assert keywords[name].value is False
+
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "payload/src/prithvi_payload/inference.py"
+    ).read_text(encoding="utf-8")
+    assert "torch_tensorrt.save(compiled" in source
+    assert "torch.export.load(artifact_path).module()" in source
+    assert source.index("reference = reference_model") < source.index(
+        "compiled = torch_tensorrt.dynamo.compile"
+    )
+
+
+def test_payload_env_matches_the_production_crop_acceleration_contract() -> None:
+    environment = {}
+    path = Path(__file__).resolve().parents[1] / "deploy/payload.env.example"
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line and not line.startswith("#"):
+            name, value = line.split("=", maxsplit=1)
+            environment[name] = value
+
+    assert environment["VITA_CROP_TRT_PRECISION"] == "fp16"
+    assert environment["VITA_CROP_TRT_MAX_CLASS_MISMATCH"] == "0.002"
+    assert environment["VITA_CROP_TRT_MAX_MEAN_PROBABILITY_ERROR"] == "0.01"
+
+
+def test_cloud_tensorrt_cache_builds_refittable_engines() -> None:
+    keywords = _tensorrt_compile_keywords(
+        "payload/src/cloud_detection/tensorrt_backend.py"
+    )
+
     for name in ("cache_built_engines", "reuse_cached_engines", "make_refittable"):
         assert isinstance(keywords.get(name), ast.Constant)
         assert keywords[name].value is True

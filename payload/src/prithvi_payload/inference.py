@@ -153,7 +153,7 @@ def _compile_tensorrt(
     device: torch.device,
     parity_inputs: tuple[Tensor, Tensor, Tensor, Tensor, Tensor] | None,
 ) -> tuple[nn.Module, int, dict[str, float], str, bool]:
-    """Compile and cache the fixed crop graph with the Jetson Torch-TensorRT stack."""
+    """Load or build one validated immutable crop TensorRT artifact on Jetson."""
     if device.type != "cuda":
         raise RuntimeError("TensorRT crop inference requires a CUDA device")
     _functionalize_prithvi_export_for_tensorrt(exported_program)
@@ -179,50 +179,10 @@ def _compile_tensorrt(
         torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False
     cache_precision = f"{precision_name}-no-tf32" if disable_tf32 else precision_name
-    engine_cache = cache_root / f"crop-{cache_precision}"
-    engine_cache.mkdir(parents=True, exist_ok=True)
     inputs = list(_example_inputs(device))
-    compiled = torch_tensorrt.dynamo.compile(
-        exported_program,
-        arg_inputs=inputs,
-        enabled_precisions={precisions[precision_name]},
-        disable_tf32=disable_tf32,
-        require_full_compilation=_environment_flag("VITA_TRT_REQUIRE_FULL", False),
-        pass_through_build_failures=True,
-        optimization_level=int(os.environ.get("VITA_TRT_OPTIMIZATION_LEVEL", "3")),
-        num_avg_timing_iters=int(
-            os.environ.get("VITA_TRT_NUM_AVG_TIMING_ITERS", "3")
-        ),
-        workspace_size=int(os.environ.get("VITA_TRT_WORKSPACE_BYTES", str(2 * 1024**3))),
-        timing_cache_path=str(cache_root / "timing-cache.bin"),
-        cache_built_engines=True,
-        reuse_cached_engines=True,
-        # Torch-TensorRT 2.6 only permits persistent engine caching for
-        # refittable engines. The cached engine is still immutable at runtime;
-        # this flag records the weight-refit metadata required by its cache API.
-        make_refittable=True,
-        engine_cache_dir=str(engine_cache),
-        engine_cache_size=int(os.environ.get("VITA_TRT_CACHE_BYTES", str(8 * 1024**3))),
-    )
-    engine_nodes = sum(
-        "tensorrt" in str(node.target).casefold()
-        or "run_on_acc" in str(node.target).casefold()
-        for node in compiled.graph.nodes
-    )
-    engine_modules = sum(
-        "tensorrt" in type(module).__module__.casefold()
-        or "tensorrt" in type(module).__name__.casefold()
-        for _, module in compiled.named_modules()
-    )
-    engine_count = max(engine_nodes, engine_modules)
-    if engine_count < 1:
-        raise RuntimeError("Torch-TensorRT produced no TensorRT engine partitions")
 
-    # Validate the exact compiled fixed-batch contract against the exported
-    # PyTorch graph before discarding the reference implementation. Gaussian
-    # noise is not a valid parity input for this segmentation head: it places a
-    # disproportionate number of pixels beside the decision threshold. Production
-    # supplies a balanced, deterministic batch from all four packaged scenes.
+    # Capture the PyTorch result before calling the compiler. Compilation is not
+    # allowed to become part of the reference path or mutate what parity means.
     if parity_inputs is None:
         raise RuntimeError("Crop TensorRT requires representative packaged-scene parity inputs")
     parity_batch = [value.to(device) for value in parity_inputs]
@@ -245,29 +205,81 @@ def _compile_tensorrt(
     reference_model = exported_program.module().to(device)
     with torch.inference_mode():
         reference = reference_model(*model_parity_inputs)
-        accelerated = compiled(*model_parity_inputs)
-    if (
-        not isinstance(reference, Tensor)
-        or not isinstance(accelerated, Tensor)
-        or accelerated.shape != reference.shape
-    ):
-        raise RuntimeError("Crop TensorRT output contract does not match PyTorch")
-    if not bool(torch.isfinite(accelerated).all()):
-        raise RuntimeError("Crop TensorRT produced non-finite logits")
+    if not isinstance(reference, Tensor):
+        raise RuntimeError("Exported crop model did not return tensor logits")
+
+    artifact_directory = cache_root / "crop-artifacts"
+    artifact_directory.mkdir(parents=True, exist_ok=True)
+    torch_version = torch.__version__.split("+", maxsplit=1)[0].replace(".", "_")
+    torch_tensorrt_version = str(torch_tensorrt.__version__).replace(".", "_").replace(
+        "+", "_"
+    )
+    artifact_path = artifact_directory / (
+        f"crop.{SELECTED_CHECKPOINT_SHA256[:12]}.torch_{torch_version}."
+        f"torchtrt_{torch_tensorrt_version}.{cache_precision}."
+        f"batch_{OPTIMIZED_BATCH_SIZE}.immutable.ep"
+    )
+
+    def engine_partition_count(module: nn.Module) -> int:
+        engine_nodes = sum(
+            "tensorrt" in str(node.target).casefold()
+            or "run_on_acc" in str(node.target).casefold()
+            for node in module.graph.nodes
+        )
+        engine_modules = sum(
+            "tensorrt" in type(child).__module__.casefold()
+            or "tensorrt" in type(child).__name__.casefold()
+            for _, child in module.named_modules()
+        )
+        count = max(engine_nodes, engine_modules)
+        if count < 1:
+            raise RuntimeError("Torch-TensorRT produced no TensorRT engine partitions")
+        return count
+
+    def validate(compiled_module: nn.Module) -> dict[str, float]:
+        """Fail closed unless the exact production graph agrees with PyTorch."""
+        with torch.inference_mode():
+            accelerated = compiled_module(*model_parity_inputs)
+        if (
+            not isinstance(accelerated, Tensor)
+            or accelerated.shape != reference.shape
+        ):
+            raise RuntimeError("Crop TensorRT output contract does not match PyTorch")
+        if not bool(torch.isfinite(accelerated).all()):
+            raise RuntimeError("Crop TensorRT produced non-finite logits")
+        accelerated_probability = accelerated.float().softmax(dim=1)[:, 1]
+        accelerated_crop = accelerated_probability.unsqueeze(1) >= decision_thresholds
+        mismatch = float(
+            (reference_crop != accelerated_crop)[decision_valid_mask]
+            .float()
+            .mean()
+            .item()
+        )
+        absolute_error = (reference_probability - accelerated_probability).abs()[
+            valid_mask
+        ]
+        mean_error = float(absolute_error.mean().item())
+        if mismatch > maximum_mismatch or mean_error > maximum_mean_error:
+            raise RuntimeError(
+                "Crop TensorRT parity failed: "
+                f"decision mismatch {mismatch:.8f}/{maximum_mismatch:.8f}, "
+                f"mean probability error {mean_error:.8f}/{maximum_mean_error:.8f}"
+            )
+        return {
+            "class_mismatch_fraction": mismatch,
+            "mean_absolute_probability_error": mean_error,
+            "maximum_absolute_probability_error": float(absolute_error.max().item()),
+            "validation_tile_count": float(batch_size),
+            "validation_pixel_count": float(valid_mask.count_nonzero().item()),
+            "validation_decision_count": float(
+                decision_valid_mask.count_nonzero().item()
+            ),
+        }
+
     reference_probability = reference.float().softmax(dim=1)[:, 1]
-    accelerated_probability = accelerated.float().softmax(dim=1)[:, 1]
     decision_thresholds = parity_batch[3].view(batch_size, 2, 1, 1)
     reference_crop = reference_probability.unsqueeze(1) >= decision_thresholds
-    accelerated_crop = accelerated_probability.unsqueeze(1) >= decision_thresholds
     decision_valid_mask = valid_mask.unsqueeze(1).expand_as(reference_crop)
-    mismatch = float(
-        (reference_crop != accelerated_crop)[decision_valid_mask]
-        .float()
-        .mean()
-        .item()
-    )
-    absolute_error = (reference_probability - accelerated_probability).abs()[valid_mask]
-    mean_error = float(absolute_error.mean().item())
     maximum_mismatch = float(
         os.environ.get("VITA_CROP_TRT_MAX_CLASS_MISMATCH", "0.002")
     )
@@ -276,23 +288,63 @@ def _compile_tensorrt(
     )
     if not 0.0 <= maximum_mismatch <= 1.0 or maximum_mean_error < 0.0:
         raise RuntimeError("Crop TensorRT parity tolerances are invalid")
-    if mismatch > maximum_mismatch or mean_error > maximum_mean_error:
-        raise RuntimeError(
-            "Crop TensorRT parity failed: "
-            f"decision mismatch {mismatch:.8f}/{maximum_mismatch:.8f}, "
-            f"mean probability error {mean_error:.8f}/{maximum_mean_error:.8f}"
-        )
-    parity = {
-        "class_mismatch_fraction": mismatch,
-        "mean_absolute_probability_error": mean_error,
-        "maximum_absolute_probability_error": float(absolute_error.max().item()),
-        "validation_tile_count": float(batch_size),
-        "validation_pixel_count": float(valid_mask.count_nonzero().item()),
-        "validation_decision_count": float(
-            decision_valid_mask.count_nonzero().item()
+
+    # A saved AOT artifact contains immutable TensorRT engine bytes and loads
+    # without recompilation. Validate it on every process start before use.
+    if artifact_path.is_file():
+        try:
+            compiled = torch.export.load(artifact_path).module()
+            engine_count = engine_partition_count(compiled)
+            parity = validate(compiled)
+            parity["serialized_engine_reused"] = 1.0
+            del reference_model, parity_batch
+            return compiled, engine_count, parity, precision_name, not disable_tf32
+        except Exception as error:
+            warnings.warn(
+                f"Discarding rejected immutable crop TensorRT artifact: {error}",
+                stacklevel=2,
+            )
+            artifact_path.unlink(missing_ok=True)
+
+    # Do not use Torch-TensorRT's refittable engine cache for this fixed-weight
+    # model. The earlier cache path reused/refit weight-bearing partitions and
+    # repeatedly produced the same incorrect output across FP16 and FP32 builds.
+    compiled = torch_tensorrt.dynamo.compile(
+        exported_program,
+        arg_inputs=inputs,
+        enabled_precisions={precisions[precision_name]},
+        disable_tf32=disable_tf32,
+        require_full_compilation=_environment_flag("VITA_TRT_REQUIRE_FULL", False),
+        pass_through_build_failures=True,
+        optimization_level=int(os.environ.get("VITA_TRT_OPTIMIZATION_LEVEL", "3")),
+        num_avg_timing_iters=int(
+            os.environ.get("VITA_TRT_NUM_AVG_TIMING_ITERS", "3")
         ),
-    }
-    del reference_model, reference, accelerated, parity_batch
+        workspace_size=int(os.environ.get("VITA_TRT_WORKSPACE_BYTES", str(2 * 1024**3))),
+        timing_cache_path=str(cache_root / "timing-cache.bin"),
+        cache_built_engines=False,
+        reuse_cached_engines=False,
+        make_refittable=False,
+    )
+    engine_count = engine_partition_count(compiled)
+    parity = validate(compiled)
+
+    temporary = artifact_path.with_name(
+        f".{artifact_path.stem}.{os.getpid()}.tmp.ep"
+    )
+    try:
+        torch_tensorrt.save(compiled, str(temporary), inputs=inputs)
+        persisted = torch.export.load(temporary).module()
+        persisted_engine_count = engine_partition_count(persisted)
+        persisted_parity = validate(persisted)
+        os.replace(temporary, artifact_path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    persisted_parity["serialized_engine_reused"] = 0.0
+    del compiled, reference_model, parity, parity_batch
+    compiled = persisted
+    engine_count = persisted_engine_count
+    parity = persisted_parity
     return compiled, engine_count, parity, precision_name, not disable_tf32
 
 

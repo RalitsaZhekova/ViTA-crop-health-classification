@@ -40,6 +40,13 @@ def validate_health(health: dict[str, Any]) -> dict[str, Any]:
     crop_parity = stack.get("crop_tensorrt_parity")
     if not isinstance(crop_parity, dict):
         raise RuntimeError("Crop TensorRT has no PyTorch parity record")
+    serialized_engine_reused = crop_parity.get("serialized_engine_reused")
+    if (
+        isinstance(serialized_engine_reused, bool)
+        or not isinstance(serialized_engine_reused, (int, float))
+        or float(serialized_engine_reused) not in {0.0, 1.0}
+    ):
+        raise RuntimeError("Crop TensorRT did not load a validated immutable artifact")
     crop_mismatch = crop_parity.get("class_mismatch_fraction")
     crop_mean_error = crop_parity.get("mean_absolute_probability_error")
     maximum_crop_mismatch = float(
