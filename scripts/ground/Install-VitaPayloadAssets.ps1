@@ -105,7 +105,9 @@ $skipped = 0
 foreach ($asset in $assets) {
     $localPath = Join-Path $repositoryRoot ($asset.RelativePath -replace '/', '\')
     $remotePath = "$RemoteProjectRoot/$($asset.RelativePath)"
-    $remoteOutput = Invoke-Remote "if [ -f '$remotePath' ]; then sha256sum -- '$remotePath'; fi"
+    $remoteOutput = @(
+        Invoke-Remote "if [ -f '$remotePath' ]; then sha256sum -- '$remotePath'; fi"
+    )
     $remoteHash = if ($remoteOutput.Count) {
         ([string]$remoteOutput[0] -split '\s+')[0].ToLowerInvariant()
     } else {
@@ -127,7 +129,7 @@ foreach ($asset in $assets) {
         $null = Invoke-Remote "rm -f -- '$temporaryPath'"
         throw "SCP failed for $($asset.RelativePath)."
     }
-    $temporaryOutput = Invoke-Remote "sha256sum -- '$temporaryPath'"
+    $temporaryOutput = @(Invoke-Remote "sha256sum -- '$temporaryPath'")
     $temporaryHash = ([string]$temporaryOutput[0] -split '\s+')[0].ToLowerInvariant()
     if ($temporaryHash -ne $asset.Sha256) {
         $null = Invoke-Remote "rm -f -- '$temporaryPath'"
