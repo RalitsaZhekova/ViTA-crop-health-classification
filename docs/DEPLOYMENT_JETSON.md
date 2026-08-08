@@ -39,7 +39,7 @@ The acceleration policy is:
 | Stage | MVP execution | Reason |
 |---|---|---|
 | OmniCloudMask ensemble | FP16 Torch-TensorRT, fixed static profiles, batch up to 4, engine/timing cache | The exact two-model mean-logit graph is compiled and parity-checked for every demo-scene shape before readiness |
-| Prithvi crop segmentation | FP16 Torch-TensorRT, TF32 disabled in fallback partitions, fixed batch 16, immutable serialized engine artifact plus timing cache | The 64 GB Orin amortizes dispatch across more tiles; a deterministic 16-tile parity batch drawn equally from the two Sentinel and two calibrated Balkan scenes validates probabilities and both operational thresholds before an engine artifact is persisted or admitted to readiness |
+| Prithvi crop segmentation | FP16 Torch-TensorRT with FP32 matmul accumulation, fixed batch 16, immutable serialized engine artifact plus timing cache | Eight deterministic tiles spanning all four scenes transfer the PyTorch logit calibration; eight disjoint tiles spanning the same scenes must then pass the original probability and 0.2% decision gates before an artifact is persisted or admitted to readiness |
 | Balkan 10 m preparation | Embedded overview read, one multiband average GDAL warp, checksum-keyed persistent grid | Avoids decoding four full-resolution bands separately while preserving the existing 10 m UTM, band-order, nodata, and reflectance contracts |
 | Health indices and packaging | Exact vectorized NumPy statistics in RAM, concurrent RGB/overlay/grid/codec work | Routine runs avoid non-downlinked science rasters; lossless PNG level 1 and WebP method 0 favor the two-second latency contract |
 
@@ -183,8 +183,9 @@ A production-ready health response must show:
 - `crop_tensorrt_precision: "fp16"`;
 - `crop_tensorrt_tf32: false`; the NGC base's global TF32 override is disabled for
   any PyTorch fallback partitions;
-- `crop_batch_size: 16` and a crop parity record within the configured
-  decision/probability tolerances, covering 16 real tiles from four distinct scenes;
+- `crop_batch_size: 16`, `fp32_accumulation: 1`, and a crop parity record within the
+  configured decision/probability tolerances; eight real tiles spanning all four scenes
+  calibrate the backend and eight disjoint tiles spanning all four scenes validate it;
 - crop parity no worse than 0.2% disagreement across the crop and health-analysis
   thresholds and one percentage point mean absolute probability error;
 - `tensorrt_cudagraphs: true`, captured during warmup for lower fixed-shape launch overhead;
@@ -347,7 +348,7 @@ Use the stage timings in the response and payload `result.json`, not only the to
 - high condition or packaging time: inspect their detailed internal timings; the routine path uses exact in-memory science products, concurrent preparation/encoding, WebP method 0, and lossless PNG level 1;
 - high total only on the first request: warmup or engine caching is incomplete.
 
-Before accepting TensorRT, run the same scenes with `VITA_CROP_BACKEND=pytorch` and `VITA_CLOUD_INFERENCE_DTYPE=fp32`, then compare class percentages, crop percentage, condition score/label, and visual masks against the accelerated output. The original Gaussian-noise crop probe was rejected: FP16, TF32, and strict FP32 all produced the same roughly 2.56% synthetic decision mismatch and 0.0083 mean probability error, proving that reduced precision was not the cause. Production now validates a balanced batch of real, calibrated tiles from all four packaged scenes, excludes nodata pixels, and checks both the crop-classification and health-analysis thresholds. FP16 is accepted only when that domain-representative gate passes. Quantization is out of scope until a representative calibration dataset and an accuracy acceptance test exist. Do not enable `torch.backends.cudnn.benchmark` without measuring startup as well as steady state; fixed-shape autotuning can make service warmup much longer.
+Before accepting TensorRT, run the same scenes with `VITA_CROP_BACKEND=pytorch` and `VITA_CLOUD_INFERENCE_DTYPE=fp32`, then compare class percentages, crop percentage, condition score/label, and visual masks against the accelerated output. The crop engine uses FP32 accumulation for transformer matmuls while retaining FP16 tensors. Because the operational 0.30 probability threshold was calibrated on PyTorch logits, eight real tiles spanning every packaged scene fit a monotonic affine transfer for the TensorRT logit margin. Eight different tiles spanning those same scenes then enforce the unchanged 0.2% decision-disagreement and one-percentage-point probability gates. Calibration and validation pixels never overlap. Quantization is out of scope until a representative INT8 calibration dataset and accuracy test exist. Do not enable `torch.backends.cudnn.benchmark` without measuring startup as well as steady state; fixed-shape autotuning can make service warmup much longer.
 
 Historical optimization measurements on the RTX 3060 development machine showed that
 the reviewed FP32 change reduced the already

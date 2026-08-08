@@ -153,6 +153,8 @@ def test_crop_tensorrt_builds_immutable_engines_before_serializing() -> None:
     for name in ("cache_built_engines", "reuse_cached_engines", "make_refittable"):
         assert isinstance(keywords.get(name), ast.Constant)
         assert keywords[name].value is False
+    assert isinstance(keywords.get("use_fp32_acc"), ast.Constant)
+    assert keywords["use_fp32_acc"].value is True
 
     source = (
         Path(__file__).resolve().parents[1]

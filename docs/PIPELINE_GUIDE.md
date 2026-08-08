@@ -319,10 +319,12 @@ remain PyTorch FP32.
 
 Crop tiles run in batches of 16 on Orin. The final short batch is padded to the same
 static shape and only real outputs are retained. Torch-TensorRT compiles supported
-Prithvi subgraphs to FP16 and persists export, engine, and timing caches under
-`runtime/engines`. A deterministic non-zero probe checks crop decisions and
-probabilities against the exported PyTorch graph before readiness. Engines must be
-built on this Orin; local RTX plans are not deployed.
+Prithvi subgraphs to FP16 with FP32 matmul accumulation and persists the validated
+immutable artifact and timing cache under `runtime/engines`. Eight real tiles spanning
+all four scenes fit a two-parameter, monotonic PyTorch-to-TensorRT logit transfer; eight
+disjoint tiles spanning those scenes must pass the unchanged decision and probability
+gates before readiness. Engines must be built on this Orin; local RTX plans are not
+deployed.
 
 ### CUDA graph replay
 

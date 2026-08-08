@@ -67,8 +67,29 @@ def validate_health(health: dict[str, Any]) -> dict[str, Any]:
         ):
             raise RuntimeError(f"Crop TensorRT failed {label} parity")
     expected_crop_batch_size = int(os.environ.get("VITA_CROP_BATCH_SIZE", "16"))
-    if int(crop_parity.get("validation_tile_count", 0)) != expected_crop_batch_size:
-        raise RuntimeError("Crop TensorRT parity did not validate the fixed tile batch")
+    if int(crop_parity.get("compiled_batch_tile_count", 0)) != expected_crop_batch_size:
+        raise RuntimeError("Crop TensorRT did not compile the fixed tile batch")
+    calibration_tile_count = int(crop_parity.get("calibration_tile_count", 0))
+    validation_tile_count = int(crop_parity.get("validation_tile_count", 0))
+    if (
+        calibration_tile_count < 4
+        or validation_tile_count < 4
+        or calibration_tile_count + validation_tile_count != expected_crop_batch_size
+    ):
+        raise RuntimeError("Crop TensorRT calibration/validation tile split is invalid")
+    if crop_parity.get("fp32_accumulation") != 1.0:
+        raise RuntimeError("Crop TensorRT FP16 engine does not use FP32 accumulation")
+    logit_scale = crop_parity.get("logit_calibration_scale")
+    logit_bias = crop_parity.get("logit_calibration_bias")
+    if (
+        isinstance(logit_scale, bool)
+        or not isinstance(logit_scale, (int, float))
+        or not 0.5 <= float(logit_scale) <= 2.0
+        or isinstance(logit_bias, bool)
+        or not isinstance(logit_bias, (int, float))
+        or not math.isfinite(float(logit_bias))
+    ):
+        raise RuntimeError("Crop TensorRT logit calibration is invalid")
     validation_pixel_count = int(crop_parity.get("validation_pixel_count", 0))
     if validation_pixel_count < 1:
         raise RuntimeError("Crop TensorRT parity validated no source pixels")
