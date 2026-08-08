@@ -26,7 +26,7 @@ validate + catalog ingest
 ground dashboard on 127.0.0.1:8000
 ```
 
-The payload image extends `nvcr.io/nvidia/pytorch:25.01-py3-igpu`, matching the stack verified inside the target Orin's NVIDIA runtime: NumPy 1.26.4, PyTorch `2.6.0a0+ecf3bae40a.nv25.01`, CUDA 12.8, TensorRT 10.8.0.40, and Torch-TensorRT 2.6.0a0. The Docker build pins NumPy 1.26.4 and asserts every accelerated-stack version, failing if dependency resolution changes it.
+The payload image extends `nvcr.io/nvidia/pytorch:25.01-py3-igpu`, matching the stack verified inside the target Orin's NVIDIA runtime: base NumPy 1.26.4, PyTorch `2.6.0a0+ecf3bae40a.nv25.01`, CUDA 12.8, TensorRT 10.8.0.40, and Torch-TensorRT 2.6.0a0. TerraTorch 1.2.10 requires NumPy 2.2 or newer and OmniCloudMask requires the segmentation-models-pytorch 0.5 generation, so the derived VITA image pins NumPy 2.2.6. The build imports NumPy, Rasterio, SciPy, PyTorch, TensorRT, and Torch-TensorRT together and asserts every accelerated-stack version, failing if dependency resolution disturbs the NVIDIA framework stack.
 
 The target host is JetPack 7.2 / L4T R39.2. NVIDIA's published Jetson PyTorch compatibility table originally paired container 25.01 with JetPack 6.1, so this is not a vendor-certified version pairing. It is retained for the MVP because both the unmodified NGC image and the local NumPy-1.26 derivative passed a live `--runtime nvidia` CUDA check on this exact Orin, while moving to PyTorch 2.11 would change the inference/compiler stack. Record this exception in the release evidence and requalify against a JetPack-7.2-supported framework image before a mission production release.
 

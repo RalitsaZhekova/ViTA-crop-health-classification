@@ -34,7 +34,7 @@ RUN set -eux; \
         grep -viE '^[[:space:]]*numpy([[:space:]<>=!~]|$)' \
             /etc/pip/constraint.txt > /tmp/vita-constraint.txt || true; \
     fi; \
-    printf 'numpy==1.26.4\n' >> /tmp/vita-constraint.txt; \
+    printf 'numpy==2.2.6\n' >> /tmp/vita-constraint.txt; \
     python -m pip install --no-cache-dir --constraint /tmp/vita-constraint.txt \
         --requirement /tmp/requirements-payload.txt
 
@@ -45,7 +45,7 @@ COPY integration ./integration
 COPY ground ./ground
 RUN python -m pip install --no-cache-dir --no-deps . \
     && python -m pip check \
-    && python -c "import numpy, tensorrt, torch, torch_tensorrt; assert numpy.__version__ == '1.26.4', numpy.__version__; assert torch.__version__.startswith('2.6.0a0+ecf3bae40a'), torch.__version__; assert torch.version.cuda == '12.8', torch.version.cuda; assert tensorrt.__version__.startswith('10.8.'), tensorrt.__version__; assert torch_tensorrt.__version__.startswith('2.6.0a0'), torch_tensorrt.__version__; print('Validated NVIDIA stack:', numpy.__version__, torch.__version__, torch.version.cuda, tensorrt.__version__)"
+    && python -c "import matplotlib, numpy, omnicloudmask, rasterio, scipy, segmentation_models_pytorch, tensorrt, terratorch, torch, torch_tensorrt; assert numpy.__version__ == '2.2.6', numpy.__version__; assert torch.__version__.startswith('2.6.0a0+ecf3bae40a'), torch.__version__; assert torch.version.cuda == '12.8', torch.version.cuda; assert tensorrt.__version__.startswith('10.8.'), tensorrt.__version__; assert torch_tensorrt.__version__.startswith('2.6.0a0'), torch_tensorrt.__version__; print('Validated payload stack:', numpy.__version__, rasterio.__version__, scipy.__version__, torch.__version__, torch.version.cuda, tensorrt.__version__)"
 
 EXPOSE 8090
 HEALTHCHECK --interval=10s --timeout=5s --start-period=90m --retries=6 \

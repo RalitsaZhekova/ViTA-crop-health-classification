@@ -101,7 +101,7 @@ docker run --rm \
   --entrypoint bash \
   --volume "$PROJECT_ROOT/deploy/requirements-payload.txt:/tmp/requirements-payload.txt:ro" \
   "$BASE_IMAGE" -lc \
-  ': > /tmp/vita-constraint.txt; if [ -f /etc/pip/constraint.txt ]; then grep -viE "^[[:space:]]*numpy([[:space:]<>=!~]|$)" /etc/pip/constraint.txt > /tmp/vita-constraint.txt || true; fi; printf "numpy==1.26.4\n" >> /tmp/vita-constraint.txt; python -m pip install --dry-run --constraint /tmp/vita-constraint.txt --requirement /tmp/requirements-payload.txt >/dev/null'
+  ': > /tmp/vita-constraint.txt; if [ -f /etc/pip/constraint.txt ]; then grep -viE "^[[:space:]]*numpy([[:space:]<>=!~]|$)" /etc/pip/constraint.txt > /tmp/vita-constraint.txt || true; fi; printf "numpy==2.2.6\n" >> /tmp/vita-constraint.txt; python -m pip install --dry-run --constraint /tmp/vita-constraint.txt --requirement /tmp/requirements-payload.txt >/dev/null'
 
 docker compose -f deploy/compose.payload.yaml config --quiet
 
