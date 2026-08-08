@@ -95,13 +95,12 @@ docker run --rm --runtime nvidia --entrypoint python "$BASE_IMAGE" -c \
   'import numpy, tensorrt, torch, torch_tensorrt; assert torch.cuda.is_available(); assert numpy.__version__ == "1.26.4", numpy.__version__; assert torch.__version__.startswith("2.6.0a0+ecf3bae40a"), torch.__version__; assert torch.version.cuda == "12.8", torch.version.cuda; assert tensorrt.__version__.startswith("10.8."), tensorrt.__version__; assert torch_tensorrt.__version__.startswith("2.6.0a0"), torch_tensorrt.__version__; print({"numpy": numpy.__version__, "torch": torch.__version__, "cuda": torch.version.cuda, "gpu": torch.cuda.get_device_name(0), "tensorrt": tensorrt.__version__, "torch_tensorrt": torch_tensorrt.__version__})'
 
 echo "Checking the temporary-container package sources used by the Docker build."
-docker run --rm --entrypoint bash "$BASE_IMAGE" -lc \
-  'apt-get update >/dev/null && apt-get install --simulate --no-install-recommends ca-certificates curl gdal-bin libgdal-dev tini >/dev/null'
 docker run --rm \
-  --entrypoint bash \
-  --volume "$PROJECT_ROOT/deploy/requirements-payload.txt:/tmp/requirements-payload.txt:ro" \
-  "$BASE_IMAGE" -lc \
-  ': > /tmp/vita-constraint.txt; if [ -f /etc/pip/constraint.txt ]; then grep -viE "^[[:space:]]*numpy([[:space:]<>=!~]|$)" /etc/pip/constraint.txt > /tmp/vita-constraint.txt || true; fi; printf "numpy==1.26.4\n" >> /tmp/vita-constraint.txt; python -m pip install --dry-run --constraint /tmp/vita-constraint.txt --requirement /tmp/requirements-payload.txt >/dev/null'
+    --entrypoint bash \
+    --env DEBIAN_FRONTEND=noninteractive \
+    --volume "$PROJECT_ROOT/deploy/requirements-payload.txt:/tmp/requirements-payload.txt:ro" \
+    "$BASE_IMAGE" -lc \
+  'set -e; apt-get update >/dev/null; apt-get install --yes --no-install-recommends ca-certificates curl gdal-bin libgdal-dev tini >/dev/null; test -x /usr/bin/gdal-config; echo "Disposable GDAL=$(gdal-config --version)"; : > /tmp/vita-constraint.txt; if [ -f /etc/pip/constraint.txt ]; then grep -viE "^[[:space:]]*numpy([[:space:]<>=!~]|$)" /etc/pip/constraint.txt > /tmp/vita-constraint.txt || true; fi; printf "numpy==1.26.4\n" >> /tmp/vita-constraint.txt; python -m pip install --dry-run --constraint /tmp/vita-constraint.txt --requirement /tmp/requirements-payload.txt >/dev/null'
 
 docker compose -f deploy/compose.payload.yaml config --quiet
 

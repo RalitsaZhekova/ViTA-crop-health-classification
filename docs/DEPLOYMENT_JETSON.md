@@ -132,7 +132,7 @@ chmod +x deploy/payload/*.sh
 ./deploy/payload/preflight.sh
 ```
 
-`probe.sh` is read-only and can run before the data package is present. Save its complete output for the deployment record. The preflight is successful only when the machine is a 64 GB Jetson Orin running `aarch64`, at least 10 GiB is free, the exact six-file demo manifest and model checksums pass, the exact validated ARM64 base-image ID is local, the NVIDIA Docker runtime works, CUDA is visible, and the expected PyTorch/CUDA/TensorRT/Torch-TensorRT versions import. It also performs disposable-container Ubuntu index refresh, simulated OS-package installation, and Python dependency-resolution checks, then validates the resolved Compose configuration before building. These checks do not change the base image or payload files.
+`probe.sh` is read-only and can run before the data package is present. Save its complete output for the deployment record. The preflight is successful only when the machine is a 64 GB Jetson Orin running `aarch64`, at least 10 GiB is free, the exact six-file demo manifest and model checksums pass, the exact validated ARM64 base-image ID is local, the NVIDIA Docker runtime works, CUDA is visible, and the expected NumPy/PyTorch/CUDA/TensorRT/Torch-TensorRT versions import. It also installs the required Ubuntu packages inside a disposable container, verifies `gdal-config`, performs Python dependency resolution in that same temporary environment, and validates the resolved Compose configuration before building. These checks do not change the base image, host packages, or payload files; Docker removes the temporary container when the check exits.
 
 For timing runs, inspect the current Orin power policy:
 
