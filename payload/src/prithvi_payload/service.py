@@ -181,6 +181,7 @@ class PayloadRuntime:
         started = time.perf_counter()
         pipeline_import_seconds = _preload_pipeline_modules()
         self._scene_cloud_warmups: list[dict[str, Any]] = []
+        self._crop_parity_profiles: list[dict[str, Any]] = []
         balkan_cache_started = time.perf_counter()
         self.balkan_analysis_caches = self._prepare_balkan_analysis_caches()
         self._prepare_sentinel_cloud_warmups()
@@ -193,7 +194,18 @@ class PayloadRuntime:
         cloud_seconds = time.perf_counter() - cloud_started
         crop_started = time.perf_counter()
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.crop = PayloadCropModel.load(device=device)
+        tensorrt_parity_inputs = None
+        if os.environ.get("VITA_CROP_BACKEND", "pytorch").strip().casefold() == "tensorrt":
+            from prithvi_payload.crop_parity import build_crop_parity_inputs
+
+            tensorrt_parity_inputs = build_crop_parity_inputs(
+                self._crop_parity_profiles,
+                batch_size=int(os.environ.get("VITA_CROP_BATCH_SIZE", "4")),
+            )
+        self.crop = PayloadCropModel.load(
+            device=device,
+            tensorrt_parity_inputs=tensorrt_parity_inputs,
+        )
         crop_seconds = time.perf_counter() - crop_started
         self.tensorrt_cudagraphs = _configure_tensorrt_cudagraphs()
         self.cloud_warmup_profiles: list[dict[str, int]] = []
@@ -262,6 +274,23 @@ class PayloadRuntime:
                 "input": relative_input.replace("\\", "/"),
             }
         )
+        crop_adapter = intake["model_band_routes"]["crop_classification"][
+            "spectral_adapter"
+        ]
+        self._crop_parity_profiles.append(
+            {
+                "sensor": "balkan-1",
+                "input": relative_input.replace("\\", "/"),
+                "source_path": analysis["source_path"],
+                "source_band_indices": analysis["model_band_routes"]["crop_classification"][
+                    "source_band_indices"
+                ],
+                "training_scale_multiplier": crop_adapter["source_scale_to_model_units"],
+                "calibration_path": crop_adapter["calibration_path"],
+                "calibration_source_path": intake["source_path"],
+                "acquired_at": intake["acquired_at"],
+            }
+        )
         return {
             "input": relative_input.replace("\\", "/"),
             "cache_hit": bool(analysis["runtime"].get("cache_hit")),
@@ -274,6 +303,8 @@ class PayloadRuntime:
         }
 
     def _prepare_sentinel_cloud_warmups(self) -> None:
+        import rasterio
+
         from prithvi_payload.scene_intake import inspect_scene
 
         for index, relative_input in enumerate(_sentinel_demo_inputs(), start=1):
@@ -284,9 +315,16 @@ class PayloadRuntime:
             )
             if not source.is_file():
                 raise RuntimeError(f"Configured Sentinel demo input is missing: {source}")
+            with rasterio.open(source) as dataset:
+                acquired_at = dataset.tags().get("ACQUIRED_AT")
+            if not acquired_at:
+                raise RuntimeError(
+                    f"Configured Sentinel demo input has no ACQUIRED_AT tag: {source}"
+                )
             intake = inspect_scene(
                 source,
                 sensor="sentinel-2",
+                acquired_at=acquired_at,
                 scene_id=f"startup-sentinel-warmup-{index}",
             )
             if intake.get("readiness", {}).get("intake") != "READY":
@@ -301,6 +339,18 @@ class PayloadRuntime:
                     ),
                     "nodata_value": intake["raster"].get("nodata"),
                     "input": relative_input.replace("\\", "/"),
+                }
+            )
+            crop_route = intake["model_band_routes"]["crop_classification"]
+            self._crop_parity_profiles.append(
+                {
+                    "sensor": "sentinel-2",
+                    "input": relative_input.replace("\\", "/"),
+                    "source_path": intake["source_path"],
+                    "source_band_indices": crop_route["source_band_indices"],
+                    "training_scale_multiplier": 10000.0
+                    / float(intake["radiometry"]["cloud_reflectance_divisor"]),
+                    "acquired_at": intake["acquired_at"],
                 }
             )
 
@@ -403,6 +453,9 @@ class PayloadRuntime:
             "crop_backend": self.crop.backend,
             "crop_tensorrt_engine_count": self.crop.tensorrt_engine_count,
             "crop_tensorrt_parity": self.crop.tensorrt_parity,
+            "crop_parity_scene_inputs": [
+                profile["input"] for profile in self._crop_parity_profiles
+            ],
             "crop_tensorrt_precision": self.crop.tensorrt_precision,
             "crop_tensorrt_tf32": self.crop.tensorrt_tf32,
             "crop_batch_size": self.crop.fixed_batch_size,

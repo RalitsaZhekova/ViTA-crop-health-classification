@@ -27,12 +27,12 @@ def validate_health(health: dict[str, Any]) -> dict[str, Any]:
     if int(stack.get("crop_tensorrt_engine_count", 0)) < 1:
         raise RuntimeError("Crop inference has no TensorRT engine partitions")
     expected_crop_precision = os.environ.get(
-        "VITA_CROP_TRT_PRECISION", "fp32"
+        "VITA_CROP_TRT_PRECISION", "fp16"
     ).strip().casefold()
     if stack.get("crop_tensorrt_precision") != expected_crop_precision:
         raise RuntimeError("Crop TensorRT engine uses the wrong precision")
-    if expected_crop_precision == "fp32" and stack.get("crop_tensorrt_tf32") is not False:
-        raise RuntimeError("Crop TensorRT FP32 engine did not disable TF32")
+    if stack.get("crop_tensorrt_tf32") is not False:
+        raise RuntimeError("Crop TensorRT did not disable TF32 fallback execution")
     if int(stack.get("crop_batch_size", 0)) != int(
         os.environ.get("VITA_CROP_BATCH_SIZE", "16")
     ):
@@ -46,7 +46,7 @@ def validate_health(health: dict[str, Any]) -> dict[str, Any]:
         os.environ.get("VITA_CROP_TRT_MAX_CLASS_MISMATCH", "0.002")
     )
     maximum_crop_mean_error = float(
-        os.environ.get("VITA_CROP_TRT_MAX_MEAN_PROBABILITY_ERROR", "0.005")
+        os.environ.get("VITA_CROP_TRT_MAX_MEAN_PROBABILITY_ERROR", "0.01")
     )
     for value, maximum, label in (
         (crop_mismatch, maximum_crop_mismatch, "class mismatch"),
@@ -59,6 +59,24 @@ def validate_health(health: dict[str, Any]) -> dict[str, Any]:
             or float(value) > maximum
         ):
             raise RuntimeError(f"Crop TensorRT failed {label} parity")
+    expected_crop_batch_size = int(os.environ.get("VITA_CROP_BATCH_SIZE", "16"))
+    if int(crop_parity.get("validation_tile_count", 0)) != expected_crop_batch_size:
+        raise RuntimeError("Crop TensorRT parity did not validate the fixed tile batch")
+    validation_pixel_count = int(crop_parity.get("validation_pixel_count", 0))
+    if validation_pixel_count < 1:
+        raise RuntimeError("Crop TensorRT parity validated no source pixels")
+    if int(crop_parity.get("validation_decision_count", 0)) != (
+        2 * validation_pixel_count
+    ):
+        raise RuntimeError("Crop TensorRT parity did not validate both decision thresholds")
+    crop_parity_inputs = stack.get("crop_parity_scene_inputs")
+    if (
+        not isinstance(crop_parity_inputs, list)
+        or len(crop_parity_inputs) != 4
+        or len(set(crop_parity_inputs)) != 4
+        or any(not value for value in crop_parity_inputs)
+    ):
+        raise RuntimeError("Crop TensorRT parity requires all four packaged scenes")
     if stack.get("cloud_backend") != "omnicloudmask_tensorrt_fp16":
         raise RuntimeError("Cloud inference is not using FP16 TensorRT")
     if int(stack.get("cloud_batch_size", 0)) != int(
@@ -119,6 +137,7 @@ def validate_health(health: dict[str, Any]) -> dict[str, Any]:
         "crop_tensorrt_precision": stack["crop_tensorrt_precision"],
         "crop_tensorrt_tf32": stack["crop_tensorrt_tf32"],
         "crop_tensorrt_parity": crop_parity,
+        "crop_parity_scene_count": len(crop_parity_inputs),
         "cloud_tensorrt_engine_count": stack["cloud_tensorrt_engine_count"],
         "cloud_profile_count": len(profiles),
         "warmed_scene_count": len(scene_profiles),

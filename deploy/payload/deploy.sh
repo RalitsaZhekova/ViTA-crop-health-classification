@@ -55,7 +55,7 @@ fail_startup() {
 
 remove_rejected_crop_engine_caches() {
     cache_root="$(realpath -m "$PROJECT_ROOT/runtime/engines/tensorrt")"
-    for stale_name in crop crop-fp32; do
+    for stale_name in crop crop-fp16 crop-fp32 crop-fp32-no-tf32; do
         stale_path="$(realpath -m "$cache_root/$stale_name")"
         case "$stale_path" in
             "$cache_root"/*) ;;

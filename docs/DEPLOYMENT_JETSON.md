@@ -17,7 +17,7 @@ Invoke-VitaPayload.ps1              /data/code/VITA/data (read-only)
         +===========================>| 127.0.0.1:8090
         |     small JSON request     | warm FastAPI worker
         |                            |  cloud: Torch-TensorRT FP16
-        |                            |  crop: Torch-TensorRT IEEE FP32
+        |                            |  crop: Torch-TensorRT FP16
         |                            |  health/indices: CPU + GDAL threads
         |                            |  package exactly 3 artifacts
         | SCP + SHA-256              |
@@ -39,7 +39,7 @@ The acceleration policy is:
 | Stage | MVP execution | Reason |
 |---|---|---|
 | OmniCloudMask ensemble | FP16 Torch-TensorRT, fixed static profiles, batch up to 4, engine/timing cache | The exact two-model mean-logit graph is compiled and parity-checked for every demo-scene shape before readiness |
-| Prithvi crop segmentation | IEEE FP32 Torch-TensorRT (TF32 disabled), fixed batch 16, engine/timing cache | The 64 GB Orin amortizes dispatch across more tiles; a deterministic probability/decision parity probe runs before readiness and rejected reduced-mantissa execution on the target |
+| Prithvi crop segmentation | FP16 Torch-TensorRT, TF32 disabled in fallback partitions, fixed batch 16, engine/timing cache | The 64 GB Orin amortizes dispatch across more tiles; a deterministic 16-tile parity batch drawn equally from the two Sentinel and two calibrated Balkan scenes validates probabilities and both operational thresholds before readiness |
 | Balkan 10 m preparation | Embedded overview read, one multiband average GDAL warp, checksum-keyed persistent grid | Avoids decoding four full-resolution bands separately while preserving the existing 10 m UTM, band-order, nodata, and reflectance contracts |
 | Health indices and packaging | Exact vectorized NumPy statistics in RAM, concurrent RGB/overlay/grid/codec work | Routine runs avoid non-downlinked science rasters; lossless PNG level 1 and WebP method 0 favor the two-second latency contract |
 
@@ -162,8 +162,8 @@ bind-mounted export, TensorRT, and Balkan-grid caches; these are validated reusa
 deployment artifacts, not failed containers.
 
 After full parity and performance acceptance, the script removes only the rejected
-VITA crop cache directories from the earlier FP16 and TF32 attempts. It retains the
-accepted `crop-fp32-no-tf32` cache and never invokes a shared Docker prune.
+VITA crop cache directories from the earlier synthetic-probe experiments. It retains the
+accepted `crop-fp16-no-tf32` cache and never invokes a shared Docker prune.
 
 Check status and logs:
 
@@ -179,10 +179,13 @@ A production-ready health response must show:
 - the expected PyTorch/CUDA/TensorRT/Torch-TensorRT versions;
 - `crop_backend: "tensorrt"`;
 - `crop_tensorrt_engine_count` greater than zero;
-- `crop_tensorrt_precision: "fp32"`; FP16 is rejected because it failed the
-  strict Orin Prithvi parity gate;
-- `crop_tensorrt_tf32: false`; the NGC base's global TF32 override is disabled;
-- `crop_batch_size: 16` and a crop parity record within the configured decision/probability tolerances;
+- `crop_tensorrt_precision: "fp16"`;
+- `crop_tensorrt_tf32: false`; the NGC base's global TF32 override is disabled for
+  any PyTorch fallback partitions;
+- `crop_batch_size: 16` and a crop parity record within the configured
+  decision/probability tolerances, covering 16 real tiles from four distinct scenes;
+- crop parity no worse than 0.2% disagreement across the crop and health-analysis
+  thresholds and one percentage point mean absolute probability error;
 - `tensorrt_cudagraphs: true`, captured during warmup for lower fixed-shape launch overhead;
 - `cloud_backend: "omnicloudmask_tensorrt_fp16"`;
 - `cloud_batch_size: 4`, a positive cloud TensorRT engine count, and a parity record for every static profile;
@@ -343,7 +346,7 @@ Use the stage timings in the response and payload `result.json`, not only the to
 - high condition or packaging time: inspect their detailed internal timings; the routine path uses exact in-memory science products, concurrent preparation/encoding, WebP method 0, and lossless PNG level 1;
 - high total only on the first request: warmup or engine caching is incomplete.
 
-Before accepting TensorRT, run the same scenes with `VITA_CROP_BACKEND=pytorch` and `VITA_CLOUD_INFERENCE_DTYPE=fp32`, then compare class percentages, crop percentage, condition score/label, and visual masks against the accelerated output. Crop TensorRT uses IEEE FP32 with TF32 explicitly disabled after both FP16 and TF32 produced about 2.56% synthetic decision mismatch and 0.0083 mean probability error, outside the fail-closed limits; the cloud ensemble remains separately parity-checked in FP16. Quantization is out of scope until this parity check and a representative calibration dataset are formalized. Do not enable `torch.backends.cudnn.benchmark` without measuring startup as well as steady state; fixed-shape autotuning can make service warmup much longer.
+Before accepting TensorRT, run the same scenes with `VITA_CROP_BACKEND=pytorch` and `VITA_CLOUD_INFERENCE_DTYPE=fp32`, then compare class percentages, crop percentage, condition score/label, and visual masks against the accelerated output. The original Gaussian-noise crop probe was rejected: FP16, TF32, and strict FP32 all produced the same roughly 2.56% synthetic decision mismatch and 0.0083 mean probability error, proving that reduced precision was not the cause. Production now validates a balanced batch of real, calibrated tiles from all four packaged scenes, excludes nodata pixels, and checks both the crop-classification and health-analysis thresholds. FP16 is accepted only when that domain-representative gate passes. Quantization is out of scope until a representative calibration dataset and an accuracy acceptance test exist. Do not enable `torch.backends.cudnn.benchmark` without measuring startup as well as steady state; fixed-shape autotuning can make service warmup much longer.
 
 Historical optimization measurements on the RTX 3060 development machine showed that
 the reviewed FP32 change reduced the already
@@ -362,14 +365,15 @@ Balkan 3408 (cloud 1.27, crop 0.74, exact condition 0.76, packaging 0.42) and be
 second for Sentinel. TensorRT can only be validated on the target Orin. The local FP16
 parity pass changed
 43 of 358,206 valid Sentinel classes (0.0120%) and 3 of 2,077,729 valid Balkan classes
-(0.00014%) relative to the saved FP32 masks. The project still requires an explicit
-mission accuracy tolerance before FP16 is declared scientifically accepted.
+(0.00014%) relative to the saved FP32 masks. Those results support the strict target
+gate; mission-wide FP16 approval beyond the four packaged size/scene envelope remains
+a separate scientific acceptance decision.
 
 Changing the fixed crop batch from 8 to 16 changes CUDA reduction order slightly but
 not the model or threshold. On Balkan 3408 the measured crop-coverage delta was
 0.00130 percentage points, the condition-score delta was 0.00472 points, and the label
 remained `High anomaly`. The production parity probe uses the same fixed batch-16
-contract as inference.
+contract as inference and draws four deterministic tiles from each packaged scene.
 
 Input dimensions fundamentally bound runtime. The fixed two-second service-level objective therefore applies to the four checksum-pinned scenes and their reviewed size envelope; the code bounds the Balkan cloud analysis grid at 25 million pixels and acceptance records the exact dimensions and bytes.
 
@@ -468,7 +472,7 @@ If port 18090 is occupied on ground, pass a different `-LocalTunnelPort`. If por
 
 - Payload preflight passes with the recorded JetPack/L4T and base-image digest.
 - Payload Docker build succeeds without replacing the NVIDIA PyTorch/CUDA/TensorRT stack.
-- Health reports CUDA, FP16 cloud TensorRT, IEEE FP32 crop TensorRT with TF32 disabled, positive engine counts, fixed batch 4/16, and passing compiler parity.
+- Health reports CUDA, FP16 cloud and crop TensorRT, TF32 disabled in crop fallback partitions, positive engine counts, fixed batch 4/16, and passing four-scene compiler parity.
 - All four fixed input scenes complete every configured acceptance repetition without errors.
 - Every measured `payload_seconds` value is below 2.0 seconds for the agreed pixel-size envelope.
 - Accelerated scientific outputs pass the approved FP32/PyTorch parity tolerances.

@@ -110,8 +110,9 @@ execution state.
 4. It loads the two OmniCloudMask ensemble checkpoints once.
 5. It loads the selected Prithvi crop model once and optionally compiles/caches its
    Torch-TensorRT representation.
-6. It builds/loads target TensorRT engines, validates compiler parity, and warms the
-   exact two Sentinel and two Balkan cloud paths plus the fixed crop batch.
+6. It builds/loads target TensorRT engines, validates crop compiler parity with a
+   balanced fixed batch from the exact two Sentinel and two Balkan scenes, and warms
+   all four cloud paths plus the fixed crop batch.
 7. Only then does `/healthz` report `status: ready`. Readiness includes a tiny
    synchronized CUDA operation on the model worker, so a stale context after a
    laptop sleep, driver reset, or GPU switch is detected before a job starts.
