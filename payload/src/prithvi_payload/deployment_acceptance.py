@@ -26,6 +26,11 @@ def validate_health(health: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("TensorRT CUDA graph replay is not enabled")
     if int(stack.get("crop_tensorrt_engine_count", 0)) < 1:
         raise RuntimeError("Crop inference has no TensorRT engine partitions")
+    expected_crop_precision = os.environ.get(
+        "VITA_CROP_TRT_PRECISION", "fp32"
+    ).strip().casefold()
+    if stack.get("crop_tensorrt_precision") != expected_crop_precision:
+        raise RuntimeError("Crop TensorRT engine uses the wrong precision")
     if int(stack.get("crop_batch_size", 0)) != int(
         os.environ.get("VITA_CROP_BATCH_SIZE", "16")
     ):
@@ -109,6 +114,7 @@ def validate_health(health: dict[str, Any]) -> dict[str, Any]:
         "status": "JETSON_ACCELERATION_READY",
         "gpu": stack.get("gpu"),
         "crop_tensorrt_engine_count": stack["crop_tensorrt_engine_count"],
+        "crop_tensorrt_precision": stack["crop_tensorrt_precision"],
         "crop_tensorrt_parity": crop_parity,
         "cloud_tensorrt_engine_count": stack["cloud_tensorrt_engine_count"],
         "cloud_profile_count": len(profiles),

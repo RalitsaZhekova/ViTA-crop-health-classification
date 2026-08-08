@@ -17,7 +17,7 @@ Invoke-VitaPayload.ps1              /data/code/VITA/data (read-only)
         +===========================>| 127.0.0.1:8090
         |     small JSON request     | warm FastAPI worker
         |                            |  cloud: Torch-TensorRT FP16
-        |                            |  crop: Torch-TensorRT FP16
+        |                            |  crop: Torch-TensorRT FP32
         |                            |  health/indices: CPU + GDAL threads
         |                            |  package exactly 3 artifacts
         | SCP + SHA-256              |
@@ -39,7 +39,7 @@ The acceleration policy is:
 | Stage | MVP execution | Reason |
 |---|---|---|
 | OmniCloudMask ensemble | FP16 Torch-TensorRT, fixed static profiles, batch up to 4, engine/timing cache | The exact two-model mean-logit graph is compiled and parity-checked for every demo-scene shape before readiness |
-| Prithvi crop segmentation | FP16 Torch-TensorRT, fixed batch 16, engine/timing cache | The 64 GB Orin amortizes dispatch across more tiles; a deterministic probability/decision parity probe runs before readiness |
+| Prithvi crop segmentation | FP32 Torch-TensorRT, fixed batch 16, engine/timing cache | The 64 GB Orin amortizes dispatch across more tiles; a deterministic probability/decision parity probe runs before readiness and rejected FP16 on the target |
 | Balkan 10 m preparation | Embedded overview read, one multiband average GDAL warp, checksum-keyed persistent grid | Avoids decoding four full-resolution bands separately while preserving the existing 10 m UTM, band-order, nodata, and reflectance contracts |
 | Health indices and packaging | Exact vectorized NumPy statistics in RAM, concurrent RGB/overlay/grid/codec work | Routine runs avoid non-downlinked science rasters; lossless PNG level 1 and WebP method 0 favor the two-second latency contract |
 
@@ -53,7 +53,7 @@ Jetson and is a sensible later C++ optimization if profiling on Orin still ident
 TIFF decode as material; it does not itself implement the GeoTIFF reprojection or the
 Python Rasterio contract used by the models.
 
-ModelOpt is not required for FP16 TensorRT. The observed `Unable to import quantization op` warning is harmless here: the deployment never requests a quantized graph. INT8 should only be introduced after a representative calibration set and an accuracy acceptance test exist.
+ModelOpt is not required for FP16 or FP32 TensorRT. The observed `Unable to import quantization op` warning is harmless here: the deployment never requests a quantized graph. INT8 should only be introduced after a representative calibration set and an accuracy acceptance test exist.
 
 TensorRT engines are created on the Orin and persisted in `runtime/engines`. Do not build or publish those caches from another GPU: NVIDIA documents that serialized engines are tied to their platform, TensorRT version, and target GPU, and JetPack does not support TensorRT hardware-compatibility mode. The repository's GitHub images contain code and dependencies only—not imagery, weights, or engine plans.
 
@@ -175,6 +175,8 @@ A production-ready health response must show:
 - the expected PyTorch/CUDA/TensorRT/Torch-TensorRT versions;
 - `crop_backend: "tensorrt"`;
 - `crop_tensorrt_engine_count` greater than zero;
+- `crop_tensorrt_precision: "fp32"`; FP16 is rejected because it failed the
+  strict Orin Prithvi parity gate;
 - `crop_batch_size: 16` and a crop parity record within the configured decision/probability tolerances;
 - `tensorrt_cudagraphs: true`, captured during warmup for lower fixed-shape launch overhead;
 - `cloud_backend: "omnicloudmask_tensorrt_fp16"`;
@@ -336,7 +338,7 @@ Use the stage timings in the response and payload `result.json`, not only the to
 - high condition or packaging time: inspect their detailed internal timings; the routine path uses exact in-memory science products, concurrent preparation/encoding, WebP method 0, and lossless PNG level 1;
 - high total only on the first request: warmup or engine caching is incomplete.
 
-Before accepting FP16/TensorRT, run the same scenes with `VITA_CROP_BACKEND=pytorch` and `VITA_CLOUD_INFERENCE_DTYPE=fp32`, then compare class percentages, crop percentage, condition score/label, and visual masks against the accelerated output. Quantization is out of scope until this parity check and a representative calibration dataset are formalized. Do not enable `torch.backends.cudnn.benchmark` without measuring startup as well as steady state; fixed-shape autotuning can make service warmup much longer.
+Before accepting TensorRT, run the same scenes with `VITA_CROP_BACKEND=pytorch` and `VITA_CLOUD_INFERENCE_DTYPE=fp32`, then compare class percentages, crop percentage, condition score/label, and visual masks against the accelerated output. Crop TensorRT defaults to FP32 after Orin FP16 produced 2.55% synthetic decision mismatch and 0.00831 mean probability error, both outside the fail-closed limits; the cloud ensemble remains separately parity-checked in FP16. Quantization is out of scope until this parity check and a representative calibration dataset are formalized. Do not enable `torch.backends.cudnn.benchmark` without measuring startup as well as steady state; fixed-shape autotuning can make service warmup much longer.
 
 Historical optimization measurements on the RTX 3060 development machine showed that
 the reviewed FP32 change reduced the already
@@ -461,7 +463,7 @@ If port 18090 is occupied on ground, pass a different `-LocalTunnelPort`. If por
 
 - Payload preflight passes with the recorded JetPack/L4T and base-image digest.
 - Payload Docker build succeeds without replacing the NVIDIA PyTorch/CUDA/TensorRT stack.
-- Health reports CUDA, FP16 TensorRT cloud and crop execution, positive engine counts, fixed batch 4/16, and passing compiler parity.
+- Health reports CUDA, FP16 cloud TensorRT, FP32 crop TensorRT, positive engine counts, fixed batch 4/16, and passing compiler parity.
 - All four fixed input scenes complete every configured acceptance repetition without errors.
 - Every measured `payload_seconds` value is below 2.0 seconds for the agreed pixel-size envelope.
 - Accelerated scientific outputs pass the approved FP32/PyTorch parity tolerances.

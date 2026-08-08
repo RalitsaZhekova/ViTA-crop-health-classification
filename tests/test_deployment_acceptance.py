@@ -13,6 +13,7 @@ def _health() -> dict:
             "crop_backend": "tensorrt",
             "tensorrt_cudagraphs": True,
             "crop_tensorrt_engine_count": 2,
+            "crop_tensorrt_precision": "fp32",
             "crop_tensorrt_parity": {
                 "class_mismatch_fraction": 0.0,
                 "mean_absolute_probability_error": 0.0,
@@ -72,4 +73,14 @@ def test_jetson_acceptance_rejects_crop_parity_failure(
     health = _health()
     health["stack"]["crop_tensorrt_parity"]["class_mismatch_fraction"] = 0.01
     with pytest.raises(RuntimeError, match="Crop TensorRT failed class mismatch"):
+        validate_health(health)
+
+
+def test_jetson_acceptance_rejects_wrong_crop_precision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _production_flags(monkeypatch)
+    health = _health()
+    health["stack"]["crop_tensorrt_precision"] = "fp16"
+    with pytest.raises(RuntimeError, match="wrong precision"):
         validate_health(health)

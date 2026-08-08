@@ -151,7 +151,7 @@ def _compile_tensorrt(
     exported_program: Any,
     *,
     device: torch.device,
-) -> tuple[nn.Module, int, dict[str, float]]:
+) -> tuple[nn.Module, int, dict[str, float], str]:
     """Compile and cache the fixed crop graph with the Jetson Torch-TensorRT stack."""
     if device.type != "cuda":
         raise RuntimeError("TensorRT crop inference requires a CUDA device")
@@ -166,13 +166,17 @@ def _compile_tensorrt(
     cache_root = Path(
         os.environ.get("VITA_TRT_CACHE_DIR", "/tmp/vita-torch-tensorrt")
     ).resolve()
-    engine_cache = cache_root / "crop"
+    precision_name = os.environ.get("VITA_CROP_TRT_PRECISION", "fp32").strip().casefold()
+    precisions = {"fp32": torch.float32, "fp16": torch.float16}
+    if precision_name not in precisions:
+        raise ValueError("VITA_CROP_TRT_PRECISION must be fp32 or fp16")
+    engine_cache = cache_root / f"crop-{precision_name}"
     engine_cache.mkdir(parents=True, exist_ok=True)
     inputs = list(_example_inputs(device))
     compiled = torch_tensorrt.dynamo.compile(
         exported_program,
         arg_inputs=inputs,
-        enabled_precisions={torch.float16},
+        enabled_precisions={precisions[precision_name]},
         require_full_compilation=_environment_flag("VITA_TRT_REQUIRE_FULL", False),
         pass_through_build_failures=True,
         optimization_level=int(os.environ.get("VITA_TRT_OPTIMIZATION_LEVEL", "3")),
@@ -253,7 +257,7 @@ def _compile_tensorrt(
         "maximum_absolute_probability_error": float(absolute_error.max().item()),
     }
     del reference_model, reference, accelerated, parity_inputs
-    return compiled, engine_count, parity
+    return compiled, engine_count, parity, precision_name
 
 
 def _functionalize_prithvi_export_for_tensorrt(exported_program: Any) -> int:
@@ -321,6 +325,7 @@ class PayloadCropModel:
         backend: str = "pytorch",
         tensorrt_engine_count: int = 0,
         tensorrt_parity: dict[str, float] | None = None,
+        tensorrt_precision: str | None = None,
     ) -> None:
         # Torch-TensorRT returns an already placed graph containing initialized
         # engine modules; applying nn.Module.to() again can invalidate runtime state.
@@ -331,6 +336,7 @@ class PayloadCropModel:
         self.backend = backend
         self.tensorrt_engine_count = tensorrt_engine_count
         self.tensorrt_parity = tensorrt_parity or {}
+        self.tensorrt_precision = tensorrt_precision
         self.fixed_batch_size = fixed_batch_size
         self._means = torch.tensor(
             NORMALIZATION_MEANS,
@@ -399,10 +405,12 @@ class PayloadCropModel:
             raise ValueError("VITA_CROP_BACKEND must be pytorch or tensorrt")
         if backend == "tensorrt":
             try:
-                optimized, tensorrt_engine_count, tensorrt_parity = _compile_tensorrt(
-                    exported_program,
-                    device=requested_device,
-                )
+                (
+                    optimized,
+                    tensorrt_engine_count,
+                    tensorrt_parity,
+                    tensorrt_precision,
+                ) = _compile_tensorrt(exported_program, device=requested_device)
             except Exception as error:
                 if _environment_flag("VITA_TRT_STRICT", True):
                     raise RuntimeError("Crop model TensorRT compilation failed") from error
@@ -413,10 +421,12 @@ class PayloadCropModel:
                 backend = "pytorch"
                 tensorrt_engine_count = 0
                 tensorrt_parity = {}
+                tensorrt_precision = None
                 optimized = exported_program.module()
         else:
             tensorrt_engine_count = 0
             tensorrt_parity = {}
+            tensorrt_precision = None
             optimized = exported_program.module()
         return cls(
             optimized,
@@ -426,6 +436,7 @@ class PayloadCropModel:
             backend=backend,
             tensorrt_engine_count=tensorrt_engine_count,
             tensorrt_parity=tensorrt_parity,
+            tensorrt_precision=tensorrt_precision,
         )
 
     def _validate_inputs(

@@ -38,10 +38,11 @@ The original `vita-mvp`, `vita-payload-server`, REST API, SSH orchestration, and
 commands remain supported. Use the persistent service above for latency measurements;
 the one-shot CLI must reload models in every process.
 
-The Jetson production path builds FP16 TensorRT engines for both cloud and crop models
-on the target Orin, validates them against PyTorch, and runs all four packaged demo
-scenes three times. Deployment fails unless every warm `payload_seconds` result is
-below two seconds; it never substitutes a cached prediction for inference.
+The Jetson production path builds an FP16 TensorRT cloud engine and an FP32 TensorRT
+crop engine on the target Orin, validates them against PyTorch, and runs all four
+packaged demo scenes three times. Deployment fails unless every warm
+`payload_seconds` result is below two seconds; it never substitutes a cached prediction
+for inference.
 
 ## Documentation
 
