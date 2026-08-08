@@ -37,6 +37,19 @@ RUN set -eux; \
     python -m pip install --no-cache-dir --constraint /tmp/vita-constraint.txt \
         --requirement /tmp/requirements-payload.txt
 
+# The NGC development image also contains optional audio, NLP, compiler, and
+# quantization packages that VITA never imports. Their releases constrain NumPy
+# below the version required by TerraTorch 1.2.10. Remove each unused package
+# together with its sole dependent so the runtime has a consistent dependency
+# graph; FP16 TensorRT and Torch-TensorRT remain installed and are validated below.
+RUN python -m pip uninstall --yes \
+        librosa \
+        lightning-thunder \
+        numba \
+        nvidia-modelopt \
+        spacy \
+        thinc
+
 COPY pyproject.toml ./
 COPY payload ./payload
 COPY shared ./shared
