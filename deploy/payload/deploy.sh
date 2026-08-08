@@ -21,6 +21,10 @@ fi
 if [ "${VITA_SKIP_BUILD:-0}" != "1" ]; then
     docker compose "${compose_args[@]}" build
 fi
+echo "Validating CUDA and Torch-TensorRT inside the final image through the NVIDIA runtime."
+docker compose "${compose_args[@]}" run --rm --no-deps \
+    --entrypoint python payload -c \
+    'import tensorrt, torch, torch_tensorrt; assert torch.cuda.is_available(); assert torch.__version__.startswith("2.6.0a0+ecf3bae40a"), torch.__version__; assert torch.version.cuda == "12.8", torch.version.cuda; assert tensorrt.__version__.startswith("10.8."), tensorrt.__version__; assert torch_tensorrt.__version__.startswith("2.6.0a0"), torch_tensorrt.__version__; print({"gpu": torch.cuda.get_device_name(0), "torch": torch.__version__, "cuda": torch.version.cuda, "tensorrt": tensorrt.__version__, "torch_tensorrt": torch_tensorrt.__version__})'
 echo "Validating the two Sentinel and two Balkan payload inputs inside the final image."
 docker compose "${compose_args[@]}" run --rm --no-deps \
     --entrypoint python payload -m prithvi_payload.deployment_check
