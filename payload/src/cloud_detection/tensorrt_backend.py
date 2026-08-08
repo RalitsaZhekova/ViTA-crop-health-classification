@@ -147,6 +147,8 @@ class CloudTensorRTRouter:
             timing_cache_path=str(self.cache_root / "cloud-timing-cache.bin"),
             cache_built_engines=True,
             reuse_cached_engines=True,
+            # Required by the Torch-TensorRT 2.6 persistent engine cache API.
+            make_refittable=True,
             engine_cache_dir=str(self.engine_cache),
             engine_cache_size=int(
                 os.environ.get("VITA_CLOUD_TRT_CACHE_BYTES", str(8 * 1024**3))

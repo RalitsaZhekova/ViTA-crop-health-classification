@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 import pytest
@@ -127,3 +128,31 @@ def test_default_cloud_configuration_is_installed_package_data() -> None:
         "cloud_detector.yaml",
     )
     assert load_config(DEFAULT_CLOUD_CONFIG)["model"]["name"] == "omnicloudmask_v4"
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    (
+        "payload/src/prithvi_payload/inference.py",
+        "payload/src/cloud_detection/tensorrt_backend.py",
+    ),
+)
+def test_tensorrt_engine_caches_build_refittable_engines(relative_path: str) -> None:
+    """Keep the Torch-TensorRT 2.6 cache contract paired at both call sites."""
+    repository_root = Path(__file__).resolve().parents[1]
+    tree = ast.parse((repository_root / relative_path).read_text(encoding="utf-8"))
+    compile_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "compile"
+        and isinstance(node.func.value, ast.Attribute)
+        and node.func.value.attr == "dynamo"
+    ]
+
+    assert len(compile_calls) == 1
+    keywords = {keyword.arg: keyword.value for keyword in compile_calls[0].keywords}
+    for name in ("cache_built_engines", "reuse_cached_engines", "make_refittable"):
+        assert isinstance(keywords.get(name), ast.Constant)
+        assert keywords[name].value is True

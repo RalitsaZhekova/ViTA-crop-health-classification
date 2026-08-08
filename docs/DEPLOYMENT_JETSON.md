@@ -156,6 +156,11 @@ cp deploy/payload.env.example deploy/payload.env  # skip if already configured
 
 The script runs preflight, builds the app layer on the already-installed NVIDIA image, validates all four sensor contracts from inside the final image, starts Compose with `runtime: nvidia`, and waits up to 90 minutes for first-time export, all target-built TensorRT profiles, parity validation, both Balkan analysis grids, and exact-scene warmup. It then runs fail-closed acceleration checks and three timed repetitions of all four scenes. First startup can be slow; subsequent restarts reuse export, engine, timing, and checksum-keyed Balkan grid caches.
 
+If startup fails or the container restarts, the script prints the last 200 log lines and
+brings down only the explicitly named `vita-payload` Compose project. It retains the
+bind-mounted export, TensorRT, and Balkan-grid caches; these are validated reusable
+deployment artifacts, not failed containers.
+
 Check status and logs:
 
 ```bash
@@ -425,6 +430,22 @@ for each scene. Use the returned stage breakdown and `tegrastats` to diagnose th
 failure. Do not raise the target or skip the gate to label the deployment production.
 
 The ModelOpt quantization warning can be ignored for FP16. Do not install ModelOpt merely to suppress the warning.
+
+To audit deployment residue without touching another team's Docker objects, use:
+
+```bash
+docker ps -a --filter label=com.docker.compose.project=vita-payload \
+  --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
+docker image ls --filter reference='vita-payload*' \
+  --format 'table {{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.ID}}'
+du -sh runtime/payload runtime/engines
+```
+
+Do not run `docker system prune`, `docker builder prune`, or an unfiltered image prune
+on the shared Jetson. BuildKit's default cache is shared by every team and cannot be
+safely attributed to VITA from its cache IDs. Failed `docker compose run --rm` probes
+remove their own containers; the successful app layers are referenced by
+`vita-payload:1.0.0` and should be retained.
 
 HTTP 422 with a cloud-gate status means the scientific pipeline did not produce a complete downlink; inspect that job's payload `result.json`. It is not a transport failure.
 

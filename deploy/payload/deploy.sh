@@ -42,6 +42,17 @@ docker compose "${compose_args[@]}" up -d
 container_id="$(docker compose "${compose_args[@]}" ps -q payload)"
 test -n "$container_id" || { echo "ERROR: payload container was not created" >&2; exit 1; }
 
+fail_startup() {
+    message="$1"
+    docker compose "${compose_args[@]}" logs --tail 200 payload || true
+    # This Compose project is explicitly named "vita-payload". Removing its
+    # failed service container/network prevents an endless restart loop without
+    # touching images, bind-mounted caches/data, or another team's project.
+    docker compose "${compose_args[@]}" down || true
+    echo "ERROR: $message" >&2
+    exit 1
+}
+
 startup_timeout="${VITA_PAYLOAD_STARTUP_TIMEOUT_SECONDS:-5400}"
 test "$startup_timeout" -ge 60 || {
     echo "ERROR: VITA_PAYLOAD_STARTUP_TIMEOUT_SECONDS must be at least 60" >&2
@@ -50,6 +61,8 @@ test "$startup_timeout" -ge 60 || {
 attempts=$((startup_timeout / 5))
 for attempt in $(seq 1 "$attempts"); do
     status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container_id")"
+    container_state="$(docker inspect --format '{{.State.Status}}' "$container_id")"
+    restart_count="$(docker inspect --format '{{.RestartCount}}' "$container_id")"
     if [ "$status" = "healthy" ]; then
         docker compose "${compose_args[@]}" exec -T payload \
             python -m prithvi_payload.deployment_acceptance \
@@ -62,13 +75,12 @@ for attempt in $(seq 1 "$attempts"); do
         echo "Payload service is ready on Jetson loopback."
         exit 0
     fi
-    if [ "$status" = "unhealthy" ] || [ "$status" = "exited" ]; then
-        docker compose "${compose_args[@]}" logs --tail 200 payload
-        exit 1
+    if [ "$status" = "unhealthy" ] || [ "$container_state" = "exited" ] \
+        || [ "$container_state" = "dead" ] || [ "$container_state" = "restarting" ] \
+        || [ "$restart_count" -gt 0 ]; then
+        fail_startup "payload failed during startup"
     fi
     sleep 5
 done
 
-docker compose "${compose_args[@]}" logs --tail 200 payload
-echo "ERROR: payload did not become healthy within ${startup_timeout} seconds" >&2
-exit 1
+fail_startup "payload did not become healthy within ${startup_timeout} seconds"

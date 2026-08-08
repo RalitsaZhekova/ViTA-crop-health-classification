@@ -182,6 +182,10 @@ def _compile_tensorrt(
         timing_cache_path=str(cache_root / "timing-cache.bin"),
         cache_built_engines=True,
         reuse_cached_engines=True,
+        # Torch-TensorRT 2.6 only permits persistent engine caching for
+        # refittable engines. The cached engine is still immutable at runtime;
+        # this flag records the weight-refit metadata required by its cache API.
+        make_refittable=True,
         engine_cache_dir=str(engine_cache),
         engine_cache_size=int(os.environ.get("VITA_TRT_CACHE_BYTES", str(8 * 1024**3))),
     )
