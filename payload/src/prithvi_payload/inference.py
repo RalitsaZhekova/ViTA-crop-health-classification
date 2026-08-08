@@ -151,7 +151,7 @@ def _compile_tensorrt(
     exported_program: Any,
     *,
     device: torch.device,
-) -> tuple[nn.Module, int, dict[str, float], str]:
+) -> tuple[nn.Module, int, dict[str, float], str, bool]:
     """Compile and cache the fixed crop graph with the Jetson Torch-TensorRT stack."""
     if device.type != "cuda":
         raise RuntimeError("TensorRT crop inference requires a CUDA device")
@@ -170,13 +170,24 @@ def _compile_tensorrt(
     precisions = {"fp32": torch.float32, "fp16": torch.float16}
     if precision_name not in precisions:
         raise ValueError("VITA_CROP_TRT_PRECISION must be fp32 or fp16")
-    engine_cache = cache_root / f"crop-{precision_name}"
+    disable_tf32 = _environment_flag(
+        "VITA_CROP_TRT_DISABLE_TF32", precision_name == "fp32"
+    )
+    if precision_name == "fp32" and not disable_tf32:
+        raise RuntimeError("Production FP32 crop TensorRT requires TF32 to be disabled")
+    if disable_tf32:
+        torch.set_float32_matmul_precision("highest")
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+    cache_precision = f"{precision_name}-no-tf32" if disable_tf32 else precision_name
+    engine_cache = cache_root / f"crop-{cache_precision}"
     engine_cache.mkdir(parents=True, exist_ok=True)
     inputs = list(_example_inputs(device))
     compiled = torch_tensorrt.dynamo.compile(
         exported_program,
         arg_inputs=inputs,
         enabled_precisions={precisions[precision_name]},
+        disable_tf32=disable_tf32,
         require_full_compilation=_environment_flag("VITA_TRT_REQUIRE_FULL", False),
         pass_through_build_failures=True,
         optimization_level=int(os.environ.get("VITA_TRT_OPTIMIZATION_LEVEL", "3")),
@@ -257,7 +268,7 @@ def _compile_tensorrt(
         "maximum_absolute_probability_error": float(absolute_error.max().item()),
     }
     del reference_model, reference, accelerated, parity_inputs
-    return compiled, engine_count, parity, precision_name
+    return compiled, engine_count, parity, precision_name, not disable_tf32
 
 
 def _functionalize_prithvi_export_for_tensorrt(exported_program: Any) -> int:
@@ -326,6 +337,7 @@ class PayloadCropModel:
         tensorrt_engine_count: int = 0,
         tensorrt_parity: dict[str, float] | None = None,
         tensorrt_precision: str | None = None,
+        tensorrt_tf32: bool | None = None,
     ) -> None:
         # Torch-TensorRT returns an already placed graph containing initialized
         # engine modules; applying nn.Module.to() again can invalidate runtime state.
@@ -337,6 +349,7 @@ class PayloadCropModel:
         self.tensorrt_engine_count = tensorrt_engine_count
         self.tensorrt_parity = tensorrt_parity or {}
         self.tensorrt_precision = tensorrt_precision
+        self.tensorrt_tf32 = tensorrt_tf32
         self.fixed_batch_size = fixed_batch_size
         self._means = torch.tensor(
             NORMALIZATION_MEANS,
@@ -410,6 +423,7 @@ class PayloadCropModel:
                     tensorrt_engine_count,
                     tensorrt_parity,
                     tensorrt_precision,
+                    tensorrt_tf32,
                 ) = _compile_tensorrt(exported_program, device=requested_device)
             except Exception as error:
                 if _environment_flag("VITA_TRT_STRICT", True):
@@ -422,11 +436,13 @@ class PayloadCropModel:
                 tensorrt_engine_count = 0
                 tensorrt_parity = {}
                 tensorrt_precision = None
+                tensorrt_tf32 = None
                 optimized = exported_program.module()
         else:
             tensorrt_engine_count = 0
             tensorrt_parity = {}
             tensorrt_precision = None
+            tensorrt_tf32 = None
             optimized = exported_program.module()
         return cls(
             optimized,
@@ -437,6 +453,7 @@ class PayloadCropModel:
             tensorrt_engine_count=tensorrt_engine_count,
             tensorrt_parity=tensorrt_parity,
             tensorrt_precision=tensorrt_precision,
+            tensorrt_tf32=tensorrt_tf32,
         )
 
     def _validate_inputs(

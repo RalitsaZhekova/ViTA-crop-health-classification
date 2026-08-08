@@ -31,6 +31,8 @@ def validate_health(health: dict[str, Any]) -> dict[str, Any]:
     ).strip().casefold()
     if stack.get("crop_tensorrt_precision") != expected_crop_precision:
         raise RuntimeError("Crop TensorRT engine uses the wrong precision")
+    if expected_crop_precision == "fp32" and stack.get("crop_tensorrt_tf32") is not False:
+        raise RuntimeError("Crop TensorRT FP32 engine did not disable TF32")
     if int(stack.get("crop_batch_size", 0)) != int(
         os.environ.get("VITA_CROP_BATCH_SIZE", "16")
     ):
@@ -115,6 +117,7 @@ def validate_health(health: dict[str, Any]) -> dict[str, Any]:
         "gpu": stack.get("gpu"),
         "crop_tensorrt_engine_count": stack["crop_tensorrt_engine_count"],
         "crop_tensorrt_precision": stack["crop_tensorrt_precision"],
+        "crop_tensorrt_tf32": stack["crop_tensorrt_tf32"],
         "crop_tensorrt_parity": crop_parity,
         "cloud_tensorrt_engine_count": stack["cloud_tensorrt_engine_count"],
         "cloud_profile_count": len(profiles),

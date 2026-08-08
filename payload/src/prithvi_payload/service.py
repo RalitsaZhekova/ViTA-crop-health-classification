@@ -404,6 +404,7 @@ class PayloadRuntime:
             "crop_tensorrt_engine_count": self.crop.tensorrt_engine_count,
             "crop_tensorrt_parity": self.crop.tensorrt_parity,
             "crop_tensorrt_precision": self.crop.tensorrt_precision,
+            "crop_tensorrt_tf32": self.crop.tensorrt_tf32,
             "crop_batch_size": self.crop.fixed_batch_size,
             "tensorrt_cudagraphs": self.tensorrt_cudagraphs,
             "cloud_backend": (

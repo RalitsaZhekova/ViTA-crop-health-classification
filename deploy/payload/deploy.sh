@@ -53,6 +53,24 @@ fail_startup() {
     exit 1
 }
 
+remove_rejected_crop_engine_caches() {
+    cache_root="$(realpath -m "$PROJECT_ROOT/runtime/engines/tensorrt")"
+    for stale_name in crop crop-fp32; do
+        stale_path="$(realpath -m "$cache_root/$stale_name")"
+        case "$stale_path" in
+            "$cache_root"/*) ;;
+            *)
+                echo "ERROR: rejected engine cache escaped VITA cache root" >&2
+                exit 1
+                ;;
+        esac
+        if [ -d "$stale_path" ]; then
+            rm -rf -- "$stale_path"
+            echo "Removed rejected VITA crop engine cache: $stale_path"
+        fi
+    done
+}
+
 startup_timeout="${VITA_PAYLOAD_STARTUP_TIMEOUT_SECONDS:-5400}"
 test "$startup_timeout" -ge 60 || {
     echo "ERROR: VITA_PAYLOAD_STARTUP_TIMEOUT_SECONDS must be at least 60" >&2
@@ -71,6 +89,7 @@ for attempt in $(seq 1 "$attempts"); do
             docker compose "${compose_args[@]}" exec -T payload \
                 python -m prithvi_payload.performance_acceptance \
                 --url http://127.0.0.1:8090/v1/jobs
+            remove_rejected_crop_engine_caches
         fi
         echo "Payload service is ready on Jetson loopback."
         exit 0

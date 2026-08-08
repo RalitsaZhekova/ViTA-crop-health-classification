@@ -23,6 +23,9 @@ services:
       - "127.0.0.1:${VITA_PAYLOAD_PORT:-8090}:8090"
     environment:
       CUDA_REQUIRED: "1"
+      # The NGC base sets this to 1, which globally forces TF32 even for an
+      # FP32 crop engine. True FP32 is required by the Prithvi parity gate.
+      TORCH_ALLOW_TF32_CUBLAS_OVERRIDE: "0"
       HOME: /home/vita
       LOGNAME: vita-payload
       USER: vita-payload
@@ -45,6 +48,7 @@ services:
       VITA_CROP_BACKEND: ${VITA_CROP_BACKEND:-tensorrt}
       VITA_CROP_BATCH_SIZE: ${VITA_CROP_BATCH_SIZE:-16}
       VITA_CROP_TRT_PRECISION: ${VITA_CROP_TRT_PRECISION:-fp32}
+      VITA_CROP_TRT_DISABLE_TF32: ${VITA_CROP_TRT_DISABLE_TF32:-1}
       VITA_TRT_STRICT: ${VITA_TRT_STRICT:-1}
       VITA_TRT_CUDAGRAPHS: ${VITA_TRT_CUDAGRAPHS:-1}
       VITA_TRT_REQUIRE_FULL: ${VITA_TRT_REQUIRE_FULL:-0}
