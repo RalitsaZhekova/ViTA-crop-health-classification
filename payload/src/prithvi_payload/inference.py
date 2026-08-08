@@ -241,6 +241,7 @@ def _fit_tensorrt_logit_calibration(
             "validation_pixel_count": float(validation_pixels),
             "validation_decision_count": float(2 * validation_pixels),
             "fp32_accumulation": 1.0,
+            "native_cuda_sensitive_op_count": 9.0,
         },
         scale,
         bias,
@@ -398,10 +399,25 @@ def _compile_tensorrt(
     torch_tensorrt_version = str(torch_tensorrt.__version__).replace(".", "_").replace(
         "+", "_"
     )
+    # TensorRT 10.8 changes spatial ordering for this Prithvi graph when it
+    # converts the fused attention/normalization/resampling path. Keep those
+    # lightweight, numerically sensitive operations in native CUDA while TRT
+    # retains the model's dense and convolutional compute.
+    torch_executed_ops = {
+        torch.ops.aten.scaled_dot_product_attention.default,
+        torch.ops.aten.layer_norm.default,
+        torch.ops.aten.gelu.default,
+        torch.ops.aten.batch_norm.default,
+        torch.ops.aten.upsample_bilinear2d.vec,
+        torch.ops.aten.adaptive_avg_pool2d.default,
+        torch.ops.aten.einsum.default,
+        torch.ops.aten.sin.default,
+        torch.ops.aten.cos.default,
+    }
     artifact_path = artifact_directory / (
         f"crop.{SELECTED_CHECKPOINT_SHA256[:12]}.torch_{torch_version}."
         f"torchtrt_{torch_tensorrt_version}.{cache_precision}."
-        f"batch_{OPTIMIZED_BATCH_SIZE}.calibrated-immutable.ep"
+        f"batch_{OPTIMIZED_BATCH_SIZE}.hybrid-sensitive-v1.ep"
     )
 
     def engine_partition_count(module: nn.Module) -> int:
@@ -485,6 +501,9 @@ def _compile_tensorrt(
         enabled_precisions={precisions[precision_name]},
         disable_tf32=disable_tf32,
         require_full_compilation=_environment_flag("VITA_TRT_REQUIRE_FULL", False),
+        torch_executed_ops=torch_executed_ops,
+        min_block_size=1,
+        use_fast_partitioner=False,
         pass_through_build_failures=True,
         optimization_level=int(os.environ.get("VITA_TRT_OPTIMIZATION_LEVEL", "3")),
         num_avg_timing_iters=int(

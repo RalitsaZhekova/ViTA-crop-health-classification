@@ -79,6 +79,8 @@ def validate_health(health: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("Crop TensorRT calibration/validation tile split is invalid")
     if crop_parity.get("fp32_accumulation") != 1.0:
         raise RuntimeError("Crop TensorRT FP16 engine does not use FP32 accumulation")
+    if crop_parity.get("native_cuda_sensitive_op_count") != 9.0:
+        raise RuntimeError("Crop hybrid engine converted a protected sensitive operation")
     logit_scale = crop_parity.get("logit_calibration_scale")
     logit_bias = crop_parity.get("logit_calibration_bias")
     if (

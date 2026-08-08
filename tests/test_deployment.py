@@ -155,6 +155,11 @@ def test_crop_tensorrt_builds_immutable_engines_before_serializing() -> None:
         assert keywords[name].value is False
     assert isinstance(keywords.get("use_fp32_acc"), ast.Constant)
     assert keywords["use_fp32_acc"].value is True
+    assert isinstance(keywords.get("torch_executed_ops"), ast.Name)
+    assert isinstance(keywords.get("min_block_size"), ast.Constant)
+    assert keywords["min_block_size"].value == 1
+    assert isinstance(keywords.get("use_fast_partitioner"), ast.Constant)
+    assert keywords["use_fast_partitioner"].value is False
 
     source = (
         Path(__file__).resolve().parents[1]

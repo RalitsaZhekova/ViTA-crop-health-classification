@@ -22,6 +22,7 @@ def _health() -> dict:
                 "logit_calibration_scale": 1.0,
                 "logit_calibration_bias": 0.0,
                 "fp32_accumulation": 1.0,
+                "native_cuda_sensitive_op_count": 9.0,
                 "compiled_batch_tile_count": 16.0,
                 "calibration_tile_count": 8.0,
                 "validation_tile_count": 8.0,
