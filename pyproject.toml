@@ -38,6 +38,7 @@ vita-payload-server = "prithvi_payload.service:main"
 where = ["payload/src", "shared/src", "ground/src", "integration/src"]
 
 [tool.setuptools.package-data]
+cloud_detection = ["configs/*.yaml"]
 prithvi_ground = ["web/*"]
 
 [tool.ruff]

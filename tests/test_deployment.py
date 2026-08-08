@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from cloud_detection.config import load_config
+from prithvi_payload.cloud_classifier import DEFAULT_CLOUD_CONFIG
 from prithvi_payload.deployment_check import _paths_from_environment
 from prithvi_payload.inference import _environment_flag
 from prithvi_payload.service import (
@@ -115,3 +117,13 @@ def test_payload_demo_manifest_contains_only_four_scenes_and_two_calibrations() 
     model_paths = [line.split("  ", 1)[1] for line in model_manifest.read_text().splitlines()]
     assert len(model_paths) == 3
     assert all(path.startswith("payload/models/") for path in model_paths)
+
+
+def test_default_cloud_configuration_is_installed_package_data() -> None:
+    assert DEFAULT_CLOUD_CONFIG.is_file()
+    assert DEFAULT_CLOUD_CONFIG.parts[-3:] == (
+        "cloud_detection",
+        "configs",
+        "cloud_detector.yaml",
+    )
+    assert load_config(DEFAULT_CLOUD_CONFIG)["model"]["name"] == "omnicloudmask_v4"

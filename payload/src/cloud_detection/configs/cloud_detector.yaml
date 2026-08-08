@@ -4,7 +4,7 @@ model:
   package_version: 1.7.1
   model_version: 4.0
   model_input_order: [RED, GREEN, NIR]
-  weights_folder: ../../models/omnicloudmask
+  weights_folder: ../../../models/omnicloudmask
   expected_sha256: ab8f039866d6714b249f850779b9523b5f6afb55ee891077a71db0fdebc9b529
   device: auto
   inference_dtype: fp32

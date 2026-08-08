@@ -17,10 +17,8 @@ from cloud_detection.config import load_config
 CLOUD_MODEL_NAME = "omnicloudmask_v4"
 CLOUD_MODEL_SHA256 = OMNICLOUDMASK_ENSEMBLE_SHA256
 
-PAYLOAD_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_CLOUD_CONFIG = (
-    PAYLOAD_ROOT / "cloud_detection" / "configs" / "cloud_detector.yaml"
-)
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_CLOUD_CONFIG = PACKAGE_ROOT / "cloud_detection" / "configs" / "cloud_detector.yaml"
 
 
 @dataclass(frozen=True)
