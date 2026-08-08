@@ -9,6 +9,7 @@ services:
       args:
         VITA_PAYLOAD_BASE_IMAGE: ${VITA_PAYLOAD_BASE_IMAGE:-nvcr.io/nvidia/pytorch:25.01-py3-igpu}
     runtime: nvidia
+    user: "${VITA_PAYLOAD_UID:-2002}:${VITA_PAYLOAD_GID:-2002}"
     restart: unless-stopped
     read_only: true
     cap_drop:
@@ -20,6 +21,8 @@ services:
       - "127.0.0.1:${VITA_PAYLOAD_PORT:-8090}:8090"
     environment:
       CUDA_REQUIRED: "1"
+      HOME: /home/vita
+      XDG_CACHE_HOME: /home/vita/.cache
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
       VITA_INPUT_ROOT: /data
@@ -76,4 +79,4 @@ services:
       - ../runtime/engines:/engine-cache:Z
     tmpfs:
       - /tmp:size=2g,mode=1777
-      - /root/.cache:size=512m,mode=0700
+      - /home/vita:size=512m,uid=${VITA_PAYLOAD_UID:-2002},gid=${VITA_PAYLOAD_GID:-2002},mode=0700

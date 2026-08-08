@@ -11,6 +11,11 @@ if [ -f deploy/payload.env ]; then
     set +a
 fi
 
+# Match the service identity to the owner of the payload-local bind mounts.
+# The NVIDIA runtime supplies the required video/render device groups.
+export VITA_PAYLOAD_UID="${VITA_PAYLOAD_UID:-$(id -u)}"
+export VITA_PAYLOAD_GID="${VITA_PAYLOAD_GID:-$(id -g)}"
+
 ./deploy/payload/preflight.sh
 mkdir -p runtime/payload/runs runtime/engines/torch-export runtime/engines/tensorrt
 
