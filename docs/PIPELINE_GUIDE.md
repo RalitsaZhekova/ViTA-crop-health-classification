@@ -315,26 +315,22 @@ models are then released, and an unseen timed shape fails instead of compiling o
 falling back. `predict_semantic()` returns only class IDs to the CPU. Local defaults
 remain PyTorch FP32.
 
-### Prithvi fixed batching and TensorRT
+### Prithvi fixed batching on native CUDA
 
 Crop tiles run in batches of 16 on Orin. The final short batch is padded to the same
-static shape and only real outputs are retained. Torch-TensorRT compiles supported
-Prithvi dense and convolutional subgraphs to FP16 TensorRT with FP32 matmul
-accumulation. Attention, normalization, nonlinear coordinate encoding, pooling and
-resampling stay in native CUDA after their TensorRT 10.8 conversions failed spatial-order
-parity. The validated immutable hybrid artifact and timing cache persist under
-`runtime/engines`. Eight real tiles spanning all four scenes fit a two-parameter,
-monotonic backend logit transfer; eight disjoint tiles spanning those scenes must pass
-the unchanged decision and probability gates before readiness. Engines must be built on
-this Orin; local RTX plans are not deployed.
+static shape and only real outputs are retained. The exact exported FP32 Prithvi graph
+runs on CUDA through PyTorch. TensorRT 10.8 conversion is not a production backend for
+this model on the pinned stack: full, precision-controlled, calibrated, and attempted
+hybrid builds all changed about 2.2% of thresholded decisions on the packaged-scene
+batch. No calibration or relaxed tolerance is applied to conceal that mismatch. The
+cloud model remains fully FP16 TensorRT.
 
 ### CUDA graph replay
 
-After both TensorRT backends are built, the service enables Torch-TensorRT CUDA graph
-mode and then performs its exact-shape warmups. Static inference calls can therefore
-replay captured GPU work with less Python/kernel-launch overhead. This is safe here
-because one worker owns one GPU and all accepted MVP profiles are fixed before
-readiness.
+After the cloud TensorRT engines are built, the service enables Torch-TensorRT CUDA
+graph mode and performs exact-shape warmups. Static cloud calls can replay captured GPU
+work with less Python/kernel-launch overhead. Prithvi remains resident and warm on the
+same GPU through native PyTorch CUDA.
 
 ### One Balkan grid instead of repeated preprocessing
 

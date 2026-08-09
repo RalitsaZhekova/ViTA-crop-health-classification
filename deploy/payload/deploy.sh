@@ -16,14 +16,11 @@ fi
 export VITA_PAYLOAD_UID="${VITA_PAYLOAD_UID:-$(id -u)}"
 export VITA_PAYLOAD_GID="${VITA_PAYLOAD_GID:-$(id -g)}"
 
-# These are release acceptance settings, not tuning knobs. Fail with a useful
-# message when an older copied payload.env silently overrides the Compose image.
-if [ "${VITA_CROP_TRT_PRECISION:-fp16}" != "fp16" ]; then
-    echo "ERROR: deploy/payload.env must set VITA_CROP_TRT_PRECISION=fp16" >&2
-    exit 1
-fi
-if [ "${VITA_CROP_TRT_MAX_MEAN_PROBABILITY_ERROR:-0.01}" != "0.01" ]; then
-    echo "ERROR: deploy/payload.env must set VITA_CROP_TRT_MAX_MEAN_PROBABILITY_ERROR=0.01" >&2
+# This is a release acceptance setting, not a tuning knob. The pinned
+# Torch-TensorRT/TensorRT stack failed Prithvi decision parity, so production
+# must use the exact exported graph on native CUDA.
+if [ "${VITA_CROP_BACKEND:-pytorch}" != "pytorch" ]; then
+    echo "ERROR: deploy/payload.env must set VITA_CROP_BACKEND=pytorch" >&2
     exit 1
 fi
 
@@ -66,7 +63,7 @@ fail_startup() {
 
 remove_rejected_crop_engine_caches() {
     cache_root="$(realpath -m "$PROJECT_ROOT/runtime/engines/tensorrt")"
-    for stale_name in crop crop-fp16 crop-fp32 crop-fp32-no-tf32 crop-fp16-no-tf32; do
+    for stale_name in crop crop-fp16 crop-fp32 crop-fp32-no-tf32 crop-fp16-no-tf32 crop-artifacts; do
         stale_path="$(realpath -m "$cache_root/$stale_name")"
         case "$stale_path" in
             "$cache_root"/*) ;;

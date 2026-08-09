@@ -451,6 +451,14 @@ class PayloadRuntime:
             "torch_tensorrt": _package_version("torch-tensorrt"),
             "modelopt": _package_version("nvidia-modelopt"),
             "crop_backend": self.crop.backend,
+            "crop_device": self.crop.device.type,
+            "crop_inference_dtype": (
+                "fp32" if self.crop.backend == "pytorch" else self.crop.tensorrt_precision
+            ),
+            "crop_tf32": bool(
+                torch.backends.cuda.matmul.allow_tf32
+                or torch.backends.cudnn.allow_tf32
+            ),
             "crop_tensorrt_engine_count": self.crop.tensorrt_engine_count,
             "crop_tensorrt_parity": self.crop.tensorrt_parity,
             "crop_parity_scene_inputs": [

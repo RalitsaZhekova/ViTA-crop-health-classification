@@ -39,7 +39,7 @@ The acceleration policy is:
 | Stage | MVP execution | Reason |
 |---|---|---|
 | OmniCloudMask ensemble | FP16 Torch-TensorRT, fixed static profiles, batch up to 4, engine/timing cache | The exact two-model mean-logit graph is compiled and parity-checked for every demo-scene shape before readiness |
-| Prithvi crop segmentation | Hybrid FP16 TensorRT/native CUDA with FP32 matmul accumulation, fixed batch 16, immutable serialized engine artifact plus timing cache | Dense and convolutional compute runs in TensorRT; attention, normalization, nonlinear and resampling operations remain in native CUDA because their TensorRT 10.8 conversion failed spatial-order parity. Eight calibration and eight disjoint validation tiles enforce the original gates before readiness |
+| Prithvi crop segmentation | Exact exported FP32 PyTorch graph on native CUDA, fixed batch 16 | TensorRT 10.8 builds changed about 2.2% of thresholded decisions on the fixed parity batch; native CUDA preserves the trained model without calibration or relaxed gates |
 | Balkan 10 m preparation | Embedded overview read, one multiband average GDAL warp, checksum-keyed persistent grid | Avoids decoding four full-resolution bands separately while preserving the existing 10 m UTM, band-order, nodata, and reflectance contracts |
 | Health indices and packaging | Exact vectorized NumPy statistics in RAM, concurrent RGB/overlay/grid/codec work | Routine runs avoid non-downlinked science rasters; lossless PNG level 1 and WebP method 0 favor the two-second latency contract |
 
@@ -178,16 +178,11 @@ A production-ready health response must show:
 
 - `cuda_available: true`;
 - the expected PyTorch/CUDA/TensorRT/Torch-TensorRT versions;
-- `crop_backend: "tensorrt"`;
-- `crop_tensorrt_engine_count` greater than zero;
-- `crop_tensorrt_precision: "fp16"`;
-- `crop_tensorrt_tf32: false`; the NGC base's global TF32 override is disabled for
-  any PyTorch fallback partitions;
-- `crop_batch_size: 16`, `fp32_accumulation: 1`, and a crop parity record within the
-  configured decision/probability tolerances; eight real tiles spanning all four scenes
-  calibrate the backend and eight disjoint tiles spanning all four scenes validate it;
-- crop parity no worse than 0.2% disagreement across the crop and health-analysis
-  thresholds and one percentage point mean absolute probability error;
+- `crop_backend: "pytorch"`, `crop_device: "cuda"`, `crop_inference_dtype: "fp32"`,
+  `crop_tf32: false`, and `crop_batch_size: 16`;
+- zero crop TensorRT engine partitions and no crop logit calibration record; the pinned
+  TensorRT 10.8 conversion is rejected because it changed more than 2.2% of thresholded
+  crop decisions on the packaged-scene parity batch;
 - `tensorrt_cudagraphs: true`, captured during warmup for lower fixed-shape launch overhead;
 - `cloud_backend: "omnicloudmask_tensorrt_fp16"`;
 - `cloud_batch_size: 4`, a positive cloud TensorRT engine count, and a parity record for every static profile;
@@ -306,10 +301,10 @@ Ground catalog:     runtime/ground/scenes/<job-id>/
 
 The returned `payload_seconds` is the ready-service execution from scene intake through three-file packaging. It excludes SSH setup, service startup/model load/target engine build/warmup, SCP, and ground ingest. `under_two_seconds` is computed from that value. No prediction or output is cached: each request still executes cloud, crop, condition, and packaging. Check `/healthz` before starting the clock; a request before readiness is a cold-start test.
 
-`./deploy/payload/deploy.sh` automatically validates both TensorRT backends, fixed
-batches, compiler parity, four discarded scene warmups, both Balkan grids, and every
-required RAM fast path. It then runs all four scenes three times and fails if **any**
-run is 2.0 seconds or slower. Rerun the gate manually with:
+`./deploy/payload/deploy.sh` automatically validates native-CUDA Prithvi, the full
+TensorRT cloud backend, fixed batches, four discarded scene warmups, both Balkan grids,
+and every required RAM fast path. It then runs all four scenes three times and fails if
+**any** run is 2.0 seconds or slower. Rerun the gate manually with:
 
 ```bash
 docker compose --env-file deploy/payload.env -f deploy/compose.payload.yaml exec -T payload \
@@ -341,14 +336,25 @@ Use the stage timings in the response and payload `result.json`, not only the to
   `payload_seconds`; cloud/crop inference and mask-processing values are nested inside
   their corresponding stage totals and must not be added a second time;
 - high `cloud_inference_seconds`: validate FP16 TensorRT, batch 4, positive engine counts, and parity for every exact static profile in `/healthz`;
-- high `crop_inference_seconds`: confirm the health response reports TensorRT engine partitions and cache hits appear in logs;
+- high `crop_inference_seconds`: profile the exact native-CUDA Prithvi stage; do not
+  enable the rejected whole-graph TensorRT conversion to hide an accuracy failure;
 - high `shared_analysis_grid_seconds`: verify `/healthz` reports
   `embedded_overview_then_average`, factor 4, the expected Balkan cache key, and a
   persistent writable `runtime/payload/cache/balkan-analysis` directory;
 - high condition or packaging time: inspect their detailed internal timings; the routine path uses exact in-memory science products, concurrent preparation/encoding, WebP method 0, and lossless PNG level 1;
 - high total only on the first request: warmup or engine caching is incomplete.
 
-Before accepting TensorRT, run the same scenes with `VITA_CROP_BACKEND=pytorch` and `VITA_CLOUD_INFERENCE_DTYPE=fp32`, then compare class percentages, crop percentage, condition score/label, and visual masks against the accelerated output. The crop graph is intentionally hybrid: TensorRT executes the 48 dense and 14 convolutional operations, while fused attention, normalization, nonlinear coordinate encoding, pooling and resampling remain native PyTorch CUDA. Converting that protected group with TensorRT 10.8 changed pixel ordering by more than 2%, which cannot be corrected by threshold calibration. The hybrid path still uses FP32 accumulation for transformer matmuls while retaining FP16 tensors. Eight real tiles spanning every packaged scene fit a monotonic affine transfer for the backend logit margin; eight different tiles spanning those scenes then enforce the unchanged 0.2% decision-disagreement and one-percentage-point probability gates. Calibration and validation pixels never overlap. Quantization is out of scope until a representative INT8 calibration dataset and accuracy test exist.
+Prithvi production inference uses the exact exported FP32 graph on native CUDA. Full
+TensorRT, immutable rebuilds, FP32/TF32-disabled conversion, logit calibration, and a
+hybrid exclusion attempt all produced about 2.2% decision disagreement on the fixed
+packaged-scene batch, above the unchanged 0.2% limit. Torch-TensorRT 2.6 decomposes
+composite operations before operator exclusions are applied, so the attempted hybrid
+did not establish a safe partition boundary. Production therefore keeps Prithvi on
+CUDA through PyTorch and keeps OmniCloudMask fully on FP16 TensorRT. This changes no
+weights, logits, or thresholds. A future crop TensorRT path requires an explicitly
+isolated submodule, proof that the intended graph boundary was honored, held-out parity,
+and the same end-to-end performance gate. Quantization remains out of scope until a
+representative calibration dataset and accuracy test exist.
 
 Historical optimization measurements on the RTX 3060 development machine showed that
 the reviewed FP32 change reduced the already
@@ -429,9 +435,9 @@ Keep the NGC base and GHCR app image immutable in a release record. Never publis
 
 `CUDA_REQUIRED=1 but torch.cuda.is_available() is false` means the container was not launched through the NVIDIA runtime, the NVIDIA container toolkit is not configured, or the base is incompatible with host L4T. Run `deploy/payload/preflight.sh` before changing Python packages.
 
-`Crop model TensorRT compilation failed` is intentionally fatal with `VITA_TRT_STRICT=1`. Inspect payload logs for an unsupported operator or memory failure. For diagnosis only, set `VITA_TRT_STRICT=0`; the health endpoint will then report `crop_backend: pytorch`, which does not satisfy TensorRT acceptance.
-
-`Torch-TensorRT produced no TensorRT engine partitions` means compilation technically returned but did not accelerate any graph segment. This is treated as failure rather than silently claiming TensorRT.
+`deploy/payload.env must set VITA_CROP_BACKEND=pytorch` means an older copied payload
+environment is still requesting the rejected crop TensorRT path. Change that one value
+to `pytorch`; native CUDA is enforced separately by deployment acceptance.
 
 `Cloud TensorRT received an unwarmed profile after readiness` means the request shape
 was not one of the four accepted MVP paths. Add the new checksum-pinned scene to

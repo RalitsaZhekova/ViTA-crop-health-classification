@@ -10,26 +10,15 @@ def _health() -> dict:
         "stack": {
             "cuda_available": True,
             "gpu": "Orin",
-            "crop_backend": "tensorrt",
+            "crop_backend": "pytorch",
+            "crop_device": "cuda",
+            "crop_inference_dtype": "fp32",
+            "crop_tf32": False,
             "tensorrt_cudagraphs": True,
-            "crop_tensorrt_engine_count": 2,
-            "crop_tensorrt_precision": "fp16",
-            "crop_tensorrt_tf32": False,
-            "crop_tensorrt_parity": {
-                "class_mismatch_fraction": 0.0,
-                "mean_absolute_probability_error": 0.0,
-                "serialized_engine_reused": 0.0,
-                "logit_calibration_scale": 1.0,
-                "logit_calibration_bias": 0.0,
-                "fp32_accumulation": 1.0,
-                "native_cuda_sensitive_op_count": 9.0,
-                "compiled_batch_tile_count": 16.0,
-                "calibration_tile_count": 8.0,
-                "validation_tile_count": 8.0,
-                "validation_pixel_count": 700_000.0,
-                "validation_decision_count": 1_400_000.0,
-            },
-            "crop_parity_scene_inputs": [f"scene-{index}.tif" for index in range(4)],
+            "crop_tensorrt_engine_count": 0,
+            "crop_tensorrt_precision": None,
+            "crop_tensorrt_tf32": None,
+            "crop_tensorrt_parity": {},
             "crop_batch_size": 16,
             "cloud_backend": "omnicloudmask_tensorrt_fp16",
             "cloud_batch_size": 4,
@@ -59,7 +48,7 @@ def _production_flags(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(name, "1")
 
 
-def test_jetson_acceptance_requires_both_tensorrt_backends(
+def test_jetson_acceptance_requires_cuda_crop_and_tensorrt_cloud(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _production_flags(monkeypatch)
@@ -78,31 +67,32 @@ def test_jetson_acceptance_rejects_cloud_pytorch(
         validate_health(health)
 
 
-def test_jetson_acceptance_rejects_crop_parity_failure(
+def test_jetson_acceptance_rejects_crop_tensorrt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _production_flags(monkeypatch)
     health = _health()
-    health["stack"]["crop_tensorrt_parity"]["class_mismatch_fraction"] = 0.01
-    with pytest.raises(RuntimeError, match="Crop TensorRT failed class mismatch"):
+    health["stack"]["crop_backend"] = "tensorrt"
+    health["stack"]["crop_tensorrt_engine_count"] = 1
+    with pytest.raises(RuntimeError, match="accepted PyTorch graph"):
         validate_health(health)
 
 
-def test_jetson_acceptance_rejects_wrong_crop_precision(
+def test_jetson_acceptance_rejects_cpu_crop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _production_flags(monkeypatch)
     health = _health()
-    health["stack"]["crop_tensorrt_precision"] = "fp32"
-    with pytest.raises(RuntimeError, match="wrong precision"):
+    health["stack"]["crop_device"] = "cpu"
+    with pytest.raises(RuntimeError, match="not running on CUDA"):
         validate_health(health)
 
 
-def test_jetson_acceptance_rejects_tf32_crop_engine(
+def test_jetson_acceptance_rejects_tf32_crop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _production_flags(monkeypatch)
     health = _health()
-    health["stack"]["crop_tensorrt_tf32"] = True
-    with pytest.raises(RuntimeError, match="did not disable TF32"):
+    health["stack"]["crop_tf32"] = True
+    with pytest.raises(RuntimeError, match="TF32 enabled"):
         validate_health(health)

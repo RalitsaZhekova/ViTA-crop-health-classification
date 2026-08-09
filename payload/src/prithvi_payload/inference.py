@@ -710,6 +710,10 @@ class PayloadCropModel:
         backend = os.environ.get("VITA_CROP_BACKEND", "pytorch").strip().casefold()
         if backend not in {"pytorch", "tensorrt"}:
             raise ValueError("VITA_CROP_BACKEND must be pytorch or tensorrt")
+        if backend == "pytorch" and requested_device.type == "cuda":
+            torch.set_float32_matmul_precision("highest")
+            torch.backends.cuda.matmul.allow_tf32 = False
+            torch.backends.cudnn.allow_tf32 = False
         if backend == "tensorrt":
             try:
                 (

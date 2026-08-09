@@ -20,93 +20,24 @@ def validate_health(health: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("Payload health has no stack record")
     if stack.get("cuda_available") is not True:
         raise RuntimeError("CUDA is not available in the payload service")
-    if stack.get("crop_backend") != "tensorrt":
-        raise RuntimeError("Crop inference is not using TensorRT")
+    if stack.get("crop_backend") != "pytorch":
+        raise RuntimeError("Crop inference is not using the accepted PyTorch graph")
+    if stack.get("crop_device") != "cuda":
+        raise RuntimeError("Crop inference is not running on CUDA")
+    if stack.get("crop_inference_dtype") != "fp32":
+        raise RuntimeError("Crop inference is not using the accepted FP32 graph")
+    if stack.get("crop_tf32") is not False:
+        raise RuntimeError("Crop inference has TF32 enabled")
+    if int(stack.get("crop_tensorrt_engine_count", 0)) != 0:
+        raise RuntimeError("Rejected crop TensorRT engine partitions are still active")
     if stack.get("tensorrt_cudagraphs") is not True:
         raise RuntimeError("TensorRT CUDA graph replay is not enabled")
-    if int(stack.get("crop_tensorrt_engine_count", 0)) < 1:
-        raise RuntimeError("Crop inference has no TensorRT engine partitions")
-    expected_crop_precision = os.environ.get(
-        "VITA_CROP_TRT_PRECISION", "fp16"
-    ).strip().casefold()
-    if stack.get("crop_tensorrt_precision") != expected_crop_precision:
-        raise RuntimeError("Crop TensorRT engine uses the wrong precision")
-    if stack.get("crop_tensorrt_tf32") is not False:
-        raise RuntimeError("Crop TensorRT did not disable TF32 fallback execution")
     if int(stack.get("crop_batch_size", 0)) != int(
         os.environ.get("VITA_CROP_BATCH_SIZE", "16")
     ):
-        raise RuntimeError("Crop TensorRT engine uses the wrong fixed batch size")
-    crop_parity = stack.get("crop_tensorrt_parity")
-    if not isinstance(crop_parity, dict):
-        raise RuntimeError("Crop TensorRT has no PyTorch parity record")
-    serialized_engine_reused = crop_parity.get("serialized_engine_reused")
-    if (
-        isinstance(serialized_engine_reused, bool)
-        or not isinstance(serialized_engine_reused, (int, float))
-        or float(serialized_engine_reused) not in {0.0, 1.0}
-    ):
-        raise RuntimeError("Crop TensorRT did not load a validated immutable artifact")
-    crop_mismatch = crop_parity.get("class_mismatch_fraction")
-    crop_mean_error = crop_parity.get("mean_absolute_probability_error")
-    maximum_crop_mismatch = float(
-        os.environ.get("VITA_CROP_TRT_MAX_CLASS_MISMATCH", "0.002")
-    )
-    maximum_crop_mean_error = float(
-        os.environ.get("VITA_CROP_TRT_MAX_MEAN_PROBABILITY_ERROR", "0.01")
-    )
-    for value, maximum, label in (
-        (crop_mismatch, maximum_crop_mismatch, "class mismatch"),
-        (crop_mean_error, maximum_crop_mean_error, "mean probability error"),
-    ):
-        if (
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not math.isfinite(float(value))
-            or float(value) > maximum
-        ):
-            raise RuntimeError(f"Crop TensorRT failed {label} parity")
-    expected_crop_batch_size = int(os.environ.get("VITA_CROP_BATCH_SIZE", "16"))
-    if int(crop_parity.get("compiled_batch_tile_count", 0)) != expected_crop_batch_size:
-        raise RuntimeError("Crop TensorRT did not compile the fixed tile batch")
-    calibration_tile_count = int(crop_parity.get("calibration_tile_count", 0))
-    validation_tile_count = int(crop_parity.get("validation_tile_count", 0))
-    if (
-        calibration_tile_count < 4
-        or validation_tile_count < 4
-        or calibration_tile_count + validation_tile_count != expected_crop_batch_size
-    ):
-        raise RuntimeError("Crop TensorRT calibration/validation tile split is invalid")
-    if crop_parity.get("fp32_accumulation") != 1.0:
-        raise RuntimeError("Crop TensorRT FP16 engine does not use FP32 accumulation")
-    if crop_parity.get("native_cuda_sensitive_op_count") != 9.0:
-        raise RuntimeError("Crop hybrid engine converted a protected sensitive operation")
-    logit_scale = crop_parity.get("logit_calibration_scale")
-    logit_bias = crop_parity.get("logit_calibration_bias")
-    if (
-        isinstance(logit_scale, bool)
-        or not isinstance(logit_scale, (int, float))
-        or not 0.5 <= float(logit_scale) <= 2.0
-        or isinstance(logit_bias, bool)
-        or not isinstance(logit_bias, (int, float))
-        or not math.isfinite(float(logit_bias))
-    ):
-        raise RuntimeError("Crop TensorRT logit calibration is invalid")
-    validation_pixel_count = int(crop_parity.get("validation_pixel_count", 0))
-    if validation_pixel_count < 1:
-        raise RuntimeError("Crop TensorRT parity validated no source pixels")
-    if int(crop_parity.get("validation_decision_count", 0)) != (
-        2 * validation_pixel_count
-    ):
-        raise RuntimeError("Crop TensorRT parity did not validate both decision thresholds")
-    crop_parity_inputs = stack.get("crop_parity_scene_inputs")
-    if (
-        not isinstance(crop_parity_inputs, list)
-        or len(crop_parity_inputs) != 4
-        or len(set(crop_parity_inputs)) != 4
-        or any(not value for value in crop_parity_inputs)
-    ):
-        raise RuntimeError("Crop TensorRT parity requires all four packaged scenes")
+        raise RuntimeError("Crop CUDA graph uses the wrong fixed batch size")
+    if stack.get("crop_tensorrt_parity") not in ({}, None):
+        raise RuntimeError("Rejected crop TensorRT calibration is still active")
     if stack.get("cloud_backend") != "omnicloudmask_tensorrt_fp16":
         raise RuntimeError("Cloud inference is not using FP16 TensorRT")
     if int(stack.get("cloud_batch_size", 0)) != int(
@@ -163,11 +94,11 @@ def validate_health(health: dict[str, Any]) -> dict[str, Any]:
     return {
         "status": "JETSON_ACCELERATION_READY",
         "gpu": stack.get("gpu"),
-        "crop_tensorrt_engine_count": stack["crop_tensorrt_engine_count"],
-        "crop_tensorrt_precision": stack["crop_tensorrt_precision"],
-        "crop_tensorrt_tf32": stack["crop_tensorrt_tf32"],
-        "crop_tensorrt_parity": crop_parity,
-        "crop_parity_scene_count": len(crop_parity_inputs),
+        "crop_backend": stack["crop_backend"],
+        "crop_device": stack["crop_device"],
+        "crop_inference_dtype": stack["crop_inference_dtype"],
+        "crop_tf32": stack["crop_tf32"],
+        "crop_batch_size": stack["crop_batch_size"],
         "cloud_tensorrt_engine_count": stack["cloud_tensorrt_engine_count"],
         "cloud_profile_count": len(profiles),
         "warmed_scene_count": len(scene_profiles),

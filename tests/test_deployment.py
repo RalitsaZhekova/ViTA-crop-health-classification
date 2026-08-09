@@ -181,9 +181,9 @@ def test_payload_env_matches_the_production_crop_acceleration_contract() -> None
             name, value = line.split("=", maxsplit=1)
             environment[name] = value
 
-    assert environment["VITA_CROP_TRT_PRECISION"] == "fp16"
-    assert environment["VITA_CROP_TRT_MAX_CLASS_MISMATCH"] == "0.002"
-    assert environment["VITA_CROP_TRT_MAX_MEAN_PROBABILITY_ERROR"] == "0.01"
+    assert environment["VITA_CROP_BACKEND"] == "pytorch"
+    assert environment["VITA_CROP_BATCH_SIZE"] == "16"
+    assert not any(name.startswith("VITA_CROP_TRT_") for name in environment)
 
 
 def test_cloud_tensorrt_cache_builds_refittable_engines() -> None:
