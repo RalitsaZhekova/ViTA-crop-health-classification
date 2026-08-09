@@ -16,16 +16,67 @@ fi
 export VITA_PAYLOAD_UID="${VITA_PAYLOAD_UID:-$(id -u)}"
 export VITA_PAYLOAD_GID="${VITA_PAYLOAD_GID:-$(id -g)}"
 
-# This is a release acceptance setting, not a tuning knob. The pinned
-# Torch-TensorRT/TensorRT stack failed Prithvi decision parity, so production
-# must use the exact exported graph on native CUDA.
+# These are release acceptance settings, not tuning knobs. The pinned
+# Torch-TensorRT/TensorRT stack failed the fixed Prithvi and real-scene cloud
+# parity gates, so production runs both reviewed source graphs on native CUDA.
 if [ "${VITA_CROP_BACKEND:-pytorch}" != "pytorch" ]; then
     echo "ERROR: deploy/payload.env must set VITA_CROP_BACKEND=pytorch" >&2
     exit 1
 fi
+if [ "${VITA_CLOUD_BACKEND:-pytorch}" != "pytorch" ]; then
+    echo "ERROR: deploy/payload.env must set VITA_CLOUD_BACKEND=pytorch" >&2
+    exit 1
+fi
+if [ "${VITA_TRT_CUDAGRAPHS:-0}" != "0" ]; then
+    echo "ERROR: deploy/payload.env must set VITA_TRT_CUDAGRAPHS=0" >&2
+    exit 1
+fi
+
+remove_rejected_vita_tensorrt_caches() {
+    cache_root="$(realpath -m "$PROJECT_ROOT/runtime/engines/tensorrt")"
+    expected_root="$(realpath -m "$PROJECT_ROOT/runtime/engines")"
+    case "$cache_root" in
+        "$expected_root"/*) ;;
+        *)
+            echo "ERROR: VITA TensorRT cache escaped the runtime engine root" >&2
+            exit 1
+            ;;
+    esac
+    for stale_name in \
+        cloud crop crop-fp16 crop-fp32 crop-fp32-no-tf32 crop-fp16-no-tf32 \
+        crop-artifacts; do
+        stale_path="$(realpath -m "$cache_root/$stale_name")"
+        case "$stale_path" in
+            "$cache_root"/*) ;;
+            *)
+                echo "ERROR: rejected engine cache escaped VITA cache root" >&2
+                exit 1
+                ;;
+        esac
+        if [ -d "$stale_path" ]; then
+            rm -rf -- "$stale_path"
+            echo "Removed rejected VITA TensorRT cache: $stale_path"
+        fi
+    done
+    for stale_name in cloud-timing-cache.bin timing-cache.bin; do
+        stale_path="$(realpath -m "$cache_root/$stale_name")"
+        case "$stale_path" in
+            "$cache_root"/*) ;;
+            *)
+                echo "ERROR: rejected timing cache escaped VITA cache root" >&2
+                exit 1
+                ;;
+        esac
+        if [ -f "$stale_path" ]; then
+            rm -f -- "$stale_path"
+            echo "Removed rejected VITA TensorRT timing cache: $stale_path"
+        fi
+    done
+}
 
 ./deploy/payload/preflight.sh
 mkdir -p runtime/payload/runs runtime/engines/torch-export runtime/engines/tensorrt
+remove_rejected_vita_tensorrt_caches
 
 compose_args=(-f deploy/compose.payload.yaml)
 if [ -f deploy/payload.env ]; then
@@ -34,10 +85,10 @@ fi
 if [ "${VITA_SKIP_BUILD:-0}" != "1" ]; then
     docker compose "${compose_args[@]}" build
 fi
-echo "Validating CUDA and Torch-TensorRT inside the final image through the NVIDIA runtime."
+echo "Validating the native CUDA production stack inside the final image."
 docker compose "${compose_args[@]}" run --rm --no-deps \
     --entrypoint python payload -c \
-    'import tensorrt, torch, torch_tensorrt; assert torch.cuda.is_available(); assert torch.__version__.startswith("2.6.0a0+ecf3bae40a"), torch.__version__; assert torch.version.cuda == "12.8", torch.version.cuda; assert tensorrt.__version__.startswith("10.8."), tensorrt.__version__; assert torch_tensorrt.__version__.startswith("2.6.0a0"), torch_tensorrt.__version__; print({"gpu": torch.cuda.get_device_name(0), "torch": torch.__version__, "cuda": torch.version.cuda, "tensorrt": tensorrt.__version__, "torch_tensorrt": torch_tensorrt.__version__})'
+    'import torch; assert torch.cuda.is_available(); assert torch.__version__.startswith("2.6.0a0+ecf3bae40a"), torch.__version__; assert torch.version.cuda == "12.8", torch.version.cuda; print({"gpu": torch.cuda.get_device_name(0), "torch": torch.__version__, "cuda": torch.version.cuda, "cloud": "native-cuda-fp16", "crop": "native-cuda-fp32"})'
 echo "Validating the two VITA-owned writable bind mounts."
 docker compose "${compose_args[@]}" run --rm --no-deps \
     --entrypoint python payload -c \
@@ -61,24 +112,6 @@ fail_startup() {
     exit 1
 }
 
-remove_rejected_crop_engine_caches() {
-    cache_root="$(realpath -m "$PROJECT_ROOT/runtime/engines/tensorrt")"
-    for stale_name in crop crop-fp16 crop-fp32 crop-fp32-no-tf32 crop-fp16-no-tf32 crop-artifacts; do
-        stale_path="$(realpath -m "$cache_root/$stale_name")"
-        case "$stale_path" in
-            "$cache_root"/*) ;;
-            *)
-                echo "ERROR: rejected engine cache escaped VITA cache root" >&2
-                exit 1
-                ;;
-        esac
-        if [ -d "$stale_path" ]; then
-            rm -rf -- "$stale_path"
-            echo "Removed rejected VITA crop engine cache: $stale_path"
-        fi
-    done
-}
-
 startup_timeout="${VITA_PAYLOAD_STARTUP_TIMEOUT_SECONDS:-5400}"
 test "$startup_timeout" -ge 60 || {
     echo "ERROR: VITA_PAYLOAD_STARTUP_TIMEOUT_SECONDS must be at least 60" >&2
@@ -97,7 +130,6 @@ for attempt in $(seq 1 "$attempts"); do
             docker compose "${compose_args[@]}" exec -T payload \
                 python -m prithvi_payload.performance_acceptance \
                 --url http://127.0.0.1:8090/v1/jobs
-            remove_rejected_crop_engine_caches
         fi
         echo "Payload service is ready on Jetson loopback."
         exit 0

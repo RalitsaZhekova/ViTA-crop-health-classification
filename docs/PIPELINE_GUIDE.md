@@ -109,8 +109,8 @@ execution state.
    shared-grid caches. The former singular variable remains supported for local use.
 4. It loads the two OmniCloudMask ensemble checkpoints once.
 5. It loads the selected Prithvi crop model once on native CUDA.
-6. It builds/loads target cloud TensorRT engines, validates every static cloud profile,
-   and warms all four cloud paths plus the fixed crop batch.
+6. It warms the resident FP16 cloud ensemble, all four exact cloud paths, and the
+   fixed FP32 crop batch directly on CUDA. No production model compiler runs here.
 7. Only then does `/healthz` report `status: ready`. Readiness includes a tiny
    synchronized CUDA operation on the model worker, so a stale context after a
    laptop sleep, driver reset, or GPU switch is detected before a job starts.
@@ -191,8 +191,8 @@ reflectance divisor, model compatibility, output contract, and cloud class mappi
 
 - reads bounded raster windows with a 150-pixel halo;
 - normalizes reflectance and builds strict invalid-pixel masks;
-- invokes the resident two-model mean-logit OmniCloudMask backend; Jetson routes every
-  pre-warmed static shape through FP16 Torch-TensorRT;
+- invokes the resident two-model mean-logit OmniCloudMask backend in FP16 directly on
+  CUDA;
 - requests semantic classes directly when supported, avoiding unused probability
   tensors and CPU transfers;
 - converts configured cloud classes, shadows and invalid pixels into the unusable mask;
@@ -304,22 +304,19 @@ lock returns HTTP 409 for concurrent work instead of letting two GPU pipelines c
 This eliminated severe first-request and multi-process timing variance observed during
 local validation.
 
-### Cloud TensorRT, semantic-only inference, and batching
+### Native FP16 cloud CUDA, semantic-only inference, and batching
 
-The exact mean-logit ensemble is exported and compiled to one static FP16 TensorRT
-engine per observed `(batch, height, width)` profile. Engine/timing caches persist on
-the Orin. Every profile is compared to its PyTorch source before readiness, the source
-models are then released, and an unseen timed shape fails instead of compiling or
-falling back. `predict_semantic()` returns only class IDs to the CPU. Local defaults
-remain PyTorch FP32.
+The reviewed two-model mean-logit ensemble remains resident in PyTorch, runs in FP16
+on CUDA, and is warmed for batch 1 at 1,000 pixels plus batches 1 and 4 at 869 pixels.
+`predict_semantic()` returns only class IDs to the CPU. Production does not export or
+compile cloud engines during startup or timed requests.
 
-The pinned EdgeNeXt encoder exposes one zero-channel compatibility feature. Its
-PyTorch U-Net decoder legally concatenates `[N, 0, H, W]`, which is an identity
-operation, but Torch-TensorRT 2.6 constant-folds that value into an empty TensorRT
-weight and TensorRT 10.8 rejects it. Before compilation the payload removes exactly
-that no-op edge from the static exported graph, verifies the remaining input already
-has the complete output shape, and records one rewrite in each profile's readiness
-evidence. All non-empty decoder concatenations and model weights remain unchanged.
+The optional TensorRT experiment compiled after a narrow zero-channel graph rewrite,
+but the real-scene check then changed 0.299141% of cloud classes against the source
+model, above the unchanged 0.1% gate. Raising the tolerance would hide an accuracy
+failure, so fail-closed deployment rejects the TensorRT cloud backend, any active cloud
+engine/profile, and TensorRT CUDA graph mode. The experimental compiler code remains
+isolated for future requalification; production never enters it.
 
 ### Prithvi fixed batching on native CUDA
 
@@ -329,14 +326,7 @@ runs on CUDA through PyTorch. TensorRT 10.8 conversion is not a production backe
 this model on the pinned stack: full, precision-controlled, calibrated, and attempted
 hybrid builds all changed about 2.2% of thresholded decisions on the packaged-scene
 batch. No calibration or relaxed tolerance is applied to conceal that mismatch. The
-cloud model remains fully FP16 TensorRT.
-
-### CUDA graph replay
-
-After the cloud TensorRT engines are built, the service enables Torch-TensorRT CUDA
-graph mode and performs exact-shape warmups. Static cloud calls can replay captured GPU
-work with less Python/kernel-launch overhead. Prithvi remains resident and warm on the
-same GPU through native PyTorch CUDA.
+cloud model likewise remains on native CUDA, using the reviewed FP16 source ensemble.
 
 ### One Balkan grid instead of repeated preprocessing
 
@@ -375,8 +365,9 @@ files are replaced atomically, and output directories are job-specific.
 
 The process caches a source digest only while path, size, modification time and change
 time remain unchanged. The Balkan raster cache additionally binds source SHA-256 and
-algorithm/grid identity. TensorRT caches bind model and backend identity. None of these
-caches accepts only a filename as proof of equivalence.
+algorithm/grid identity. The production deployment removes VITA's rejected TensorRT
+model/timing caches before startup. No accepted cache uses only a filename as proof of
+equivalence.
 
 ### Compact routine downlink
 
@@ -464,8 +455,9 @@ The next local command recreates the necessary runtime layout.
 - The factor-4 Balkan overview path is an MVP speed/accuracy trade, not bitwise
   equivalence to full-resolution averaging; measured parity and limitations are
   recorded in the Jetson guide.
-- FP16 and TensorRT require comparison against the FP32/PyTorch reference on the same
-  scenes.
+- FP16 and any future compiler backend require comparison against the FP32/PyTorch
+  reference on the same scenes; production currently uses native FP16 CUDA for cloud
+  and native FP32 CUDA for crop.
 - INT8/quantization remains disabled until a representative calibration dataset and
   mission tolerance exist. The optional ModelOpt warning does not affect FP16.
 - The two-second target applies to a ready payload and the approved four-scene image-size

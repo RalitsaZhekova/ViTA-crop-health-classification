@@ -14,24 +14,27 @@ def _health() -> dict:
             "crop_device": "cuda",
             "crop_inference_dtype": "fp32",
             "crop_tf32": False,
-            "tensorrt_cudagraphs": True,
+            "tensorrt_cudagraphs": False,
             "crop_tensorrt_engine_count": 0,
             "crop_tensorrt_precision": None,
             "crop_tensorrt_tf32": None,
             "crop_tensorrt_parity": {},
             "crop_batch_size": 16,
-            "cloud_backend": "omnicloudmask_tensorrt_fp16",
+            "cloud_backend": "omnicloudmask_cuda_fp16",
             "cloud_batch_size": 4,
-            "cloud_tensorrt_engine_count": 4,
-            "cloud_tensorrt_profiles": [
-                {
-                    "engine_count": 1,
-                    "class_mismatch_fraction": 0.0,
-                    "zero_channel_cat_noops_removed": 1,
-                }
+            "cloud_tensorrt_engine_count": 0,
+            "cloud_tensorrt_profiles": [],
+            "cloud_warmup_profiles": [
+                {"batch_size": 1, "patch_size": 869},
+                {"batch_size": 1, "patch_size": 1000},
+                {"batch_size": 4, "patch_size": 869},
             ],
             "cloud_scene_warmup_profiles": [
-                {"input": f"scene-{index}.tif", "prediction_retained": False}
+                {
+                    "kind": "fixed_input_profile",
+                    "input": f"scene-{index}.tif",
+                    "prediction_retained": False,
+                }
                 for index in range(4)
             ],
             "balkan_analysis_caches": [{"input": "3370.tif"}, {"input": "3408.tif"}],
@@ -41,18 +44,15 @@ def _health() -> dict:
 
 def _production_flags(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in (
-        "VITA_CLOUD_TRT_REQUIRE_FULL",
-        "VITA_CLOUD_TRT_VALIDATE_WARMUP_CALLS",
         "VITA_COMPACT_PAYLOAD_PIPELINE",
         "VITA_CONDITION_EXACT_PERCENTILES",
         "VITA_CROP_IN_MEMORY",
         "VITA_DOWNLINK_GRID_IN_MEMORY",
-        "VITA_TRT_CUDAGRAPHS",
     ):
         monkeypatch.setenv(name, "1")
 
 
-def test_jetson_acceptance_requires_cuda_crop_and_tensorrt_cloud(
+def test_jetson_acceptance_requires_native_cuda_for_both_models(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _production_flags(monkeypatch)
@@ -61,25 +61,44 @@ def test_jetson_acceptance_requires_cuda_crop_and_tensorrt_cloud(
     assert accepted["warmed_scene_count"] == 4
 
 
-def test_jetson_acceptance_rejects_cloud_pytorch(
+def test_jetson_acceptance_rejects_cloud_tensorrt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _production_flags(monkeypatch)
     health = _health()
-    health["stack"]["cloud_backend"] = "omnicloudmask_cuda_fp16"
+    health["stack"]["cloud_backend"] = "omnicloudmask_tensorrt_fp16"
     with pytest.raises(RuntimeError, match="Cloud inference"):
         validate_health(health)
 
 
-def test_jetson_acceptance_requires_reviewed_cloud_graph_rewrite(
+def test_jetson_acceptance_rejects_cloud_tensorrt_engines(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _production_flags(monkeypatch)
     health = _health()
-    del health["stack"]["cloud_tensorrt_profiles"][0][
-        "zero_channel_cat_noops_removed"
-    ]
-    with pytest.raises(RuntimeError, match="zero-channel graph rewrite"):
+    health["stack"]["cloud_tensorrt_engine_count"] = 1
+    health["stack"]["cloud_tensorrt_profiles"] = [{"engine_count": 1}]
+    with pytest.raises(RuntimeError, match="engine partitions"):
+        validate_health(health)
+
+
+def test_jetson_acceptance_rejects_tensorrt_cuda_graphs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _production_flags(monkeypatch)
+    health = _health()
+    health["stack"]["tensorrt_cudagraphs"] = True
+    with pytest.raises(RuntimeError, match="CUDA graph replay"):
+        validate_health(health)
+
+
+def test_jetson_acceptance_requires_explicit_empty_tensorrt_profiles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _production_flags(monkeypatch)
+    health = _health()
+    del health["stack"]["cloud_tensorrt_profiles"]
+    with pytest.raises(RuntimeError, match="profiles are still active"):
         validate_health(health)
 
 

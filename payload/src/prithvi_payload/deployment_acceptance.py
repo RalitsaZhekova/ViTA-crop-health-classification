@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
 from typing import Any
 from urllib.request import urlopen
@@ -28,46 +27,40 @@ def validate_health(health: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("Crop inference is not using the accepted FP32 graph")
     if stack.get("crop_tf32") is not False:
         raise RuntimeError("Crop inference has TF32 enabled")
-    if int(stack.get("crop_tensorrt_engine_count", 0)) != 0:
+    if stack.get("crop_tensorrt_engine_count") != 0:
         raise RuntimeError("Rejected crop TensorRT engine partitions are still active")
-    if stack.get("tensorrt_cudagraphs") is not True:
-        raise RuntimeError("TensorRT CUDA graph replay is not enabled")
+    if stack.get("tensorrt_cudagraphs") is not False:
+        raise RuntimeError("Rejected TensorRT CUDA graph replay is still enabled")
     if int(stack.get("crop_batch_size", 0)) != int(
         os.environ.get("VITA_CROP_BATCH_SIZE", "16")
     ):
-        raise RuntimeError("Crop CUDA graph uses the wrong fixed batch size")
-    if stack.get("crop_tensorrt_parity") not in ({}, None):
+        raise RuntimeError("Crop CUDA inference uses the wrong fixed batch size")
+    if stack.get("crop_tensorrt_parity") != {}:
         raise RuntimeError("Rejected crop TensorRT calibration is still active")
-    if stack.get("cloud_backend") != "omnicloudmask_tensorrt_fp16":
-        raise RuntimeError("Cloud inference is not using FP16 TensorRT")
+    if stack.get("cloud_backend") != "omnicloudmask_cuda_fp16":
+        raise RuntimeError("Cloud inference is not using the accepted FP16 CUDA graph")
     if int(stack.get("cloud_batch_size", 0)) != int(
         os.environ.get("VITA_CLOUD_BATCH_SIZE", "4")
     ):
-        raise RuntimeError("Cloud TensorRT uses the wrong fixed batch size")
-    if int(stack.get("cloud_tensorrt_engine_count", 0)) < 1:
-        raise RuntimeError("Cloud inference has no TensorRT engines")
+        raise RuntimeError("Cloud CUDA inference uses the wrong fixed batch size")
+    if stack.get("cloud_tensorrt_engine_count") != 0:
+        raise RuntimeError("Rejected cloud TensorRT engine partitions are still active")
 
     profiles = stack.get("cloud_tensorrt_profiles")
-    if not isinstance(profiles, list) or not profiles:
-        raise RuntimeError("Cloud TensorRT has no validated static profiles")
-    maximum_mismatch = float(
-        os.environ.get("VITA_CLOUD_TRT_MAX_CLASS_MISMATCH", "0.001")
-    )
-    for profile in profiles:
-        if not isinstance(profile, dict) or int(profile.get("engine_count", 0)) < 1:
-            raise RuntimeError("A cloud profile has no TensorRT engine")
-        if int(profile.get("zero_channel_cat_noops_removed", 0)) != 1:
-            raise RuntimeError(
-                "A cloud profile did not apply the reviewed zero-channel graph rewrite"
-            )
-        mismatch = profile.get("class_mismatch_fraction")
-        if (
-            isinstance(mismatch, bool)
-            or not isinstance(mismatch, (int, float))
-            or not math.isfinite(float(mismatch))
-            or float(mismatch) > maximum_mismatch
-        ):
-            raise RuntimeError("A cloud TensorRT profile failed class parity")
+    if profiles != []:
+        raise RuntimeError("Rejected cloud TensorRT profiles are still active")
+
+    warmup_profiles = stack.get("cloud_warmup_profiles")
+    expected_cloud_warmups = {(1, 1000), (1, 869), (stack["cloud_batch_size"], 869)}
+    if not isinstance(warmup_profiles, list) or any(
+        not isinstance(profile, dict) for profile in warmup_profiles
+    ):
+        raise RuntimeError("Cloud CUDA warmup profiles do not match production shapes")
+    if {
+        (profile.get("batch_size"), profile.get("patch_size"))
+        for profile in warmup_profiles
+    } != expected_cloud_warmups:
+        raise RuntimeError("Cloud CUDA warmup profiles do not match production shapes")
 
     scene_profiles = stack.get("cloud_scene_warmup_profiles")
     if not isinstance(scene_profiles, list) or len(scene_profiles) != 4:
@@ -75,6 +68,8 @@ def validate_health(health: dict[str, Any]) -> dict[str, Any]:
     scene_inputs = [profile.get("input") for profile in scene_profiles]
     if len(set(scene_inputs)) != 4 or any(not value for value in scene_inputs):
         raise RuntimeError("Demo-scene warmup inputs must be distinct")
+    if any(profile.get("kind") != "fixed_input_profile" for profile in scene_profiles):
+        raise RuntimeError("Demo-scene warmups must exercise fixed input profiles")
     if any(profile.get("prediction_retained") is not False for profile in scene_profiles):
         raise RuntimeError("Startup must not retain cached demo predictions")
 
@@ -83,13 +78,10 @@ def validate_health(health: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("Exactly two Balkan analysis grids must be prepared")
 
     required_flags = (
-        "VITA_CLOUD_TRT_REQUIRE_FULL",
-        "VITA_CLOUD_TRT_VALIDATE_WARMUP_CALLS",
         "VITA_COMPACT_PAYLOAD_PIPELINE",
         "VITA_CONDITION_EXACT_PERCENTILES",
         "VITA_CROP_IN_MEMORY",
         "VITA_DOWNLINK_GRID_IN_MEMORY",
-        "VITA_TRT_CUDAGRAPHS",
     )
     for name in required_flags:
         if not environment_flag(name, False):
@@ -103,8 +95,10 @@ def validate_health(health: dict[str, Any]) -> dict[str, Any]:
         "crop_inference_dtype": stack["crop_inference_dtype"],
         "crop_tf32": stack["crop_tf32"],
         "crop_batch_size": stack["crop_batch_size"],
+        "cloud_backend": stack["cloud_backend"],
+        "cloud_batch_size": stack["cloud_batch_size"],
         "cloud_tensorrt_engine_count": stack["cloud_tensorrt_engine_count"],
-        "cloud_profile_count": len(profiles),
+        "cloud_profile_count": 0,
         "warmed_scene_count": len(scene_profiles),
         "prepared_balkan_scene_count": len(balkan_caches),
         "target_payload_seconds": 2.0,
