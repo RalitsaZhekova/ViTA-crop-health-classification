@@ -5,7 +5,12 @@ from pathlib import Path
 import numpy as np
 import rasterio
 import torch
+from prithvi_payload.crop_executor import (
+    _compact_invalid_input_mask,
+    prepare_compact_crop_inputs,
+)
 from prithvi_payload.crop_parity import build_crop_parity_inputs
+from prithvi_payload.raster_ops import read_padded_array
 from prithvi_shared import CROP_CLASSIFICATION_THRESHOLD, HEALTH_ANALYSIS_CROP_THRESHOLD
 from rasterio.transform import from_origin
 
@@ -26,6 +31,80 @@ def _write_scene(path: Path, value: float) -> None:
         nodata=-9999.0,
     ) as destination:
         destination.write(bands)
+
+
+def test_compact_invalid_mask_matches_the_original_per_tile_rule() -> None:
+    source = np.arange(4 * 8 * 9, dtype=np.float32).reshape(4, 8, 9)
+    source[0, 2, 3] = -9999.0
+    source[:, 4, 5] = -9999.0
+    model = source.copy()
+    model[2, 6, 7] = np.inf
+
+    for calibrated in (False, True):
+        compact = _compact_invalid_input_mask(
+            source,
+            model,
+            nodata=-9999.0,
+            calibrated=calibrated,
+        )
+        for y, x in ((0, 0), (2, 3), (7, 8)):
+            raw_tile = read_padded_array(
+                source,
+                y=y,
+                x=x,
+                tile_size=5,
+                halo=1,
+            )
+            model_tile = read_padded_array(
+                model,
+                y=y,
+                x=x,
+                tile_size=5,
+                halo=1,
+            )
+            expected = ~np.isfinite(model_tile).all(axis=0)
+            expected |= (
+                np.any(raw_tile == -9999.0, axis=0)
+                if calibrated
+                else np.all(raw_tile == -9999.0, axis=0)
+            )
+            actual = read_padded_array(
+                compact[np.newaxis, ...],
+                y=y,
+                x=x,
+                tile_size=5,
+                halo=1,
+            )[0]
+            np.testing.assert_array_equal(actual, expected)
+
+
+def test_overlapped_crop_preparation_matches_sequential_source_routing() -> None:
+    cloud_source = np.arange(4 * 13 * 17, dtype=np.float32).reshape(4, 13, 17)
+    cloud_source[:, 2, 3] = -9999.0
+    source_valid = np.ones((13, 17), dtype=bool)
+    source_valid[2, 3] = False
+
+    prepared = prepare_compact_crop_inputs(
+        cloud_source,
+        source_valid,
+        source_band_indices=(4, 3, 2, 1),
+        crop_band_indices=(1, 2, 3, 4),
+        multiplier=2.5,
+        nodata=-9999.0,
+    )
+    expected_source = cloud_source[[3, 2, 1, 0]]
+    expected_model = expected_source * np.float32(2.5)
+    expected_invalid = _compact_invalid_input_mask(
+        expected_source,
+        expected_model,
+        nodata=-9999.0,
+        calibrated=False,
+    )
+
+    np.testing.assert_array_equal(prepared["source_bands"], expected_source)
+    np.testing.assert_array_equal(prepared["source_valid_mask"], source_valid)
+    np.testing.assert_array_equal(prepared["model_bands"], expected_model)
+    np.testing.assert_array_equal(prepared["invalid_input_mask"], expected_invalid)
 
 
 def test_crop_parity_batch_uses_balanced_real_scene_tiles(tmp_path: Path) -> None:

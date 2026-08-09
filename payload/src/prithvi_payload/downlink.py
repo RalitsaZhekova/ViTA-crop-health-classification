@@ -411,18 +411,111 @@ def _build_interaction_grid(
                 for name in metric_names
             }
 
+    def build_cell(
+        row: int,
+        column: int,
+        window: Window,
+        bounds_wgs84: list[float],
+        condition: np.ndarray,
+        byte_values: dict[str, np.ndarray],
+        metric_values: dict[str, np.ndarray],
+    ) -> dict[str, Any]:
+        total = round(window.width) * round(window.height)
+        valid = np.isfinite(condition) & (condition >= 0.0) & (condition <= 100.0)
+        analysis_pixels = int(np.count_nonzero(valid))
+        metrics = {
+            name: _finite_summary(metric_values[name])["median"]
+            for name in metric_names
+        }
+        condition_summary = _finite_summary(condition)
+        semantic = byte_values["semantic_mask"]
+        return {
+            "id": f"r{row:02d}c{column:02d}",
+            "row": row,
+            "column": column,
+            "bounds_wgs84": bounds_wgs84,
+            "quality": {
+                "analysis_pixels": analysis_pixels,
+                "analysis_percentage": _percentage(analysis_pixels, total),
+                "crop_candidate_percentage": _percentage(
+                    int(np.count_nonzero(byte_values["crop_binary"] == 1)), total
+                ),
+                "unusable_percentage": _percentage(
+                    int(np.count_nonzero(byte_values["unusable_mask"] == 1)), total
+                ),
+                "thick_cloud_percentage": _percentage(
+                    int(np.count_nonzero(semantic == 1)), total
+                ),
+                "thin_cloud_percentage": _percentage(
+                    int(np.count_nonzero(semantic == 2)), total
+                ),
+                "cloud_shadow_percentage": _percentage(
+                    int(np.count_nonzero(semantic == 3)), total
+                ),
+                "invalid_percentage": _percentage(
+                    int(np.count_nonzero(byte_values["invalid_mask"] == 1)), total
+                ),
+            },
+            "condition_score": condition_summary["median"],
+            "alert_percentage": _percentage(
+                int(np.count_nonzero((byte_values["alert_mask"] == 1) & valid)),
+                analysis_pixels,
+            ),
+            "metrics": metrics,
+        }
+
+    jobs = []
     for row in range(rows):
         row_start, row_stop = row_edges[row : row + 2]
-        if use_in_memory_grid:
-            condition_row = full_condition[row_start:row_stop]
-            byte_rows = {
-                name: values[row_start:row_stop] for name, values in full_bytes.items()
-            }
-            metric_rows = {
-                name: values[row_start:row_stop]
-                for name, values in full_metrics.items()
-            }
-        else:
+        for column in range(columns):
+            column_start, column_stop = column_edges[column : column + 2]
+            window = Window(
+                column_start,
+                row_start,
+                column_stop - column_start,
+                row_stop - row_start,
+            )
+            jobs.append(
+                (
+                    row,
+                    column,
+                    window,
+                    _cell_bounds_wgs84(source, window),
+                )
+            )
+
+    if use_in_memory_grid:
+        def build_memory_cell(job: tuple[int, int, Window, list[float]]) -> dict[str, Any]:
+            row, column, window, bounds_wgs84 = job
+            row_slice, column_slice = window.toslices()
+            return build_cell(
+                row,
+                column,
+                window,
+                bounds_wgs84,
+                full_condition[row_slice, column_slice],
+                {
+                    name: values[row_slice, column_slice]
+                    for name, values in full_bytes.items()
+                },
+                {
+                    name: values[row_slice, column_slice]
+                    for name, values in full_metrics.items()
+                },
+            )
+
+        grid_threads = max(
+            1,
+            int(os.environ.get("VITA_DOWNLINK_GRID_THREADS", "8")),
+        )
+        with ThreadPoolExecutor(
+            max_workers=grid_threads,
+            thread_name_prefix="downlink-grid",
+        ) as grid_pool:
+            cells = list(grid_pool.map(build_memory_cell, jobs))
+    else:
+        for row in range(rows):
+            row_start, row_stop = row_edges[row : row + 2]
             row_window = Window(0, row_start, source.width, row_stop - row_start)
             condition_row = (
                 rasters["condition_score"]
@@ -438,64 +531,32 @@ def _build_interaction_grid(
                 .filled(np.nan)
                 for name in metric_names
             }
-        for column in range(columns):
-            column_start, column_stop = column_edges[column : column + 2]
-            window = Window(
-                column_start,
-                row_start,
-                column_stop - column_start,
-                row_stop - row_start,
-            )
-            total = round(window.width) * round(window.height)
-            column_slice = slice(column_start, column_stop)
-            condition = condition_row[:, column_slice]
-            valid = np.isfinite(condition) & (condition >= 0.0) & (condition <= 100.0)
-            analysis_pixels = int(np.count_nonzero(valid))
-            alert = byte_rows["alert_mask"][:, column_slice]
-            crop = byte_rows["crop_binary"][:, column_slice]
-            unusable = byte_rows["unusable_mask"][:, column_slice]
-            semantic = byte_rows["semantic_mask"][:, column_slice]
-            invalid = byte_rows["invalid_mask"][:, column_slice]
-            metrics = {
-                name: _finite_summary(metric_rows[name][:, column_slice])["median"]
-                for name in metric_names
-            }
-            condition_summary = _finite_summary(condition)
-            cells.append(
-                {
-                    "id": f"r{row:02d}c{column:02d}",
-                    "row": row,
-                    "column": column,
-                    "bounds_wgs84": _cell_bounds_wgs84(source, window),
-                    "quality": {
-                        "analysis_pixels": analysis_pixels,
-                        "analysis_percentage": _percentage(analysis_pixels, total),
-                        "crop_candidate_percentage": _percentage(
-                            int(np.count_nonzero(crop == 1)), total
-                        ),
-                        "unusable_percentage": _percentage(
-                            int(np.count_nonzero(unusable == 1)), total
-                        ),
-                        "thick_cloud_percentage": _percentage(
-                            int(np.count_nonzero(semantic == 1)), total
-                        ),
-                        "thin_cloud_percentage": _percentage(
-                            int(np.count_nonzero(semantic == 2)), total
-                        ),
-                        "cloud_shadow_percentage": _percentage(
-                            int(np.count_nonzero(semantic == 3)), total
-                        ),
-                        "invalid_percentage": _percentage(
-                            int(np.count_nonzero(invalid == 1)), total
-                        ),
-                    },
-                    "condition_score": condition_summary["median"],
-                    "alert_percentage": _percentage(
-                        int(np.count_nonzero((alert == 1) & valid)), analysis_pixels
-                    ),
-                    "metrics": metrics,
-                }
-            )
+            for column in range(columns):
+                column_start, column_stop = column_edges[column : column + 2]
+                window = Window(
+                    column_start,
+                    row_start,
+                    column_stop - column_start,
+                    row_stop - row_start,
+                )
+                column_slice = slice(column_start, column_stop)
+                cells.append(
+                    build_cell(
+                        row,
+                        column,
+                        window,
+                        _cell_bounds_wgs84(source, window),
+                        condition_row[:, column_slice],
+                        {
+                            name: values[:, column_slice]
+                            for name, values in byte_rows.items()
+                        },
+                        {
+                            name: values[:, column_slice]
+                            for name, values in metric_rows.items()
+                        },
+                    )
+                )
     return {
         "rows": rows,
         "columns": columns,

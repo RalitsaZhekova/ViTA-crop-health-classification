@@ -23,6 +23,7 @@ from prithvi_shared.condition import (
     ConditionConfig,
     build_condition_assessment,
     calculate_condition_score_layers,
+    calculate_spatial_alert_masks,
     calculate_spatial_condition_layers,
 )
 from prithvi_shared.health import (
@@ -52,6 +53,7 @@ HEALTH_LAYER_NAMES = (
     "excess_green",
     "rgb_brightness",
 )
+DOWNLINK_HEALTH_LAYER_NAMES = ("ndvi", "gndvi", "evi", "savi")
 
 
 @dataclass
@@ -83,6 +85,7 @@ class StreamingMetric:
         values: np.ndarray,
         *,
         sample_ids: np.ndarray | None = None,
+        valid_mask: np.ndarray | None = None,
     ) -> None:
         flattened = np.asarray(values).ravel()
         identifiers: np.ndarray | None
@@ -103,22 +106,34 @@ class StreamingMetric:
                 raise ValueError("sample_ids must match the flattened metric values")
             identifiers = None if self._exact_percentiles else supplied_identifiers
         finite_mask = np.isfinite(flattened)
-        finite = np.asarray(flattened[finite_mask], dtype=np.float64)
+        if valid_mask is not None:
+            supplied_mask = np.asarray(valid_mask, dtype=bool).ravel()
+            if supplied_mask.shape != flattened.shape:
+                raise ValueError("valid_mask must match the flattened metric values")
+            finite_mask &= supplied_mask
+        finite_values = flattened[finite_mask]
         if identifiers is not None:
             identifiers = identifiers[finite_mask]
-        if finite.size == 0:
+        if finite_values.size == 0:
             return
-        self.count += int(finite.size)
-        self.total += float(np.sum(finite, dtype=np.float64))
-        self.total_squared += float(np.sum(finite * finite, dtype=np.float64))
-        self.minimum = min(self.minimum, float(np.min(finite)))
-        self.maximum = max(self.maximum, float(np.max(finite)))
+        self.count += int(finite_values.size)
+        self.total += float(np.sum(finite_values, dtype=np.float64))
+        self.total_squared += float(
+            np.sum(np.square(finite_values, dtype=np.float64), dtype=np.float64)
+        )
+        self.minimum = min(self.minimum, float(np.min(finite_values)))
+        self.maximum = max(self.maximum, float(np.max(finite_values)))
 
-        values_combined = np.concatenate((self._values, finite))
         if self._exact_percentiles:
-            self._values = values_combined
+            self._values = (
+                finite_values
+                if self._values.size == 0
+                else np.concatenate((self._values, finite_values))
+            )
             return
         assert identifiers is not None
+        finite = np.asarray(finite_values, dtype=np.float64)
+        values_combined = np.concatenate((self._values, finite))
         priorities = self._priorities_for_ids(identifiers)
         priorities_combined = np.concatenate((self._priorities, priorities))
         if values_combined.size > self.sample_limit:
@@ -161,7 +176,11 @@ class StreamingMetric:
             }
         mean = self.total / self.count
         variance = max(0.0, self.total_squared / self.count - mean * mean)
-        percentiles = np.percentile(self._values, (10, 25, 50, 90))
+        percentiles = np.percentile(
+            self._values,
+            (10, 25, 50, 90),
+            overwrite_input=self._exact_percentiles,
+        )
 
         def rounded(value: float) -> float:
             return float(round(value, 12))
@@ -183,6 +202,15 @@ class StreamingMetric:
                 else "deterministic_priority_reservoir"
             ),
         }
+
+    def exact_median_absolute_deviation(self, center: float) -> float:
+        """Return exact MAD without recomputing unused moments and quantiles."""
+        if not self._exact_percentiles:
+            raise RuntimeError("Exact values are unavailable in reservoir mode")
+        if self._values.size == 0:
+            raise RuntimeError("Cannot calculate MAD for an empty metric")
+        deviations = np.abs(self._values - float(center))
+        return float(round(float(np.percentile(deviations, 50)), 12))
 
 
 def _write_json_atomic(path: Path, value: dict[str, Any]) -> None:
@@ -660,7 +688,7 @@ def run_payload_condition(
     with ExitStack() as stack:
         metric_threads = max(
             1,
-            int(os.environ.get("VITA_CONDITION_METRIC_THREADS", "4")),
+            int(os.environ.get("VITA_CONDITION_METRIC_THREADS", "8")),
         )
         metric_pool = stack.enter_context(
             ThreadPoolExecutor(
@@ -779,7 +807,7 @@ def run_payload_condition(
                 name: np.full(
                     (source.height, source.width), np.nan, dtype=np.float32
                 )
-                for name in HEALTH_LAYER_NAMES
+                for name in DOWNLINK_HEALTH_LAYER_NAMES
             }
             condition_product = np.full(
                 (source.height, source.width), np.nan, dtype=np.float32
@@ -870,10 +898,15 @@ def run_payload_condition(
                 reflectance[2],
                 reflectance[3],
                 requested_mask,
+                executor=metric_pool,
             )
             health_calculation_seconds += time.perf_counter() - health_started
             score_started = time.perf_counter()
-            score_layers = calculate_condition_score_layers(health_layers, config=cfg)
+            score_layers = calculate_condition_score_layers(
+                health_layers,
+                config=cfg,
+                executor=metric_pool,
+            )
             score_calculation_seconds += time.perf_counter() - score_started
             metric_futures = []
 
@@ -881,7 +914,7 @@ def run_payload_condition(
             for name, values in health_layers.values.items():
                 if persist_rasters:
                     _write_float_tile(health_outputs[name], values, window)
-                else:
+                elif name in health_products:
                     assert health_products is not None
                     health_products[name][row_slice, column_slice] = values
                 metric_futures.append(
@@ -933,8 +966,9 @@ def run_payload_condition(
             metric_futures.append(
                 metric_pool.submit(
                     probability_accumulator.update,
-                    np.where(score_layers.valid_score_mask, crop_probability, np.nan),
+                    crop_probability,
                     sample_ids=pixel_ids,
+                    valid_mask=score_layers.valid_score_mask,
                 )
             )
             for future in metric_futures:
@@ -950,9 +984,33 @@ def run_payload_condition(
         resolution = [abs(float(source.res[0])), abs(float(source.res[1]))]
     first_pass_seconds = time.perf_counter() - first_pass_started
 
+    metric_summary_started = time.perf_counter()
+    with ThreadPoolExecutor(
+        max_workers=metric_threads,
+        thread_name_prefix="condition-summary",
+    ) as summary_pool:
+        condition_summary_future = summary_pool.submit(condition_accumulator.summary)
+        health_summary_futures = {
+            name: summary_pool.submit(accumulator.summary)
+            for name, accumulator in metric_accumulators.items()
+        }
+        component_summary_futures = {
+            name: summary_pool.submit(accumulator.summary)
+            for name, accumulator in component_accumulators.items()
+        }
+        probability_summary_future = summary_pool.submit(probability_accumulator.summary)
+        condition_summary = condition_summary_future.result()
+        health_summaries = {
+            name: future.result() for name, future in health_summary_futures.items()
+        }
+        component_summaries = {
+            name: future.result() for name, future in component_summary_futures.items()
+        }
+        probability_summary = probability_summary_future.result()
+    metric_summary_seconds = time.perf_counter() - metric_summary_started
+
     robust_statistics_started = time.perf_counter()
     total_pixels = width * height
-    condition_summary = condition_accumulator.summary()
     analysis_pixels = int(condition_summary["valid_pixels"])
     analysis_percentage = 100.0 * analysis_pixels / total_pixels if total_pixels else 0.0
     sufficient = (
@@ -964,35 +1022,44 @@ def run_payload_condition(
     lower_quartile_score = condition_summary["lower_quartile"] if sufficient else None
     median_absolute_deviation = 0.0
     if sufficient:
-        deviation_accumulator = StreamingMetric("condition_absolute_deviation")
-        if persist_rasters:
-            condition_source_context = rasterio.open(condition_score_path)
-        else:
-            condition_source_context = None
-            assert condition_product is not None
-        with ExitStack() as stack:
-            condition_source = (
-                stack.enter_context(condition_source_context)
-                if condition_source_context is not None
-                else None
-            )
-            for window in _iter_windows(width, height, tile_size):
-                pixel_ids = _window_pixel_ids(window, width)
-                if condition_source is not None:
-                    score = condition_source.read(
-                        1,
-                        window=window,
-                        out_dtype="float32",
-                    )
-                    score[score == FLOAT_NODATA] = np.nan
-                else:
-                    row_slice, column_slice = window.toslices()
-                    score = condition_product[row_slice, column_slice]
-                deviation_accumulator.update(
-                    np.abs(score - float(median_score)),
-                    sample_ids=pixel_ids,
+        if exact_percentiles:
+            median_absolute_deviation = (
+                condition_accumulator.exact_median_absolute_deviation(
+                    float(median_score)
                 )
-        median_absolute_deviation = float(deviation_accumulator.summary()["median"])
+            )
+        else:
+            deviation_accumulator = StreamingMetric("condition_absolute_deviation")
+            if persist_rasters:
+                condition_source_context = rasterio.open(condition_score_path)
+            else:
+                condition_source_context = None
+                assert condition_product is not None
+            with ExitStack() as stack:
+                condition_source = (
+                    stack.enter_context(condition_source_context)
+                    if condition_source_context is not None
+                    else None
+                )
+                for window in _iter_windows(width, height, tile_size):
+                    pixel_ids = _window_pixel_ids(window, width)
+                    if condition_source is not None:
+                        score = condition_source.read(
+                            1,
+                            window=window,
+                            out_dtype="float32",
+                        )
+                        score[score == FLOAT_NODATA] = np.nan
+                    else:
+                        row_slice, column_slice = window.toslices()
+                        score = condition_product[row_slice, column_slice]
+                    deviation_accumulator.update(
+                        np.abs(score - float(median_score)),
+                        sample_ids=pixel_ids,
+                    )
+            median_absolute_deviation = float(
+                deviation_accumulator.summary()["median"]
+            )
     robust_statistics_seconds = time.perf_counter() - robust_statistics_started
 
     relative_anomaly_pixels = 0
@@ -1052,16 +1119,17 @@ def run_payload_condition(
                 score = condition_product[row_slice, column_slice]
                 valid = np.isfinite(score)
             if sufficient:
-                spatial = calculate_spatial_condition_layers(
-                    score,
-                    valid,
-                    median_score=float(median_score),
-                    median_absolute_deviation=median_absolute_deviation,
-                    config=cfg,
-                )
-                relative_anomaly_pixels += int(np.count_nonzero(spatial.relative_anomaly_mask))
-                low_vigor_pixels += int(np.count_nonzero(spatial.low_vigor_mask))
                 if persist_rasters:
+                    spatial = calculate_spatial_condition_layers(
+                        score,
+                        valid,
+                        median_score=float(median_score),
+                        median_absolute_deviation=median_absolute_deviation,
+                        config=cfg,
+                    )
+                    relative_mask = spatial.relative_anomaly_mask
+                    low_mask = spatial.low_vigor_mask
+                    alert_mask = spatial.alert_mask
                     assert deficit_output is not None
                     assert relative_output is not None
                     assert low_output is not None
@@ -1070,21 +1138,32 @@ def run_payload_condition(
                         deficit_output, spatial.robust_deficit_z, window
                     )
                     relative_output.write(
-                        spatial.relative_anomaly_mask.astype(np.uint8),
+                        relative_mask.astype(np.uint8),
                         1,
                         window=window,
                     )
                     low_output.write(
-                        spatial.low_vigor_mask.astype(np.uint8), 1, window=window
+                        low_mask.astype(np.uint8), 1, window=window
                     )
                     alert_output.write(
-                        spatial.alert_mask.astype(np.uint8), 1, window=window
+                        alert_mask.astype(np.uint8), 1, window=window
                     )
                 else:
+                    relative_mask, low_mask, alert_mask = (
+                        calculate_spatial_alert_masks(
+                            score,
+                            valid,
+                            median_score=float(median_score),
+                            median_absolute_deviation=median_absolute_deviation,
+                            config=cfg,
+                        )
+                    )
                     assert alert_product is not None
                     alert_product[row_slice, column_slice] = (
-                        spatial.alert_mask.astype(np.uint8)
+                        alert_mask.astype(np.uint8)
                     )
+                relative_anomaly_pixels += int(np.count_nonzero(relative_mask))
+                low_vigor_pixels += int(np.count_nonzero(low_mask))
             else:
                 shape = (round(window.height), round(window.width))
                 if persist_rasters:
@@ -1104,9 +1183,8 @@ def run_payload_condition(
     spatial_pass_seconds = time.perf_counter() - spatial_pass_started
 
     component_medians = {
-        name: component_accumulators[name].summary()["median"] for name in SCORED_INDEX_NAMES
+        name: component_summaries[name]["median"] for name in SCORED_INDEX_NAMES
     }
-    probability_summary = probability_accumulator.summary()
     assessment = build_condition_assessment(
         analysis_pixels=analysis_pixels,
         total_pixels=total_pixels,
@@ -1188,7 +1266,7 @@ def run_payload_condition(
             "minimum_crop_probability": health_crop_threshold,
         },
         "metrics": {
-            name: accumulator.summary() for name, accumulator in sorted(metric_accumulators.items())
+            name: health_summaries[name] for name in sorted(health_summaries)
         },
         "condition": assessment.to_dict(),
         "raster_assets": raster_assets,
@@ -1235,12 +1313,13 @@ def run_payload_condition(
             "seconds": time.perf_counter() - started,
             "tile_size": tile_size,
             "first_pass_windows": window_count,
-            "passes": 3 if sufficient else 2,
+            "passes": (2 if exact_percentiles else 3) if sufficient else 2,
             "first_pass_seconds": first_pass_seconds,
             "input_read_seconds": input_read_seconds,
             "health_calculation_seconds": health_calculation_seconds,
             "score_calculation_seconds": score_calculation_seconds,
             "metric_aggregation_seconds": metric_aggregation_seconds,
+            "metric_summary_seconds": metric_summary_seconds,
             "product_materialization_seconds": product_materialization_seconds,
             "robust_statistics_seconds": robust_statistics_seconds,
             "spatial_pass_seconds": spatial_pass_seconds,
@@ -1278,6 +1357,7 @@ def run_payload_condition(
                 else {}
             ),
         }
+
     serializable_report = {key: value for key, value in report.items() if key != "_products"}
     _write_json_atomic(report_path, serializable_report)
     return report

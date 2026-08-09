@@ -86,3 +86,54 @@ def read_padded_array(
     right = requested_x + tile_size - read_x_end
     mode = "reflect" if selected.shape[-2] > 1 and selected.shape[-1] > 1 else "edge"
     return np.pad(selected, ((0, 0), (top, bottom), (left, right)), mode=mode)
+
+
+def copy_padded_array(
+    values: np.ndarray,
+    destination: np.ndarray,
+    *,
+    y: int,
+    x: int,
+    halo: int,
+) -> None:
+    """Copy a padded channel-first tile into an existing contiguous buffer.
+
+    Interior tiles take the common zero-allocation path. Edge tiles retain the
+    exact reflect/edge padding policy used by :func:`read_padded_array`.
+    """
+    array = np.asarray(values)
+    output = np.asarray(destination)
+    if array.ndim != 3 or output.ndim != 3:
+        raise ValueError("Padded source arrays must be channel-first and three-dimensional")
+    if array.shape[0] != output.shape[0]:
+        raise ValueError("Padded source and destination channel counts must match")
+    tile_height, tile_width = output.shape[-2:]
+    requested_y = y - halo
+    requested_x = x - halo
+    if (
+        requested_y >= 0
+        and requested_x >= 0
+        and requested_y + tile_height <= array.shape[-2]
+        and requested_x + tile_width <= array.shape[-1]
+    ):
+        np.copyto(
+            output,
+            array[
+                :,
+                requested_y : requested_y + tile_height,
+                requested_x : requested_x + tile_width,
+            ],
+            casting="no",
+        )
+        return
+    np.copyto(
+        output,
+        read_padded_array(
+            array,
+            y=y,
+            x=x,
+            tile_size=tile_height,
+            halo=halo,
+        ),
+        casting="no",
+    )

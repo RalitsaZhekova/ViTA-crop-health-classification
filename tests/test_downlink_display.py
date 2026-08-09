@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import numpy as np
 import rasterio
-from prithvi_payload.downlink import _calibrated_balkan_rgb, _stretch_rgb
+from prithvi_payload.downlink import (
+    _build_interaction_grid,
+    _calibrated_balkan_rgb,
+    _stretch_rgb,
+)
 from rasterio.transform import from_origin
 
 
@@ -74,3 +78,53 @@ def test_combined_rgb_stretch_keeps_invalid_pixels_black() -> None:
 
     np.testing.assert_array_equal(result[0, 1], 0)
     np.testing.assert_array_equal(result[1, 0], 0)
+
+
+def test_parallel_interaction_grid_matches_serial(tmp_path, monkeypatch) -> None:
+    height, width = 96, 128
+    source_path = tmp_path / "grid-source.tif"
+    profile = {
+        "driver": "GTiff",
+        "width": width,
+        "height": height,
+        "count": 1,
+        "dtype": "float32",
+        "crs": "EPSG:32635",
+        "transform": from_origin(500_000, 4_700_000, 10, 10),
+    }
+    with rasterio.open(source_path, "w", **profile) as dataset:
+        dataset.write(np.ones((1, height, width), dtype=np.float32))
+
+    row, column = np.indices((height, width))
+    condition = ((row * 7 + column * 3) % 101).astype(np.float32)
+    condition[0, 0] = np.nan
+    products = {
+        "condition_score": condition,
+        "ndvi": ((row - column) / 128.0).astype(np.float32),
+        "gndvi": ((row + column) / 224.0).astype(np.float32),
+        "evi": ((row * 2 - column) / 192.0).astype(np.float32),
+        "savi": ((column * 2 - row) / 256.0).astype(np.float32),
+        "alert_mask": ((row + column) % 5 == 0).astype(np.uint8),
+        "crop_binary": ((row + column) % 3 == 0).astype(np.uint8),
+        "unusable_mask": ((row + column) % 7 == 0).astype(np.uint8),
+        "semantic_mask": ((row + column) % 4).astype(np.uint8),
+        "invalid_mask": ((row + column) % 11 == 0).astype(np.uint8),
+    }
+
+    with rasterio.open(source_path) as source:
+        monkeypatch.setenv("VITA_DOWNLINK_GRID_THREADS", "1")
+        serial = _build_interaction_grid(
+            source,
+            {},
+            grid_size=3,
+            products=products,
+        )
+        monkeypatch.setenv("VITA_DOWNLINK_GRID_THREADS", "8")
+        parallel = _build_interaction_grid(
+            source,
+            {},
+            grid_size=3,
+            products=products,
+        )
+
+    assert parallel == serial

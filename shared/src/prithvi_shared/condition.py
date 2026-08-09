@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import Executor
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -16,6 +17,7 @@ BoolArray = NDArray[np.bool_]
 
 CONDITION_ALGORITHM_VERSION = "spectral-condition-v1"
 SCORED_INDEX_NAMES = ("ndvi", "gndvi", "evi", "savi")
+PARALLEL_ROW_CHUNKS = 8
 
 
 @dataclass(frozen=True)
@@ -151,22 +153,67 @@ def _linear_score(values: FloatArray, low: float, high: float) -> FloatArray:
     return output
 
 
+def _combine_component_score_rows(
+    component_scores: dict[str, FloatArray],
+    analysis_mask: BoolArray,
+    weights: dict[str, float],
+    output: FloatArray,
+    row_start: int,
+    row_stop: int,
+) -> None:
+    row_slice = np.s_[row_start:row_stop, :]
+    mask = analysis_mask[row_slice]
+    denominator = np.zeros(mask.shape, dtype=np.float64)
+    numerator = np.zeros(mask.shape, dtype=np.float64)
+    for name in SCORED_INDEX_NAMES:
+        score = component_scores[name][row_slice]
+        available = mask & np.isfinite(score)
+        weighted_score = np.multiply(score, np.float32(weights[name]))
+        np.add(numerator, weighted_score, out=numerator, where=available)
+        np.add(denominator, weights[name], out=denominator, where=available)
+
+    combined = output[row_slice]
+    usable = mask & (denominator > 0)
+    np.divide(numerator, denominator, out=combined, where=usable)
+
+
 def _combine_component_scores(
     component_scores: dict[str, FloatArray],
     analysis_mask: BoolArray,
     weights: dict[str, float],
+    executor: Executor | None = None,
 ) -> FloatArray:
-    numerator = np.zeros(analysis_mask.shape, dtype=np.float64)
-    denominator = np.zeros(analysis_mask.shape, dtype=np.float64)
-    for name in SCORED_INDEX_NAMES:
-        score = component_scores[name]
-        available = analysis_mask & np.isfinite(score)
-        numerator[available] += weights[name] * score[available]
-        denominator[available] += weights[name]
-
     combined = np.full(analysis_mask.shape, np.nan, dtype=np.float32)
-    usable = analysis_mask & (denominator > 0)
-    combined[usable] = (numerator[usable] / denominator[usable]).astype(np.float32)
+    if executor is None or analysis_mask.shape[0] < PARALLEL_ROW_CHUNKS:
+        _combine_component_score_rows(
+            component_scores,
+            analysis_mask,
+            weights,
+            combined,
+            0,
+            analysis_mask.shape[0],
+        )
+        return combined
+    row_edges = np.linspace(
+        0,
+        analysis_mask.shape[0],
+        PARALLEL_ROW_CHUNKS + 1,
+        dtype=int,
+    )
+    futures = [
+        executor.submit(
+            _combine_component_score_rows,
+            component_scores,
+            analysis_mask,
+            weights,
+            combined,
+            int(row_start),
+            int(row_stop),
+        )
+        for row_start, row_stop in zip(row_edges[:-1], row_edges[1:], strict=True)
+    ]
+    for future in futures:
+        future.result()
     return combined
 
 
@@ -209,6 +256,7 @@ def calculate_condition_score_layers(
     health_layers: HealthLayers,
     *,
     config: ConditionConfig | None = None,
+    executor: Executor | None = None,
 ) -> ConditionScoreLayers:
     """Calculate absolute pixel scores without using scene-level statistics."""
     cfg = config or ConditionConfig()
@@ -223,15 +271,32 @@ def calculate_condition_score_layers(
         if np.asarray(values).shape != analysis_mask.shape:
             raise ValueError(f"Health layer {name} does not match the analysis mask")
 
-    component_scores: dict[str, FloatArray] = {}
-    for name in SCORED_INDEX_NAMES:
+    def calculate_component(name: str) -> FloatArray:
         component_score = _linear_score(
             np.asarray(health_layers.values[name], dtype=np.float32),
             *cfg.references[name],
         )
         component_score[~analysis_mask] = np.nan
-        component_scores[name] = component_score
-    pixel_score = _combine_component_scores(component_scores, analysis_mask, cfg.weights)
+        return component_score
+
+    if executor is None:
+        component_scores = {
+            name: calculate_component(name) for name in SCORED_INDEX_NAMES
+        }
+    else:
+        futures = {
+            name: executor.submit(calculate_component, name)
+            for name in SCORED_INDEX_NAMES
+        }
+        component_scores = {
+            name: future.result() for name, future in futures.items()
+        }
+    pixel_score = _combine_component_scores(
+        component_scores,
+        analysis_mask,
+        cfg.weights,
+        executor,
+    )
     return ConditionScoreLayers(
         component_scores=component_scores,
         condition_score=pixel_score,
@@ -275,6 +340,37 @@ def calculate_spatial_condition_layers(
         low_vigor_mask=low_vigor_mask,
         alert_mask=relative_anomaly_mask | low_vigor_mask,
     )
+
+
+def calculate_spatial_alert_masks(
+    condition_score: FloatArray,
+    valid_score_mask: NDArray[Any],
+    *,
+    median_score: float,
+    median_absolute_deviation: float,
+    config: ConditionConfig | None = None,
+) -> tuple[BoolArray, BoolArray, BoolArray]:
+    """Calculate only the three masks retained by the compact payload path."""
+    cfg = config or ConditionConfig()
+    score = np.asarray(condition_score, dtype=np.float32)
+    valid = np.asarray(valid_score_mask, dtype=bool).copy()
+    if score.ndim != 2 or valid.shape != score.shape:
+        raise ValueError("Condition score and valid mask must be matching 2D arrays")
+    if not np.isfinite(median_score) or not np.isfinite(median_absolute_deviation):
+        raise ValueError("Region median and median absolute deviation must be finite")
+    if median_absolute_deviation < 0:
+        raise ValueError("Median absolute deviation must be non-negative")
+    valid &= np.isfinite(score)
+
+    robust_scale = max(1.4826 * median_absolute_deviation, cfg.minimum_robust_scale)
+    score_deficit = median_score - score
+    relative_anomaly_mask = (
+        valid
+        & ((score_deficit / robust_scale) >= cfg.relative_anomaly_z)
+        & (score_deficit >= cfg.minimum_score_deficit)
+    )
+    low_vigor_mask = valid & (score < cfg.absolute_low_score)
+    return relative_anomaly_mask, low_vigor_mask, relative_anomaly_mask | low_vigor_mask
 
 
 def build_condition_assessment(

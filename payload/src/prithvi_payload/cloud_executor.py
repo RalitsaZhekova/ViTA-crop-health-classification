@@ -6,6 +6,7 @@ import json
 import os
 import tempfile
 import time
+from collections.abc import Callable
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
@@ -103,6 +104,115 @@ def _predict_semantic(
     return prediction.scores.argmax(axis=0).astype(np.uint8), prediction.score_kind
 
 
+def _prepare_semantic_input(
+    raw_image: np.ndarray,
+    *,
+    scale: float,
+    clip_min: float | None,
+    clip_max: float | None,
+    nodata_value: int | float | None,
+    strict_positive_rgn: bool,
+) -> tuple[np.ndarray, np.ndarray, bool]:
+    """Prepare native R/G/NIR input with the legacy invalid-pixel semantics."""
+    values = np.asarray(raw_image)
+    if values.ndim != 3 or values.shape[0] != 4:
+        raise ValueError(f"Expected C x H x W input, found {values.shape}.")
+    if scale <= 0:
+        raise ValueError("Reflectance scale must be positive.")
+
+    invalid = ~np.isfinite(values).all(axis=0)
+    if nodata_value is not None:
+        invalid |= np.all(values == nodata_value, axis=0)
+
+    # The cloud ensemble consumes only Red, Green and NIR. Advanced indexing
+    # creates the one required contiguous copy; normalize it in place.
+    image_rgn = values[[1, 2, 0]].astype(np.float32, copy=False)
+    np.divide(image_rgn, np.float32(scale), out=image_rgn)
+    if clip_min is not None or clip_max is not None:
+        lower = -np.inf if clip_min is None else float(clip_min)
+        upper = np.inf if clip_max is None else float(clip_max)
+        np.clip(image_rgn, lower, upper, out=image_rgn)
+
+    model_invalid = invalid | ~strict_valid_mask(image_rgn)
+    image_rgn[:, model_invalid] = 0.0
+    return (
+        image_rgn,
+        model_invalid if strict_positive_rgn else invalid,
+        not bool(np.all(model_invalid)),
+    )
+
+
+def _prepare_and_predict_semantic(
+    backend: CloudBackend,
+    raw_image: np.ndarray,
+    *,
+    scale: float,
+    clip_min: float | None,
+    clip_max: float | None,
+    nodata_value: int | float | None,
+    strict_positive_rgn: bool,
+) -> tuple[np.ndarray, str, np.ndarray, float, float]:
+    """Prepare one cloud input and time only the synchronized model call."""
+    preparation_started = time.perf_counter()
+    prepared_predictor = getattr(backend, "predict_prepared_semantic", None)
+    if callable(prepared_predictor):
+        model_input, invalid, has_model_input = _prepare_semantic_input(
+            raw_image,
+            scale=scale,
+            clip_min=clip_min,
+            clip_max=clip_max,
+            nodata_value=nodata_value,
+            strict_positive_rgn=strict_positive_rgn,
+        )
+        preparation_seconds = time.perf_counter() - preparation_started
+        _synchronize_cuda(backend)
+        inference_started = time.perf_counter()
+        if has_model_input:
+            semantic = np.asarray(prepared_predictor(model_input), dtype=np.uint8)
+        else:
+            semantic = np.zeros(raw_image.shape[1:], dtype=np.uint8)
+        _synchronize_cuda(backend)
+        inference_seconds = time.perf_counter() - inference_started
+        expected_shape = raw_image.shape[1:]
+        if semantic.shape != expected_shape or np.any(semantic > 3):
+            raise ValueError(
+                f"Cloud backend returned invalid semantic classes: {semantic.shape}"
+            )
+        return (
+            semantic,
+            "semantic_class",
+            invalid,
+            preparation_seconds,
+            inference_seconds,
+        )
+
+    image, invalid = normalize_reflectance(
+        raw_image,
+        scale=scale,
+        clip_min=clip_min,
+        clip_max=clip_max,
+        nodata_value=nodata_value,
+    )
+    if strict_positive_rgn:
+        invalid |= ~strict_valid_mask(image[[1, 2, 0]])
+        image[:, invalid] = 0.0
+    preparation_seconds = time.perf_counter() - preparation_started
+    _synchronize_cuda(backend)
+    inference_started = time.perf_counter()
+    semantic, score_kind = _predict_semantic(
+        backend,
+        image.astype(np.float32, copy=False),
+    )
+    _synchronize_cuda(backend)
+    return (
+        semantic,
+        score_kind,
+        invalid,
+        preparation_seconds,
+        time.perf_counter() - inference_started,
+    )
+
+
 def execute_cloud_stage(
     plan: dict[str, Any],
     *,
@@ -110,6 +220,10 @@ def execute_cloud_stage(
     backend: CloudBackend,
     config: dict[str, Any],
     persist_rasters: bool = True,
+    compact_crop_preparer: Callable[
+        [np.ndarray, np.ndarray, tuple[int, ...], float | None], Any
+    ]
+    | None = None,
 ) -> dict[str, Any]:
     """Execute a ready cloud plan without materialising a full scene array."""
     if plan.get("readiness") != "READY":
@@ -158,7 +272,9 @@ def execute_cloud_stage(
     score_kind: str | None = None
     tile_count = 0
     inference_seconds = 0.0
+    input_preparation_seconds = 0.0
     mask_processing_seconds = 0.0
+    crop_preparation_future = None
 
     reprojection_seconds = 0.0
     analysis_grid_preparation_seconds = 0.0
@@ -300,6 +416,13 @@ def execute_cloud_stage(
                     analysis_source.read_masks(analysis_indices) > 0,
                     axis=0,
                 )
+                if compact_crop_preparer is not None:
+                    crop_preparation_future = compact_crop_preparer(
+                        source_band_product,
+                        source_valid_product,
+                        tuple(int(value) for value in analysis_indices),
+                        analysis_source.nodata,
+                    )
 
             use_full_analysis_grid = plan["sensor"] == "balkan-1"
             if use_full_analysis_grid:
@@ -314,24 +437,25 @@ def execute_cloud_stage(
                     if source_band_product is None
                     else source_band_product
                 )
-                image, invalid = normalize_reflectance(
+                (
+                    semantic,
+                    score_kind,
+                    invalid,
+                    preparation_elapsed,
+                    inference_elapsed,
+                ) = _prepare_and_predict_semantic(
+                    backend,
                     raw_image,
                     scale=scale,
                     clip_min=config["input"].get("clip_min"),
                     clip_max=config["input"].get("clip_max"),
                     nodata_value=nodata_value,
+                    strict_positive_rgn=bool(
+                        config["input"].get("strict_positive_rgn", True)
+                    ),
                 )
-                if bool(config["input"].get("strict_positive_rgn", True)):
-                    invalid |= ~strict_valid_mask(image[[1, 2, 0]])
-                    image[:, invalid] = 0.0
-                _synchronize_cuda(backend)
-                inference_started = time.perf_counter()
-                semantic, score_kind = _predict_semantic(
-                    backend,
-                    image.astype(np.float32, copy=False),
-                )
-                _synchronize_cuda(backend)
-                inference_seconds += time.perf_counter() - inference_started
+                input_preparation_seconds += preparation_elapsed
+                inference_seconds += inference_elapsed
                 mask_started = time.perf_counter()
                 unusable = postprocess(
                     semantic,
@@ -383,24 +507,25 @@ def execute_cloud_stage(
                                 halo=halo,
                             )
                         )
-                        image, invalid = normalize_reflectance(
+                        (
+                            semantic_tile,
+                            prediction_score_kind,
+                            invalid,
+                            preparation_elapsed,
+                            inference_elapsed,
+                        ) = _prepare_and_predict_semantic(
+                            backend,
                             raw_tile,
                             scale=scale,
                             clip_min=config["input"].get("clip_min"),
                             clip_max=config["input"].get("clip_max"),
                             nodata_value=nodata_value,
+                            strict_positive_rgn=bool(
+                                config["input"].get("strict_positive_rgn", True)
+                            ),
                         )
-                        if bool(config["input"].get("strict_positive_rgn", True)):
-                            invalid |= ~strict_valid_mask(image[[1, 2, 0]])
-                            image[:, invalid] = 0.0
-                        _synchronize_cuda(backend)
-                        inference_started = time.perf_counter()
-                        semantic_tile, prediction_score_kind = _predict_semantic(
-                            backend,
-                            image.astype(np.float32, copy=False),
-                        )
-                        _synchronize_cuda(backend)
-                        inference_seconds += time.perf_counter() - inference_started
+                        input_preparation_seconds += preparation_elapsed
+                        inference_seconds += inference_elapsed
                         if score_kind is None:
                             score_kind = prediction_score_kind
                         elif score_kind != prediction_score_kind:
@@ -573,6 +698,7 @@ def execute_cloud_stage(
         "runtime": {
             "seconds": time.perf_counter() - started,
             "inference_seconds": inference_seconds,
+            "input_preparation_seconds": input_preparation_seconds,
             "mask_processing_seconds": mask_processing_seconds,
             "analysis_grid_preparation_seconds": analysis_grid_preparation_seconds,
             "mask_reprojection_seconds": reprojection_seconds,
@@ -626,6 +752,11 @@ def execute_cloud_stage(
             "source_bands": source_band_product,
             "source_band_indices": tuple(int(value) for value in analysis_indices),
             "source_valid_mask": source_valid_product,
+            **(
+                {"crop_preparation_future": crop_preparation_future}
+                if crop_preparation_future is not None
+                else {}
+            ),
         }
     serializable_metadata = {key: value for key, value in metadata.items() if key != "_products"}
     metadata_path.write_text(

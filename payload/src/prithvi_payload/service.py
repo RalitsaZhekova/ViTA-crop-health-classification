@@ -55,6 +55,10 @@ def _pipeline_timings(
             stages.get("cloud", {}).get("runtime", {}),
             "inference_seconds",
         ),
+        "cloud_input_preparation_seconds": (
+            stages.get("cloud", {}).get("runtime", {}),
+            "input_preparation_seconds",
+        ),
         "cloud_mask_processing_seconds": (
             stages.get("cloud", {}).get("runtime", {}),
             "mask_processing_seconds",
@@ -65,13 +69,81 @@ def _pipeline_timings(
             stages.get("crop", {}).get("runtime", {}),
             "inference_seconds",
         ),
+        "crop_product_preparation_seconds": (
+            stages.get("crop", {}).get("runtime", {}),
+            "product_preparation_seconds",
+        ),
+        "crop_overlapped_product_preparation_seconds": (
+            stages.get("crop", {}).get("runtime", {}),
+            "overlapped_product_preparation_seconds",
+        ),
+        "crop_tile_preparation_seconds": (
+            stages.get("crop", {}).get("runtime", {}),
+            "tile_preparation_seconds",
+        ),
+        "crop_batch_assembly_seconds": (
+            stages.get("crop", {}).get("runtime", {}),
+            "batch_assembly_seconds",
+        ),
+        "crop_stitching_seconds": (
+            stages.get("crop", {}).get("runtime", {}),
+            "stitching_seconds",
+        ),
+        "crop_finalization_seconds": (
+            stages.get("crop", {}).get("runtime", {}),
+            "finalization_seconds",
+        ),
         "condition_stage_seconds": (
             stages.get("condition", {}).get("runtime", {}),
             "seconds",
         ),
+        "condition_input_read_seconds": (
+            stages.get("condition", {}).get("runtime", {}),
+            "input_read_seconds",
+        ),
+        "condition_health_calculation_seconds": (
+            stages.get("condition", {}).get("runtime", {}),
+            "health_calculation_seconds",
+        ),
+        "condition_score_calculation_seconds": (
+            stages.get("condition", {}).get("runtime", {}),
+            "score_calculation_seconds",
+        ),
+        "condition_metric_aggregation_seconds": (
+            stages.get("condition", {}).get("runtime", {}),
+            "metric_aggregation_seconds",
+        ),
+        "condition_metric_summary_seconds": (
+            stages.get("condition", {}).get("runtime", {}),
+            "metric_summary_seconds",
+        ),
+        "condition_product_materialization_seconds": (
+            stages.get("condition", {}).get("runtime", {}),
+            "product_materialization_seconds",
+        ),
+        "condition_robust_statistics_seconds": (
+            stages.get("condition", {}).get("runtime", {}),
+            "robust_statistics_seconds",
+        ),
+        "condition_spatial_pass_seconds": (
+            stages.get("condition", {}).get("runtime", {}),
+            "spatial_pass_seconds",
+        ),
         "downlink_packaging_seconds": (
             stages.get("downlink", {}).get("runtime", {}),
             "seconds",
+        ),
+        "downlink_image_preparation_seconds": (
+            stages.get("downlink", {}).get("runtime", {}),
+            "image_preparation_seconds",
+        ),
+        "downlink_interaction_grid_seconds": (
+            stages.get("downlink", {}).get("runtime", {}),
+            "interaction_grid_seconds",
+        ),
+        "downlink_manifest_seconds": (
+            stages.get("downlink", {}).get("runtime", {}),
+            "manifest_seconds",
         ),
     }
     timings: dict[str, float] = {}

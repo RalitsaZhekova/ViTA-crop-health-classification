@@ -60,9 +60,24 @@ def test_payload_response_flattens_stage_timings() -> None:
     result = {
         "timing": {"intake_seconds": 0.1, "cloud_plan_seconds": 0.2},
         "stage_metadata": {
-            "cloud": {"runtime": {"seconds": 1.0, "inference_seconds": 0.7}},
-            "crop": {"runtime": {"seconds": 0.5, "inference_seconds": 0.25}},
-            "condition": {"runtime": {"seconds": 0.3}},
+            "cloud": {
+                "runtime": {
+                    "seconds": 1.0,
+                    "inference_seconds": 0.7,
+                    "input_preparation_seconds": 0.08,
+                }
+            },
+            "crop": {
+                "runtime": {
+                    "seconds": 0.5,
+                    "inference_seconds": 0.25,
+                    "overlapped_product_preparation_seconds": 0.12,
+                    "tile_preparation_seconds": 0.1,
+                }
+            },
+            "condition": {
+                "runtime": {"seconds": 0.3, "metric_summary_seconds": 0.04}
+            },
             "downlink": {"runtime": {"seconds": 0.2}},
         },
     }
@@ -71,7 +86,11 @@ def test_payload_response_flattens_stage_timings() -> None:
 
     assert timing["cloud_stage_seconds"] == 1.0
     assert timing["cloud_inference_seconds"] == 0.7
+    assert timing["cloud_input_preparation_seconds"] == 0.08
     assert timing["crop_inference_seconds"] == 0.25
+    assert timing["crop_overlapped_product_preparation_seconds"] == 0.12
+    assert timing["crop_tile_preparation_seconds"] == 0.1
+    assert timing["condition_metric_summary_seconds"] == 0.04
     assert timing["downlink_packaging_seconds"] == 0.2
     assert timing["reported_stage_total_seconds"] == pytest.approx(2.3)
     assert timing["orchestration_seconds"] == pytest.approx(0.2)

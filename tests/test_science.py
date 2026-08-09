@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np
 from cloud_detection.postprocessing import postprocess
 from prithvi_payload.balkan_crop_calibration import apply_calibration
-from prithvi_shared.condition import ConditionConfig, calculate_condition_score_layers
+from prithvi_shared.condition import (
+    ConditionConfig,
+    calculate_condition_score_layers,
+    calculate_spatial_alert_masks,
+    calculate_spatial_condition_layers,
+)
 from prithvi_shared.health import build_analysis_mask, calculate_health_layers
 
 
@@ -35,6 +42,82 @@ def test_health_and_condition_formulas_remain_transparent() -> None:
     assert ((scores.condition_score >= 0) & (scores.condition_score <= 100)).all()
 
 
+def test_parallel_condition_math_is_bitwise_equivalent_to_sequential_math() -> None:
+    rng = np.random.default_rng(19)
+    bands = rng.uniform(0.01, 0.9, (4, 47, 53)).astype(np.float32)
+    mask = rng.random((47, 53)) > 0.2
+    sequential_health = calculate_health_layers(*bands, mask)
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        parallel_health = calculate_health_layers(*bands, mask, executor=executor)
+        parallel_scores = calculate_condition_score_layers(
+            parallel_health,
+            executor=executor,
+        )
+    sequential_scores = calculate_condition_score_layers(sequential_health)
+
+    assert parallel_health.values.keys() == sequential_health.values.keys()
+    for name in sequential_health.values:
+        np.testing.assert_array_equal(
+            parallel_health.values[name],
+            sequential_health.values[name],
+        )
+    for name in sequential_scores.component_scores:
+        np.testing.assert_array_equal(
+            parallel_scores.component_scores[name],
+            sequential_scores.component_scores[name],
+        )
+    np.testing.assert_array_equal(
+        parallel_scores.condition_score,
+        sequential_scores.condition_score,
+    )
+
+
+def test_compact_spatial_masks_match_full_spatial_layers() -> None:
+    rng = np.random.default_rng(23)
+    score = rng.uniform(0, 100, (83, 79)).astype(np.float32)
+    valid = rng.random(score.shape) > 0.17
+    score[4, 5] = np.nan
+    config = ConditionConfig()
+    full = calculate_spatial_condition_layers(
+        score,
+        valid,
+        median_score=57.123456,
+        median_absolute_deviation=8.765432,
+        config=config,
+    )
+    relative, low, alert = calculate_spatial_alert_masks(
+        score,
+        valid,
+        median_score=57.123456,
+        median_absolute_deviation=8.765432,
+        config=config,
+    )
+
+    np.testing.assert_array_equal(relative, full.relative_anomaly_mask)
+    np.testing.assert_array_equal(low, full.low_vigor_mask)
+    np.testing.assert_array_equal(alert, full.alert_mask)
+
+
+def test_condition_combination_matches_the_original_float64_accumulation() -> None:
+    rng = np.random.default_rng(23)
+    bands = rng.uniform(0.01, 0.9, (4, 37, 41)).astype(np.float32)
+    health = calculate_health_layers(*bands, np.ones((37, 41), dtype=bool))
+    config = ConditionConfig()
+    scores = calculate_condition_score_layers(health, config=config)
+    numerator = np.zeros((37, 41), dtype=np.float64)
+    denominator = np.zeros((37, 41), dtype=np.float64)
+    for name in ("ndvi", "gndvi", "evi", "savi"):
+        component = scores.component_scores[name]
+        available = health.analysis_mask & np.isfinite(component)
+        numerator[available] += config.weights[name] * component[available]
+        denominator[available] += config.weights[name]
+    expected = np.full((37, 41), np.nan, dtype=np.float32)
+    usable = health.analysis_mask & (denominator > 0)
+    expected[usable] = (numerator[usable] / denominator[usable]).astype(np.float32)
+
+    np.testing.assert_array_equal(scores.condition_score, expected)
+
+
 def test_cloud_postprocessing_combines_classes_invalidity_and_dilation() -> None:
     semantic = np.zeros((7, 7), dtype=np.uint8)
     semantic[3, 3] = 1
@@ -61,3 +144,7 @@ def test_balkan_calibration_applies_one_monotonic_curve_per_band() -> None:
     }
     calibrated = apply_calibration(image, calibration)
     np.testing.assert_allclose(calibrated[:, 0, 0], [0.5, 1.0, 1.5, 2.0])
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        parallel = apply_calibration(image, calibration, executor=executor)
+    np.testing.assert_array_equal(parallel, calibrated)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
@@ -25,11 +26,93 @@ from prithvi_payload.balkan_crop_calibration import (
     load_calibration,
 )
 from prithvi_payload.inference import PayloadCropModel
-from prithvi_payload.raster_ops import read_padded_array, read_padded_tile
+from prithvi_payload.raster_ops import copy_padded_array, read_padded_tile
 from prithvi_payload.runtime_config import environment_flag
 
 FLOAT_NODATA = -9999.0
 BYTE_NODATA = 255
+
+
+def _compact_invalid_input_mask(
+    source_bands: np.ndarray,
+    model_bands: np.ndarray,
+    *,
+    nodata: float | None,
+    calibrated: bool,
+) -> np.ndarray:
+    """Precompute the exact per-pixel invalid rule used by every crop tile."""
+    invalid = ~np.isfinite(model_bands).all(axis=0)
+    if nodata is not None:
+        nodata_pixels = source_bands == nodata
+        invalid |= (
+            np.any(nodata_pixels, axis=0)
+            if calibrated
+            else np.all(nodata_pixels, axis=0)
+        )
+    return invalid
+
+
+def prepare_compact_crop_inputs(
+    source_bands: np.ndarray,
+    source_valid_mask: np.ndarray,
+    *,
+    source_band_indices: tuple[int, ...],
+    crop_band_indices: tuple[int, ...],
+    multiplier: float,
+    nodata: float | None,
+    calibration_path: str | None = None,
+    calibration_source_path: str | None = None,
+) -> dict[str, Any]:
+    """Prepare immutable crop inputs while cloud inference occupies the GPU."""
+    started = time.perf_counter()
+    cloud_indices = tuple(int(value) for value in source_band_indices)
+    requested_indices = tuple(int(value) for value in crop_band_indices)
+    try:
+        source_positions = [cloud_indices.index(index) for index in requested_indices]
+    except ValueError as error:
+        raise ValueError("Cloud source does not provide every prepared crop band") from error
+    prepared_source = np.asarray(source_bands, dtype=np.float32)[source_positions]
+    prepared_valid = np.asarray(source_valid_mask, dtype=bool)
+    if prepared_source.ndim != 3 or prepared_source.shape[0] != 4:
+        raise ValueError("Prepared crop source must contain four channel-first bands")
+    if prepared_valid.shape != prepared_source.shape[1:]:
+        raise ValueError("Prepared crop validity mask does not match its source bands")
+
+    calibration = None
+    if calibration_path is not None:
+        if calibration_source_path is None:
+            raise ValueError("Prepared Balkan crop input requires its calibration source")
+        calibration = load_calibration(
+            calibration_path,
+            source_path=calibration_source_path,
+        )
+    model_bands = prepared_source * np.float32(multiplier)
+    if calibration is not None:
+        with ThreadPoolExecutor(
+            max_workers=4,
+            thread_name_prefix="crop-calibration",
+        ) as calibration_pool:
+            model_bands = apply_calibration(
+                model_bands,
+                calibration,
+                executor=calibration_pool,
+            )
+    invalid = _compact_invalid_input_mask(
+        prepared_source,
+        model_bands,
+        nodata=nodata,
+        calibrated=calibration is not None,
+    )
+    return {
+        "source_bands": prepared_source,
+        "source_valid_mask": prepared_valid,
+        "model_bands": model_bands,
+        "invalid_input_mask": invalid,
+        "source_band_indices": requested_indices,
+        "model_scale_multiplier": float(multiplier),
+        "calibrated": calibration is not None,
+        "seconds": time.perf_counter() - started,
+    }
 
 
 def _tile_blend_weights(tile_size: int, halo: int) -> np.ndarray:
@@ -333,8 +416,15 @@ def _execute_native_crop_stage(
     inferred_tile_count = 0
     skipped_tile_count = 0
     inference_seconds = 0.0
+    product_preparation_seconds = 0.0
+    overlapped_product_preparation_seconds = 0.0
+    tile_preparation_seconds = 0.0
+    batch_assembly_seconds = 0.0
+    stitching_seconds = 0.0
+    finalization_seconds = 0.0
 
     with rasterio.open(source_path) as source, ExitStack() as stack:
+        product_preparation_started = time.perf_counter()
         unusable_source = (
             stack.enter_context(rasterio.open(unusable_path))
             if unusable_path is not None
@@ -351,6 +441,7 @@ def _execute_native_crop_stage(
             ):
                 raise ValueError("Crop input and unusable mask are not on the same grid")
             cloud_unusable_product = None
+            cloud_unusable_bool_product = None
         else:
             assert cloud_products is not None
             cloud_unusable_product = np.asarray(
@@ -358,6 +449,7 @@ def _execute_native_crop_stage(
             )
             if cloud_unusable_product.shape != (source.height, source.width):
                 raise ValueError("In-memory unusable mask is not on the crop grid")
+            cloud_unusable_bool_product = cloud_unusable_product.astype(bool)
 
         probability_output = None
         binary_output = None
@@ -386,7 +478,39 @@ def _execute_native_crop_stage(
             binary_product = np.full(
                 (source.height, source.width), BYTE_NODATA, dtype=np.uint8
             )
-            if cloud_products is not None and "source_bands" in cloud_products:
+            prepared_future = (
+                cloud_products.get("crop_preparation_future")
+                if cloud_products is not None
+                else None
+            )
+            prepared_crop = (
+                prepared_future.result() if prepared_future is not None else None
+            )
+            if prepared_crop is not None:
+                if not isinstance(prepared_crop, dict):
+                    raise ValueError("Prepared crop input has an invalid result")
+                if tuple(prepared_crop.get("source_band_indices", ())) != tuple(indices):
+                    raise ValueError("Prepared crop input uses a different band route")
+                if float(prepared_crop.get("model_scale_multiplier", -1.0)) != multiplier:
+                    raise ValueError("Prepared crop input uses a different model scale")
+                if bool(prepared_crop.get("calibrated")) != (calibration is not None):
+                    raise ValueError("Prepared crop input uses a different calibration mode")
+                source_band_product = np.asarray(
+                    prepared_crop["source_bands"], dtype=np.float32
+                )
+                source_valid_product = np.asarray(
+                    prepared_crop["source_valid_mask"], dtype=bool
+                )
+                model_band_product = np.asarray(
+                    prepared_crop["model_bands"], dtype=np.float32
+                )
+                invalid_input_product = np.asarray(
+                    prepared_crop["invalid_input_mask"], dtype=bool
+                )
+                overlapped_product_preparation_seconds = float(
+                    prepared_crop.get("seconds", 0.0)
+                )
+            elif cloud_products is not None and "source_bands" in cloud_products:
                 cloud_indices = tuple(
                     int(value) for value in cloud_products["source_band_indices"]
                 )
@@ -416,15 +540,33 @@ def _execute_native_crop_stage(
                 or source_valid_product.shape != (source.height, source.width)
             ):
                 raise ValueError("In-memory source bands are not on the crop grid")
-            model_band_product = source_band_product * np.float32(multiplier)
-            if calibration is not None:
-                model_band_product = apply_calibration(
+            if prepared_crop is None:
+                model_band_product = source_band_product * np.float32(multiplier)
+                if calibration is not None:
+                    with ThreadPoolExecutor(
+                        max_workers=4,
+                        thread_name_prefix="crop-calibration",
+                    ) as calibration_pool:
+                        model_band_product = apply_calibration(
+                            model_band_product,
+                            calibration,
+                            executor=calibration_pool,
+                        )
+                invalid_input_product = _compact_invalid_input_mask(
+                    source_band_product,
                     model_band_product,
-                    calibration,
+                    nodata=source.nodata,
+                    calibrated=calibration is not None,
                 )
-            unusable_product = np.ones(
-                (source.height, source.width), dtype=np.uint8
-            )
+            if (
+                model_band_product.shape != source_band_product.shape
+                or invalid_input_product.shape != (source.height, source.width)
+            ):
+                raise ValueError("Prepared crop model bands do not match the crop grid")
+            assert cloud_unusable_product is not None
+            unusable_product = cloud_unusable_product
+
+        product_preparation_seconds += time.perf_counter() - product_preparation_started
 
         blend_bytes = source.height * source.width * np.dtype(np.float32).itemsize * 2
         in_memory_limit = int(
@@ -459,12 +601,32 @@ def _execute_native_crop_stage(
         tile_weight = _tile_blend_weights(tile_size, halo)
 
         pending: list[dict[str, Any]] = []
+        batch_images = np.empty(
+            (batch_size, 4, tile_size, tile_size),
+            dtype=np.float32,
+        )
+        invalid_tile_buffer = np.empty(
+            (1, tile_size, tile_size),
+            dtype=bool,
+        )
+        unusable_tile_buffer = np.empty(
+            (1, tile_size, tile_size),
+            dtype=bool,
+        )
 
         def flush_pending() -> None:
-            nonlocal inference_seconds, inferred_tile_count
+            nonlocal batch_assembly_seconds
+            nonlocal inference_seconds
+            nonlocal inferred_tile_count
+            nonlocal stitching_seconds
             if not pending:
                 return
-            images = torch.from_numpy(np.stack([item["image"] for item in pending]))
+            batch_assembly_started = time.perf_counter()
+            images = torch.from_numpy(
+                np.stack([item["image"] for item in pending])
+                if persist_rasters
+                else batch_images[: len(pending)]
+            )
             images = images.unsqueeze(2)
             temporal = torch.tensor(
                 [[temporal_coordinate] for _ in pending],
@@ -474,6 +636,7 @@ def _execute_native_crop_stage(
                 [item["location"] for item in pending],
                 dtype=torch.float32,
             )
+            batch_assembly_seconds += time.perf_counter() - batch_assembly_started
             if model.device.type == "cuda":
                 torch.cuda.synchronize(model.device)
             inference_started = time.perf_counter()
@@ -486,6 +649,7 @@ def _execute_native_crop_stage(
                 torch.cuda.synchronize(model.device)
             inference_seconds += time.perf_counter() - inference_started
             probabilities = prediction.crop_probability.float().cpu().numpy()
+            stitching_started = time.perf_counter()
             for index, item in enumerate(pending):
                 _accumulate_prediction(
                     probability_sum,
@@ -495,6 +659,7 @@ def _execute_native_crop_stage(
                     requested_y=item["requested_y"],
                     requested_x=item["requested_x"],
                 )
+            stitching_seconds += time.perf_counter() - stitching_started
             inferred_tile_count += len(pending)
             pending.clear()
 
@@ -502,9 +667,10 @@ def _execute_native_crop_stage(
         for y in range(0, source.height, core_size):
             core_height = min(core_size, source.height - y)
             for x in range(0, source.width, core_size):
+                tile_preparation_started = time.perf_counter()
                 core_width = min(core_size, source.width - x)
-                unusable_tile = (
-                    read_padded_tile(
+                if unusable_source is not None:
+                    unusable_tile = read_padded_tile(
                         unusable_source,
                         [1],
                         y=y,
@@ -513,27 +679,22 @@ def _execute_native_crop_stage(
                         halo=halo,
                         out_dtype="float32",
                     )[0].astype(bool)
-                    if unusable_source is not None
-                    else read_padded_array(
-                        cloud_unusable_product[np.newaxis, ...],
+                else:
+                    assert cloud_unusable_bool_product is not None
+                    copy_padded_array(
+                        cloud_unusable_bool_product[np.newaxis, ...],
+                        unusable_tile_buffer,
                         y=y,
                         x=x,
-                        tile_size=tile_size,
                         halo=halo,
-                    )[0].astype(bool)
-                )
+                    )
+                    unusable_tile = unusable_tile_buffer[0]
                 core_slice = (
                     slice(halo, halo + core_height),
                     slice(halo, halo + core_width),
                 )
                 unusable_core = unusable_tile[core_slice]
                 output_window = RasterWindow(x, y, core_width, core_height)
-                if not persist_rasters:
-                    assert unusable_product is not None
-                    unusable_product[
-                        y : y + core_height,
-                        x : x + core_width,
-                    ] = unusable_core.astype(np.uint8)
                 usable_in_core = int(np.count_nonzero(~unusable_core))
                 tile_count += 1
                 if usable_in_core == 0:
@@ -569,6 +730,9 @@ def _execute_native_crop_stage(
                             window=output_window,
                         )
                     skipped_tile_count += 1
+                    tile_preparation_seconds += (
+                        time.perf_counter() - tile_preparation_started
+                    )
                     continue
 
                 if persist_rasters:
@@ -585,33 +749,37 @@ def _execute_native_crop_stage(
                     if calibration is not None:
                         image = apply_calibration(image, calibration)
                 else:
-                    assert source_band_product is not None
                     assert model_band_product is not None
-                    raw_tile = read_padded_array(
-                        source_band_product,
-                        y=y,
-                        x=x,
-                        tile_size=tile_size,
-                        halo=halo,
-                    )
-                    image = read_padded_array(
+                    assert invalid_input_product is not None
+                    batch_slot = len(pending)
+                    image = batch_images[batch_slot]
+                    copy_padded_array(
                         model_band_product,
+                        image,
                         y=y,
                         x=x,
-                        tile_size=tile_size,
                         halo=halo,
                     )
-                invalid = ~np.isfinite(image).all(axis=0)
-                if source.nodata is not None:
-                    if calibration is not None:
-                        invalid |= np.any(raw_tile == source.nodata, axis=0)
-                    else:
-                        invalid |= np.all(raw_tile == source.nodata, axis=0)
-                image = image.copy()
+                    copy_padded_array(
+                        invalid_input_product[np.newaxis, ...],
+                        invalid_tile_buffer,
+                        y=y,
+                        x=x,
+                        halo=halo,
+                    )
+                    invalid = invalid_tile_buffer[0]
+                if persist_rasters:
+                    invalid = ~np.isfinite(image).all(axis=0)
+                    if source.nodata is not None:
+                        if calibration is not None:
+                            invalid |= np.any(raw_tile == source.nodata, axis=0)
+                        else:
+                            invalid |= np.all(raw_tile == source.nodata, axis=0)
+                    image = image.copy()
                 image[:, invalid] = means[:, 0, 0][:, None]
                 pending.append(
                     {
-                        "image": image,
+                        **({"image": image} if persist_rasters else {}),
                         "location": _location_coordinate(
                             source,
                             x=x,
@@ -623,6 +791,7 @@ def _execute_native_crop_stage(
                         "requested_x": x - halo,
                     }
                 )
+                tile_preparation_seconds += time.perf_counter() - tile_preparation_started
                 if len(pending) >= batch_size:
                     flush_pending()
         flush_pending()
@@ -631,6 +800,7 @@ def _execute_native_crop_stage(
         if isinstance(probability_weight, np.memmap):
             probability_weight.flush()
 
+        finalization_started = time.perf_counter()
         for _, window in source.block_windows(1):
             row_slice, column_slice = window.toslices()
             weights = np.asarray(probability_weight[row_slice, column_slice])
@@ -638,7 +808,7 @@ def _execute_native_crop_stage(
             unusable = (
                 unusable_source.read(1, window=window).astype(bool)
                 if unusable_source is not None
-                else cloud_unusable_product[row_slice, column_slice].astype(bool)
+                else cloud_unusable_bool_product[row_slice, column_slice]
             )
             has_prediction = weights > 0
             if np.any(~unusable & ~has_prediction):
@@ -653,9 +823,13 @@ def _execute_native_crop_stage(
             confidence = np.maximum(probability, 1.0 - probability)
             usable = ~unusable & has_prediction
             usable_count += int(np.count_nonzero(usable))
-            crop_count += int(np.count_nonzero(binary[usable] == 1))
-            probability_total += float(probability[usable].sum(dtype=np.float64))
-            confidence_total += float(confidence[usable].sum(dtype=np.float64))
+            crop_count += int(np.count_nonzero((binary == 1) & usable))
+            probability_total += float(
+                np.sum(probability, dtype=np.float64, where=usable)
+            )
+            confidence_total += float(
+                np.sum(confidence, dtype=np.float64, where=usable)
+            )
             probability[~usable] = FLOAT_NODATA
             binary[~usable] = BYTE_NODATA
             confidence[~usable] = FLOAT_NODATA
@@ -671,6 +845,7 @@ def _execute_native_crop_stage(
                 assert binary_product is not None
                 probability_product[row_slice, column_slice] = probability
                 binary_product[row_slice, column_slice] = binary
+        finalization_seconds += time.perf_counter() - finalization_started
         width, height = source.width, source.height
 
         if save_diagnostic_preview:
@@ -751,6 +926,14 @@ def _execute_native_crop_stage(
         "runtime": {
             "seconds": runtime_seconds,
             "inference_seconds": inference_seconds,
+            "product_preparation_seconds": product_preparation_seconds,
+            "overlapped_product_preparation_seconds": (
+                overlapped_product_preparation_seconds
+            ),
+            "tile_preparation_seconds": tile_preparation_seconds,
+            "batch_assembly_seconds": batch_assembly_seconds,
+            "stitching_seconds": stitching_seconds,
+            "finalization_seconds": finalization_seconds,
             "device": str(model.device),
             "inference_backend": model.backend,
             "tensorrt_engine_count": model.tensorrt_engine_count,

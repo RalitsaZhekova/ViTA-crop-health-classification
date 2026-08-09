@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 import rasterio
 from prithvi_payload.raster_ops import (
+    copy_padded_array,
     read_padded_array,
     read_padded_tile,
     utm_crs_for_bounds,
@@ -65,3 +66,15 @@ def test_padded_array_matches_raster_padding() -> None:
 
     expected = np.pad(values, ((0, 0), (1, 1), (1, 0)), mode="reflect")
     np.testing.assert_array_equal(result, expected)
+
+
+def test_padded_array_copy_matches_allocating_path_for_edges_and_interior() -> None:
+    values = np.arange(3 * 8 * 9, dtype=np.float32).reshape(3, 8, 9)
+
+    for y, x in ((0, 0), (2, 3), (7, 8)):
+        expected = read_padded_array(values, y=y, x=x, tile_size=5, halo=1)
+        destination = np.empty_like(expected)
+
+        copy_padded_array(values, destination, y=y, x=x, halo=1)
+
+        np.testing.assert_array_equal(destination, expected)

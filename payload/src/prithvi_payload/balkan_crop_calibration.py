@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import string
+from concurrent.futures import Executor
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -211,16 +212,29 @@ def load_calibration(
     return value
 
 
-def apply_calibration(values: np.ndarray, calibration: dict[str, Any]) -> np.ndarray:
+def apply_calibration(
+    values: np.ndarray,
+    calibration: dict[str, Any],
+    *,
+    executor: Executor | None = None,
+) -> np.ndarray:
     """Apply four monotonic lookup curves to values in model scale units."""
     image = np.asarray(values, dtype=np.float32)
     if image.ndim < 2 or image.shape[0] != 4:
         raise ValueError("Calibrated crop input must have four bands on axis zero")
     result = np.empty_like(image)
-    for index, curve in enumerate(calibration["curves"]):
-        result[index] = np.interp(
+    def interpolate(index: int) -> np.ndarray:
+        curve = calibration["curves"][index]
+        return np.interp(
             image[index],
             np.asarray(curve["source_knots"], dtype=np.float32),
             np.asarray(curve["target_values"], dtype=np.float32),
         )
+    if executor is None:
+        for index in range(4):
+            result[index] = interpolate(index)
+    else:
+        futures = [executor.submit(interpolate, index) for index in range(4)]
+        for index, future in enumerate(futures):
+            result[index] = future.result()
     return result

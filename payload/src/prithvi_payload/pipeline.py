@@ -25,7 +25,7 @@ from prithvi_payload.runtime_config import environment_flag
 from prithvi_payload.scene_intake import inspect_scene
 
 _CPU_OVERLAP_POOL = ThreadPoolExecutor(
-    max_workers=1,
+    max_workers=2,
     thread_name_prefix="payload-overlap",
 )
 
@@ -157,7 +157,11 @@ def run_scene(
         return _finish(output_root, result)
 
     prepared_rgb_future: Future[dict[str, Any]] | None = None
+    compact_crop_preparer: Callable[
+        [Any, Any, tuple[int, ...], float | None], Future[dict[str, Any]]
+    ] | None = None
     if compact_payload:
+        from prithvi_payload.crop_executor import prepare_compact_crop_inputs
         from prithvi_payload.downlink import prepare_rgb_preview
 
         analysis = intake.get("analysis")
@@ -195,6 +199,67 @@ def run_scene(
             maximum_dimension=downlink_max_image_dimension,
         )
 
+        analysis_crop_route = (
+            analysis.get("model_band_routes", {}).get("crop_classification", {})
+            if use_shared_analysis
+            else {}
+        )
+        crop_indices = (
+            analysis_crop_route.get("source_band_indices")
+            if use_shared_analysis
+            else crop_route.get("source_band_indices")
+        )
+        if calibrated_balkan:
+            crop_multiplier = spectral_adapter.get("source_scale_to_model_units")
+            calibration_path = spectral_adapter.get("calibration_path")
+            calibration_source_path = intake.get("source_path")
+        else:
+            crop_multiplier = 10_000.0 / float(plan["input"]["reflectance_scale"])
+            calibration_path = None
+            calibration_source_path = None
+        if (
+            isinstance(crop_indices, list)
+            and len(crop_indices) == 4
+            and all(isinstance(value, int) for value in crop_indices)
+            and isinstance(crop_multiplier, (int, float))
+            and (
+                not calibrated_balkan
+                or (
+                    isinstance(calibration_path, str)
+                    and isinstance(calibration_source_path, str)
+                )
+            )
+        ):
+            requested_crop_indices = tuple(int(value) for value in crop_indices)
+
+            def launch_crop_preparation(
+                source_bands: Any,
+                source_valid_mask: Any,
+                source_band_indices: tuple[int, ...],
+                nodata: float | None,
+            ) -> Future[dict[str, Any]]:
+                return _CPU_OVERLAP_POOL.submit(
+                    prepare_compact_crop_inputs,
+                    source_bands,
+                    source_valid_mask,
+                    source_band_indices=source_band_indices,
+                    crop_band_indices=requested_crop_indices,
+                    multiplier=float(crop_multiplier),
+                    nodata=nodata,
+                    calibration_path=(
+                        str(calibration_path)
+                        if isinstance(calibration_path, str)
+                        else None
+                    ),
+                    calibration_source_path=(
+                        str(calibration_source_path)
+                        if isinstance(calibration_source_path, str)
+                        else None
+                    ),
+                )
+
+            compact_crop_preparer = launch_crop_preparation
+
     if cloud_backend is None:
         runtime = load_cloud_model(cloud_config_path)
         cloud_backend = runtime.backend
@@ -207,6 +272,7 @@ def run_scene(
         backend=cloud_backend,
         config=cloud_config,
         persist_rasters=not compact_payload,
+        compact_crop_preparer=compact_crop_preparer,
     )
     cloud_products = cloud_metadata.pop("_products", None)
     result["completed_stages"].append("cloud")

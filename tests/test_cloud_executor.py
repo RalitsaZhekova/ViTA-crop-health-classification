@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 from cloud_detection.backend import BackendPrediction
-from prithvi_payload.cloud_executor import _predict_semantic
+from cloud_detection.preprocessing import normalize_reflectance, strict_valid_mask
+from prithvi_payload.cloud_executor import _predict_semantic, _prepare_semantic_input
 
 
 class _SemanticBackend:
@@ -36,3 +37,61 @@ def test_executor_retains_confidence_backend_fallback() -> None:
 
     assert score_kind == "softmax_confidence"
     assert np.all(semantic == 2)
+
+
+def test_compact_cloud_preparation_matches_the_original_double_validation() -> None:
+    rng = np.random.default_rng(14)
+    raw = rng.uniform(-500, 12_000, (4, 47, 61)).astype(np.float32)
+    raw[:, 0, 0] = 0.0
+    raw[3, 1, 2] = np.nan
+    raw[0, 3, 4] = np.inf
+    raw[1, 5, 6] = -100.0
+
+    normalized, source_invalid = normalize_reflectance(
+        raw,
+        scale=10_000.0,
+        clip_min=-0.2,
+        clip_max=1.0,
+        nodata_value=0.0,
+    )
+    strict_invalid = ~strict_valid_mask(normalized[[1, 2, 0]])
+    expected_invalid = source_invalid | strict_invalid
+    normalized[:, expected_invalid] = 0.0
+    expected_rgn = normalized[[1, 2, 0]].astype(np.float32, copy=True)
+    expected_model_valid = np.all(np.isfinite(expected_rgn), axis=0) & np.all(
+        expected_rgn > np.finfo(np.float32).tiny,
+        axis=0,
+    )
+    expected_rgn[:, ~expected_model_valid] = 0.0
+
+    prepared, invalid, has_model_input = _prepare_semantic_input(
+        raw,
+        scale=10_000.0,
+        clip_min=-0.2,
+        clip_max=1.0,
+        nodata_value=0.0,
+        strict_positive_rgn=True,
+    )
+
+    np.testing.assert_array_equal(prepared, expected_rgn)
+    np.testing.assert_array_equal(invalid, expected_invalid)
+    assert has_model_input
+
+
+def test_compact_cloud_preparation_preserves_non_strict_output_mask() -> None:
+    raw = np.ones((4, 32, 32), dtype=np.float32)
+    raw[1, 2, 3] = -1.0
+    _, expected_invalid = normalize_reflectance(raw, scale=10_000.0)
+
+    prepared, invalid, has_model_input = _prepare_semantic_input(
+        raw,
+        scale=10_000.0,
+        clip_min=None,
+        clip_max=None,
+        nodata_value=0.0,
+        strict_positive_rgn=False,
+    )
+
+    assert np.all(prepared[:, 2, 3] == 0.0)
+    np.testing.assert_array_equal(invalid, expected_invalid)
+    assert has_model_input

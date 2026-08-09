@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from concurrent.futures import Executor
 from dataclasses import dataclass
 from typing import Any
 
@@ -103,6 +105,7 @@ def calculate_health_layers(
     epsilon: float = 1e-6,
     reflectance_range: tuple[float, float] = (-0.2, 2.0),
     savi_soil_factor: float = 0.5,
+    executor: Executor | None = None,
 ) -> HealthLayers:
     """Calculate vegetation indices and RGB features for one image window.
 
@@ -144,53 +147,70 @@ def calculate_health_layers(
     red_array = bands["red"]
     nir_array = bands["nir"]
 
-    ndvi = _safe_ratio(nir_array - red_array, nir_array + red_array, valid, epsilon)
-    gndvi = _safe_ratio(
-        nir_array - green_array,
-        nir_array + green_array,
-        valid,
-        epsilon,
-    )
-    evi = _safe_ratio(
-        2.5 * (nir_array - red_array),
-        nir_array + 6.0 * red_array - 7.5 * blue_array + 1.0,
-        valid,
-        epsilon,
-    )
-    savi = _safe_ratio(
-        (1.0 + savi_soil_factor) * (nir_array - red_array),
-        nir_array + red_array + savi_soil_factor,
-        valid,
-        epsilon,
-    )
-    cvi = _safe_ratio(
-        nir_array * red_array,
-        green_array * green_array,
-        valid,
-        epsilon,
-    )
-    vari = _safe_ratio(
-        green_array - red_array,
-        green_array + red_array - blue_array,
-        valid,
-        epsilon,
-    )
+    def brightness() -> FloatArray:
+        output = np.full(shape, np.nan, dtype=np.float32)
+        output[valid] = (
+            blue_array[valid] + green_array[valid] + red_array[valid]
+        ) / 3.0
+        return output
 
-    brightness = np.full(shape, np.nan, dtype=np.float32)
-    excess_green = np.full(shape, np.nan, dtype=np.float32)
-    brightness[valid] = (blue_array[valid] + green_array[valid] + red_array[valid]) / 3.0
-    excess_green[valid] = 2.0 * green_array[valid] - red_array[valid] - blue_array[valid]
+    def excess_green() -> FloatArray:
+        output = np.full(shape, np.nan, dtype=np.float32)
+        output[valid] = (
+            2.0 * green_array[valid] - red_array[valid] - blue_array[valid]
+        )
+        return output
+
+    calculations: dict[str, Callable[[], FloatArray]] = {
+        "cvi": lambda: _safe_ratio(
+            nir_array * red_array,
+            green_array * green_array,
+            valid,
+            epsilon,
+        ),
+        "evi": lambda: _safe_ratio(
+            2.5 * (nir_array - red_array),
+            nir_array + 6.0 * red_array - 7.5 * blue_array + 1.0,
+            valid,
+            epsilon,
+        ),
+        "excess_green": excess_green,
+        "gndvi": lambda: _safe_ratio(
+            nir_array - green_array,
+            nir_array + green_array,
+            valid,
+            epsilon,
+        ),
+        "ndvi": lambda: _safe_ratio(
+            nir_array - red_array,
+            nir_array + red_array,
+            valid,
+            epsilon,
+        ),
+        "rgb_brightness": brightness,
+        "savi": lambda: _safe_ratio(
+            (1.0 + savi_soil_factor) * (nir_array - red_array),
+            nir_array + red_array + savi_soil_factor,
+            valid,
+            epsilon,
+        ),
+        "vari": lambda: _safe_ratio(
+            green_array - red_array,
+            green_array + red_array - blue_array,
+            valid,
+            epsilon,
+        ),
+    }
+    if executor is None:
+        values = {name: calculation() for name, calculation in calculations.items()}
+    else:
+        futures = {
+            name: executor.submit(calculation)
+            for name, calculation in calculations.items()
+        }
+        values = {name: future.result() for name, future in futures.items()}
 
     return HealthLayers(
-        values={
-            "cvi": cvi,
-            "evi": evi,
-            "excess_green": excess_green,
-            "gndvi": gndvi,
-            "ndvi": ndvi,
-            "rgb_brightness": brightness,
-            "savi": savi,
-            "vari": vari,
-        },
+        values=values,
         analysis_mask=valid,
     )

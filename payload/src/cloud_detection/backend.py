@@ -245,11 +245,26 @@ class OmniCloudMaskBackend:
         image_rgn = self._prepare_input(tile)
         if image_rgn is None:
             return np.zeros(tile.shape[1:], dtype=np.uint8)
+        return self.predict_prepared_semantic(image_rgn)
+
+    def predict_prepared_semantic(self, image_rgn: np.ndarray) -> np.ndarray:
+        """Predict class IDs from an already validated Red/Green/NIR array.
+
+        The compact executor owns normalization and invalid-pixel accounting, so
+        repeating the full-scene channel copy and validity scan here would only
+        add latency. Other callers continue to use :meth:`predict_semantic`.
+        """
+        if image_rgn.ndim != 3 or image_rgn.shape[0] != 3:
+            raise BackendError(
+                f"Expected a prepared array shaped (3,H,W), got {image_rgn.shape}."
+            )
+        if min(image_rgn.shape[1:]) < 32:
+            raise BackendError("OmniCloudMask tiles must be at least 32 by 32 pixels.")
         semantic = np.asarray(
             self._run_upstream(image_rgn, export_confidence=False),
             dtype=np.uint8,
         )
-        expected_shape = (1, *tile.shape[1:])
+        expected_shape = (1, *image_rgn.shape[1:])
         if semantic.shape != expected_shape or np.any(semantic > 3):
             raise BackendError(f"Unexpected OmniCloudMask semantic output: {semantic.shape}.")
         return semantic[0]
