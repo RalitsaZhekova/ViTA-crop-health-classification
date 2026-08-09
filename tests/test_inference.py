@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import pickle
+
 import pytest
 import torch
 from prithvi_payload.inference import (
+    TENSORRT_NATIVE_CUDA_OPS,
     PayloadCropModel,
     _fit_tensorrt_logit_calibration,
     _functionalize_prithvi_export_for_tensorrt,
@@ -36,6 +39,17 @@ class _FourTemporaryDivisions(nn.Module):
             omega /= 2.0
             vectors.append(omega)
         return image + torch.stack(vectors).sum(dim=0)
+
+
+def test_tensorrt_native_cuda_operator_contract_is_serializable() -> None:
+    assert len(TENSORRT_NATIVE_CUDA_OPS) == 9
+    assert all(
+        isinstance(operator, str) and operator.startswith("torch.ops.aten.")
+        for operator in TENSORRT_NATIVE_CUDA_OPS
+    )
+    assert pickle.loads(pickle.dumps(TENSORRT_NATIVE_CUDA_OPS)) == (
+        TENSORRT_NATIVE_CUDA_OPS
+    )
 
 
 def test_optimized_model_pads_to_fixed_batch_and_returns_only_real_tiles() -> None:

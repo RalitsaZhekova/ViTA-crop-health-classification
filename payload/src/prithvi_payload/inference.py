@@ -30,6 +30,24 @@ OPTIMIZED_BATCH_SIZE = int(os.environ.get("VITA_CROP_BATCH_SIZE", "4"))
 if not 1 <= OPTIMIZED_BATCH_SIZE <= 16:
     raise RuntimeError("VITA_CROP_BATCH_SIZE must be within 1..16")
 
+# The NGC 25.01 Torch-TensorRT alpha stores these values in each engine's
+# metadata. Live OpOverload objects contain a PyCapsule and cannot be pickled by
+# that build, while qualified operator names are an equivalent, supported input
+# to the partitioner and remain safely serializable.
+TENSORRT_NATIVE_CUDA_OPS = frozenset(
+    {
+        "torch.ops.aten.scaled_dot_product_attention.default",
+        "torch.ops.aten.layer_norm.default",
+        "torch.ops.aten.gelu.default",
+        "torch.ops.aten.batch_norm.default",
+        "torch.ops.aten.upsample_bilinear2d.vec",
+        "torch.ops.aten.adaptive_avg_pool2d.default",
+        "torch.ops.aten.einsum.default",
+        "torch.ops.aten.sin.default",
+        "torch.ops.aten.cos.default",
+    }
+)
+
 
 def _environment_flag(name: str, default: bool) -> bool:
     value = os.environ.get(name)
@@ -403,21 +421,10 @@ def _compile_tensorrt(
     # converts the fused attention/normalization/resampling path. Keep those
     # lightweight, numerically sensitive operations in native CUDA while TRT
     # retains the model's dense and convolutional compute.
-    torch_executed_ops = {
-        torch.ops.aten.scaled_dot_product_attention.default,
-        torch.ops.aten.layer_norm.default,
-        torch.ops.aten.gelu.default,
-        torch.ops.aten.batch_norm.default,
-        torch.ops.aten.upsample_bilinear2d.vec,
-        torch.ops.aten.adaptive_avg_pool2d.default,
-        torch.ops.aten.einsum.default,
-        torch.ops.aten.sin.default,
-        torch.ops.aten.cos.default,
-    }
     artifact_path = artifact_directory / (
         f"crop.{SELECTED_CHECKPOINT_SHA256[:12]}.torch_{torch_version}."
         f"torchtrt_{torch_tensorrt_version}.{cache_precision}."
-        f"batch_{OPTIMIZED_BATCH_SIZE}.hybrid-sensitive-v1.ep"
+        f"batch_{OPTIMIZED_BATCH_SIZE}.hybrid-sensitive-v2.ep"
     )
 
     def engine_partition_count(module: nn.Module) -> int:
@@ -501,7 +508,7 @@ def _compile_tensorrt(
         enabled_precisions={precisions[precision_name]},
         disable_tf32=disable_tf32,
         require_full_compilation=_environment_flag("VITA_TRT_REQUIRE_FULL", False),
-        torch_executed_ops=torch_executed_ops,
+        torch_executed_ops=TENSORRT_NATIVE_CUDA_OPS,
         min_block_size=1,
         use_fast_partitioner=False,
         pass_through_build_failures=True,
@@ -720,7 +727,10 @@ class PayloadCropModel:
                 )
             except Exception as error:
                 if _environment_flag("VITA_TRT_STRICT", True):
-                    raise RuntimeError("Crop model TensorRT compilation failed") from error
+                    raise RuntimeError(
+                        "Crop model TensorRT compilation failed: "
+                        f"{type(error).__name__}: {error}"
+                    ) from error
                 warnings.warn(
                     f"TensorRT compilation failed; using exported PyTorch graph: {error}",
                     stacklevel=2,
