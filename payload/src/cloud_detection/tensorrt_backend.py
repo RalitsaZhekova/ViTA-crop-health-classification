@@ -125,7 +125,7 @@ class _CloudEnsemble(nn.Module):
         return (self.models[0](image) + self.models[1](image)) * 0.5
 
 
-class CloudTensorRTRouter:
+class CloudTensorRTRouter(nn.Module):
     """Build one strict static TensorRT engine for every observed MVP profile.
 
     Static profiles are intentional on the payload: they are more predictable than
@@ -141,6 +141,7 @@ class CloudTensorRTRouter:
         device: torch.device,
         dtype: torch.dtype,
     ) -> None:
+        super().__init__()
         if device.type != "cuda":
             raise RuntimeError("TensorRT cloud inference requires a CUDA device")
         if dtype != torch.float16:
@@ -289,7 +290,7 @@ class CloudTensorRTRouter:
         }
         return parity
 
-    def __call__(self, image: Tensor) -> Tensor:
+    def forward(self, image: Tensor) -> Tensor:
         if image.ndim != 4 or image.shape[1] != 3:
             raise RuntimeError(
                 f"Cloud TensorRT expects [batch,3,height,width], got {tuple(image.shape)}"

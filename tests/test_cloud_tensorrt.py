@@ -11,6 +11,12 @@ from cloud_detection.tensorrt_backend import (
 from torch import nn
 
 
+def _empty_router() -> CloudTensorRTRouter:
+    router = CloudTensorRTRouter.__new__(CloudTensorRTRouter)
+    nn.Module.__init__(router)
+    return router
+
+
 class _Scale(nn.Module):
     def __init__(self, value: float) -> None:
         super().__init__()
@@ -46,7 +52,7 @@ def test_cloud_tensorrt_parity_records_logit_error_without_class_change(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("VITA_CLOUD_TRT_MAX_CLASS_MISMATCH", "0")
-    router = CloudTensorRTRouter.__new__(CloudTensorRTRouter)
+    router = _empty_router()
     router._source = _CloudEnsemble([_Scale(1.0), _Scale(1.0)])
     image = torch.arange(1 * 3 * 4 * 4, dtype=torch.float32).reshape(1, 3, 4, 4)
     accelerated = router._source(image) + 1e-4
@@ -79,3 +85,30 @@ def test_cloud_tensorrt_keeps_nonempty_cat() -> None:
 
     assert _remove_zero_channel_cat_noops(exported) == 0
     assert any("cat" in str(node.target) for node in exported.graph.nodes)
+
+
+def test_cloud_tensorrt_router_satisfies_omnicloudmask_custom_model_contract() -> None:
+    from omnicloudmask.cloud_mask import collect_models
+
+    router = _empty_router()
+    router._source = _CloudEnsemble([_Scale(1.0), _Scale(1.0)])
+
+    collected = collect_models(
+        custom_models=[router],
+        inference_device=torch.device("cpu"),
+        inference_dtype=torch.float32,
+        source="hugging_face",
+    )
+
+    assert collected == [router]
+    assert isinstance(router, nn.Module)
+
+
+def test_cloud_tensorrt_router_uses_module_forward_dispatch() -> None:
+    router = _empty_router()
+    router._compiled = {(1, 8, 8): _Scale(2.0)}
+    router._frozen = True
+    router._lock = None
+    image = torch.ones((1, 3, 8, 8))
+
+    torch.testing.assert_close(router(image), image * 2.0)
