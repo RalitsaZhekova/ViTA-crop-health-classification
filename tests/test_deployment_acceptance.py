@@ -24,7 +24,11 @@ def _health() -> dict:
             "cloud_batch_size": 4,
             "cloud_tensorrt_engine_count": 4,
             "cloud_tensorrt_profiles": [
-                {"engine_count": 1, "class_mismatch_fraction": 0.0}
+                {
+                    "engine_count": 1,
+                    "class_mismatch_fraction": 0.0,
+                    "zero_channel_cat_noops_removed": 1,
+                }
             ],
             "cloud_scene_warmup_profiles": [
                 {"input": f"scene-{index}.tif", "prediction_retained": False}
@@ -64,6 +68,18 @@ def test_jetson_acceptance_rejects_cloud_pytorch(
     health = _health()
     health["stack"]["cloud_backend"] = "omnicloudmask_cuda_fp16"
     with pytest.raises(RuntimeError, match="Cloud inference"):
+        validate_health(health)
+
+
+def test_jetson_acceptance_requires_reviewed_cloud_graph_rewrite(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _production_flags(monkeypatch)
+    health = _health()
+    del health["stack"]["cloud_tensorrt_profiles"][0][
+        "zero_channel_cat_noops_removed"
+    ]
+    with pytest.raises(RuntimeError, match="zero-channel graph rewrite"):
         validate_health(health)
 
 

@@ -17,7 +17,7 @@ Invoke-VitaPayload.ps1              /data/code/VITA/data (read-only)
         +===========================>| 127.0.0.1:8090
         |     small JSON request     | warm FastAPI worker
         |                            |  cloud: Torch-TensorRT FP16
-        |                            |  crop: Torch-TensorRT FP16
+        |                            |  crop: native PyTorch CUDA FP32
         |                            |  health/indices: CPU + GDAL threads
         |                            |  package exactly 3 artifacts
         | SCP + SHA-256              |
@@ -154,7 +154,7 @@ cp deploy/payload.env.example deploy/payload.env  # skip if already configured
 ./deploy/payload/deploy.sh
 ```
 
-The script runs preflight, builds the app layer on the already-installed NVIDIA image, validates all four sensor contracts from inside the final image, starts Compose with `runtime: nvidia`, and waits up to 90 minutes for first-time export, all target-built TensorRT profiles, parity validation, immutable crop-engine serialization, both Balkan analysis grids, and exact-scene warmup. It then runs fail-closed acceleration checks and three timed repetitions of all four scenes. First startup can be slow; subsequent restarts load the validated crop artifact without recompiling and reuse export, cloud-engine, timing, and checksum-keyed Balkan grid caches.
+The script runs preflight, builds the app layer on the already-installed NVIDIA image, validates all four sensor contracts from inside the final image, starts Compose with `runtime: nvidia`, and waits up to 90 minutes for first-time export, all target-built cloud TensorRT profiles, parity validation, native-CUDA crop warmup, both Balkan analysis grids, and exact-scene warmup. It then runs fail-closed acceleration checks and three timed repetitions of all four scenes. First startup can be slow; subsequent restarts reuse export, cloud-engine, timing, and checksum-keyed Balkan grid caches.
 
 If startup fails or the container restarts, the script prints the last 200 log lines and
 brings down only the explicitly named `vita-payload` Compose project. It retains the
@@ -162,9 +162,8 @@ bind-mounted export, TensorRT, and Balkan-grid caches; these are validated reusa
 deployment artifacts, not failed containers.
 
 After full parity and performance acceptance, the script removes only the rejected
-VITA refittable crop-cache directories from the earlier experiments. It retains the
-validated immutable artifact under `runtime/engines/tensorrt/crop-artifacts` and never
-invokes a shared Docker prune.
+VITA crop TensorRT cache and artifact directories from the earlier experiments. It
+retains the accepted cloud caches and never invokes a shared Docker prune.
 
 Check status and logs:
 
@@ -185,7 +184,8 @@ A production-ready health response must show:
   crop decisions on the packaged-scene parity batch;
 - `tensorrt_cudagraphs: true`, captured during warmup for lower fixed-shape launch overhead;
 - `cloud_backend: "omnicloudmask_tensorrt_fp16"`;
-- `cloud_batch_size: 4`, a positive cloud TensorRT engine count, and a parity record for every static profile;
+- `cloud_batch_size: 4`, a positive cloud TensorRT engine count, and a parity record
+  with `zero_channel_cat_noops_removed: 1` for every static profile;
 - cloud warmup profiles for batch 1 at 1,000 px and batches 1 and 4 at 869 px, plus profiles discovered by exact-scene warmup;
 - four distinct `cloud_scene_warmup_profiles`, each with `kind: "fixed_input_profile"` and `prediction_retained: false`;
 - two `balkan_analysis_caches` entries (a first build may report `cache_hit: false`; later startups report true);
@@ -444,6 +444,14 @@ was not one of the four accepted MVP paths. Add the new checksum-pinned scene to
 startup warmup and re-run parity/latency acceptance; never compile a new engine inside
 a timed request.
 
+`INetworkDefinition::addConstant` followed by a failure at an OmniCloudMask `aten.cat`
+means the image predates the reviewed zero-channel graph rewrite. The pinned EdgeNeXt
+encoder emits one `[N, 0, H, W]` compatibility feature. PyTorch concatenation treats it
+as an identity, but Torch-TensorRT 2.6 freezes it as an empty weight that TensorRT 10.8
+rejects. Update to the release containing the rewrite and rebuild the image. Readiness
+then requires every cloud profile to report `zero_channel_cat_noops_removed: 1`; do not
+work around this converter defect by relaxing parity or disabling startup validation.
+
 `PERFORMANCE_SLO_FAILED` includes every repetition and the minimum, median, and maximum
 for each scene. Use the returned stage breakdown and `tegrastats` to diagnose the
 failure. Do not raise the target or skip the gate to label the deployment production.
@@ -480,7 +488,9 @@ If port 18090 is occupied on ground, pass a different `-LocalTunnelPort`. If por
 
 - Payload preflight passes with the recorded JetPack/L4T and base-image digest.
 - Payload Docker build succeeds without replacing the NVIDIA PyTorch/CUDA/TensorRT stack.
-- Health reports CUDA, FP16 cloud and crop TensorRT, TF32 disabled in crop fallback partitions, positive engine counts, fixed batch 4/16, and passing four-scene compiler parity.
+- Health reports native-CUDA FP32 crop inference with TF32 disabled, FP16 cloud
+  TensorRT, positive cloud engine counts, fixed batch 4/16, the reviewed zero-channel
+  rewrite, and passing four-scene compiler parity.
 - All four fixed input scenes complete every configured acceptance repetition without errors.
 - Every measured `payload_seconds` value is below 2.0 seconds for the agreed pixel-size envelope.
 - Accelerated scientific outputs pass the approved FP32/PyTorch parity tolerances.

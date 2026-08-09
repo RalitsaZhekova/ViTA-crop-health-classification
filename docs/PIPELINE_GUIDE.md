@@ -108,11 +108,9 @@ execution state.
    scene, verifies its calibration SHA-256, and creates or validates both persistent
    shared-grid caches. The former singular variable remains supported for local use.
 4. It loads the two OmniCloudMask ensemble checkpoints once.
-5. It loads the selected Prithvi crop model once and optionally compiles/caches its
-   Torch-TensorRT representation.
-6. It builds/loads target TensorRT engines, validates crop compiler parity with a
-   balanced fixed batch from the exact two Sentinel and two Balkan scenes, and warms
-   all four cloud paths plus the fixed crop batch.
+5. It loads the selected Prithvi crop model once on native CUDA.
+6. It builds/loads target cloud TensorRT engines, validates every static cloud profile,
+   and warms all four cloud paths plus the fixed crop batch.
 7. Only then does `/healthz` report `status: ready`. Readiness includes a tiny
    synchronized CUDA operation on the model worker, so a stale context after a
    laptop sleep, driver reset, or GPU switch is detected before a job starts.
@@ -314,6 +312,14 @@ the Orin. Every profile is compared to its PyTorch source before readiness, the 
 models are then released, and an unseen timed shape fails instead of compiling or
 falling back. `predict_semantic()` returns only class IDs to the CPU. Local defaults
 remain PyTorch FP32.
+
+The pinned EdgeNeXt encoder exposes one zero-channel compatibility feature. Its
+PyTorch U-Net decoder legally concatenates `[N, 0, H, W]`, which is an identity
+operation, but Torch-TensorRT 2.6 constant-folds that value into an empty TensorRT
+weight and TensorRT 10.8 rejects it. Before compilation the payload removes exactly
+that no-op edge from the static exported graph, verifies the remaining input already
+has the complete output shape, and records one rewrite in each profile's readiness
+evidence. All non-empty decoder concatenations and model weights remain unchanged.
 
 ### Prithvi fixed batching on native CUDA
 

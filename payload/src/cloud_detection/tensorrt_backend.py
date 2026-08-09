@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 from pathlib import Path
@@ -9,6 +10,8 @@ from typing import Any
 
 import torch
 from torch import Tensor, nn
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _environment_flag(name: str, default: bool) -> bool:
@@ -38,6 +41,73 @@ def _engine_count(module: nn.Module) -> int:
         for _, child in module.named_modules()
     )
     return max(graph_nodes, module_nodes)
+
+
+def _remove_zero_channel_cat_noops(exported: torch.export.ExportedProgram) -> int:
+    """Remove static zero-channel inputs from exported ``aten.cat`` nodes.
+
+    The EdgeNeXt encoder used by the pinned OmniCloudMask V4 ensemble emits one
+    ``[N, 0, H, W]`` feature so that its feature-pyramid interface has the same
+    number of levels as other encoders. PyTorch correctly treats concatenating
+    that tensor along the channel dimension as an identity operation. The pinned
+    Torch-TensorRT 2.6 stack instead constant-folds it and asks TensorRT 10.8 to
+    create a zero-element weight, which TensorRT rejects.
+
+    Static profiles make the zero channel visible in FX metadata. Replacing only
+    a two-input channel concatenation whose other input already has the complete
+    output shape is mathematically exact and leaves every non-empty concatenation
+    untouched.
+    """
+
+    graph_module = exported.graph_module
+    graph = graph_module.graph
+    removed = 0
+    for node in list(graph.nodes):
+        if node.op != "call_function" or node.target != torch.ops.aten.cat.default:
+            continue
+        inputs = node.args[0] if node.args else None
+        dimension = node.args[1] if len(node.args) > 1 else node.kwargs.get("dim", 0)
+        if not isinstance(inputs, (list, tuple)) or len(inputs) != 2:
+            continue
+        if not isinstance(dimension, int):
+            continue
+
+        output = node.meta.get("val")
+        output_shape = tuple(output.shape) if isinstance(output, Tensor) else None
+        if output_shape is None:
+            continue
+        normalized_dimension = dimension % len(output_shape)
+
+        zero_inputs = []
+        live_inputs = []
+        for input_node in inputs:
+            value = getattr(input_node, "meta", {}).get("val")
+            shape = tuple(value.shape) if isinstance(value, Tensor) else None
+            if (
+                shape is not None
+                and len(shape) == len(output_shape)
+                and shape[normalized_dimension] == 0
+            ):
+                zero_inputs.append(input_node)
+            else:
+                live_inputs.append(input_node)
+
+        if len(zero_inputs) != 1 or len(live_inputs) != 1:
+            continue
+        live_value = getattr(live_inputs[0], "meta", {}).get("val")
+        live_shape = tuple(live_value.shape) if isinstance(live_value, Tensor) else None
+        if live_shape != output_shape:
+            continue
+
+        node.replace_all_uses_with(live_inputs[0])
+        graph.erase_node(node)
+        removed += 1
+
+    if removed:
+        graph.eliminate_dead_code()
+        graph.lint()
+        graph_module.recompile()
+    return removed
 
 
 class _CloudEnsemble(nn.Module):
@@ -113,7 +183,7 @@ class CloudTensorRTRouter:
 
     def _compile(
         self, sample: Tensor
-    ) -> tuple[nn.Module, Tensor, int, dict[str, float]]:
+    ) -> tuple[nn.Module, Tensor, int, dict[str, float | int]]:
         source = self._source
         if source is None:
             raise RuntimeError("Cloud TensorRT profile compilation is frozen")
@@ -127,6 +197,16 @@ class CloudTensorRTRouter:
         with torch.inference_mode():
             reference = source(sample)
         exported = torch.export.export(source, (sample,), strict=False)
+        zero_channel_cat_noops_removed = _remove_zero_channel_cat_noops(exported)
+        if zero_channel_cat_noops_removed != 1:
+            raise RuntimeError(
+                "Expected exactly one OmniCloudMask zero-channel concatenation, "
+                f"removed {zero_channel_cat_noops_removed}"
+            )
+        LOGGER.info(
+            "Removed %d zero-channel OmniCloudMask concatenation before TensorRT compilation",
+            zero_channel_cat_noops_removed,
+        )
         compiled = torch_tensorrt.dynamo.compile(
             exported,
             arg_inputs=[sample],
@@ -164,6 +244,7 @@ class CloudTensorRTRouter:
             accelerated,
             reference=reference,
         )
+        parity["zero_channel_cat_noops_removed"] = zero_channel_cat_noops_removed
         return compiled, accelerated, count, parity
 
     def _validate_output(

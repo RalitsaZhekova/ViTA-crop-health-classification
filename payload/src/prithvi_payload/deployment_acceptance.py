@@ -56,6 +56,10 @@ def validate_health(health: dict[str, Any]) -> dict[str, Any]:
     for profile in profiles:
         if not isinstance(profile, dict) or int(profile.get("engine_count", 0)) < 1:
             raise RuntimeError("A cloud profile has no TensorRT engine")
+        if int(profile.get("zero_channel_cat_noops_removed", 0)) != 1:
+            raise RuntimeError(
+                "A cloud profile did not apply the reviewed zero-channel graph rewrite"
+            )
         mismatch = profile.get("class_mismatch_fraction")
         if (
             isinstance(mismatch, bool)
