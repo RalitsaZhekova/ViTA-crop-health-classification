@@ -74,9 +74,34 @@ remove_rejected_vita_tensorrt_caches() {
     done
 }
 
+remove_stale_vita_acceptance_runs() {
+    runs_root="$(realpath -m "$PROJECT_ROOT/runtime/payload/runs")"
+    expected_root="$(realpath -m "$PROJECT_ROOT/runtime/payload")"
+    case "$runs_root" in
+        "$expected_root"/*) ;;
+        *)
+            echo "ERROR: VITA acceptance runs escaped the payload runtime root" >&2
+            exit 1
+            ;;
+    esac
+    while IFS= read -r -d '' stale_path; do
+        resolved_path="$(realpath -m "$stale_path")"
+        case "$resolved_path" in
+            "$runs_root"/accept-*) ;;
+            *)
+                echo "ERROR: acceptance output escaped the VITA runs root" >&2
+                exit 1
+                ;;
+        esac
+        rm -rf -- "$resolved_path"
+        echo "Removed stale VITA acceptance output: $resolved_path"
+    done < <(find "$runs_root" -mindepth 1 -maxdepth 1 -type d -name 'accept-*' -print0)
+}
+
 ./deploy/payload/preflight.sh
 mkdir -p runtime/payload/runs runtime/engines/torch-export runtime/engines/tensorrt
 remove_rejected_vita_tensorrt_caches
+remove_stale_vita_acceptance_runs
 
 compose_args=(-f deploy/compose.payload.yaml)
 if [ -f deploy/payload.env ]; then

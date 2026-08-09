@@ -5,9 +5,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import statistics
 import time
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.request import Request, urlopen
 
@@ -59,6 +60,20 @@ def _submit(url: str, body: dict[str, Any]) -> dict[str, Any]:
     return value
 
 
+def _remove_acceptance_output(job_id: str) -> None:
+    """Remove only the disposable run directory created by this acceptance job."""
+    if not job_id.startswith("accept-") or any(value in job_id for value in ("/", "\\")):
+        raise ValueError("Refusing to remove a non-acceptance payload run")
+    runs_root = Path(os.environ.get("VITA_OUTPUT_ROOT", "/runtime/runs")).resolve()
+    candidate = runs_root / job_id
+    if candidate.parent != runs_root:
+        raise ValueError("Acceptance output escaped the payload runs root")
+    if candidate.is_symlink():
+        candidate.unlink()
+    elif candidate.is_dir():
+        shutil.rmtree(candidate)
+
+
 def run_acceptance(
     *,
     url: str,
@@ -82,6 +97,7 @@ def run_acceptance(
             }
             body["job_id"] = f"{scene['job_prefix']}-r{repetition}"
             response = _submit(url, body)
+            _remove_acceptance_output(body["job_id"])
             elapsed = float(response["payload_seconds"])
             timings.append(elapsed)
             runs.append(

@@ -467,6 +467,10 @@ docker image ls --filter reference='vita-payload*' \
 du -sh runtime/payload runtime/engines
 ```
 
+Deployment removes only rejected VITA TensorRT cache names and stale `accept-*`
+directories directly below `runtime/payload/runs`. Each completed performance request
+also removes its own disposable acceptance directory after recording the timing result.
+
 Do not run `docker system prune`, `docker builder prune`, or an unfiltered image prune
 on the shared Jetson. BuildKit's default cache is shared by every team and cannot be
 safely attributed to VITA from its cache IDs. Failed `docker compose run --rm` probes
