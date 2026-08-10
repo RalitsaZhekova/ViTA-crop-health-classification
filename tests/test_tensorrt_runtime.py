@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 from prithvi_payload import tensorrt_runtime
 from prithvi_payload.tensorrt_builder import (
+    _canonicalize_crop_onnx,
     _normalize_onnxscript_integer_attributes,
 )
 from prithvi_payload.tensorrt_runtime import (
@@ -109,3 +110,124 @@ def test_onnxscript_boolean_integer_attributes_are_losslessly_normalized() -> No
     assert root_int.value == 1 and type(root_int.value) is int
     assert nested_int.value == 0 and type(nested_int.value) is int
     assert untouched.value is True
+
+
+def test_crop_onnx_canonicalization_lowers_pinned_exporter_patterns(
+    tmp_path: Path,
+) -> None:
+    onnx = pytest.importorskip("onnx")
+    import numpy as np
+    from onnx import TensorProto, helper, numpy_helper
+
+    nodes = [
+        helper.make_node("Constant", [], ["pow_base"], value_int=10000),
+        helper.make_node("Pow", ["pow_base", "exponent"], ["pow_out"], name="pow"),
+        helper.make_node(
+            "LayerNormalization",
+            ["ln_x", "ln_scale", "ln_bias"],
+            ["ln_out", "ln_mean", "ln_invstd"],
+            name="layer_norm",
+            axis=-1,
+        ),
+        helper.make_node("Constant", [], ["split_size"], value_int=1),
+        helper.make_node(
+            "SplitToSequence",
+            ["sequence_x", "split_size"],
+            ["sequence"],
+            name="unbind",
+            axis=0,
+            keepdims=0,
+        ),
+        helper.make_node("Constant", [], ["sequence_index"], value_int=1),
+        helper.make_node(
+            "SequenceAt",
+            ["sequence", "sequence_index"],
+            ["gathered"],
+            name="getitem",
+        ),
+        helper.make_node(
+            "Constant",
+            [],
+            ["view_size"],
+            value=numpy_helper.from_array(np.asarray([2, 2], dtype=np.int64)),
+        ),
+        helper.make_node(
+            "Constant",
+            [],
+            ["view_stride"],
+            value=numpy_helper.from_array(np.asarray([2, 1], dtype=np.int64)),
+        ),
+        helper.make_node(
+            "_aten_as_strided_onnx",
+            ["view_x", "view_size", "view_stride"],
+            ["viewed"],
+            name="as_strided",
+            domain="pkg.onnxscript.torch_lib",
+        ),
+        helper.make_node(
+            "Constant",
+            [],
+            ["axes_value"],
+            value=numpy_helper.from_array(np.asarray([-1], dtype=np.int64)),
+        ),
+        helper.make_node("Constant", [], ["axes_shape"], value_ints=[-1]),
+        helper.make_node("Reshape", ["axes_value", "axes_shape"], ["axes"]),
+        helper.make_node("ReduceMean", ["view_x", "axes"], ["reduced"], keepdims=1),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        "canonicalization_test",
+        [
+            helper.make_tensor_value_info("exponent", TensorProto.FLOAT, []),
+            helper.make_tensor_value_info("ln_x", TensorProto.FLOAT, [1, 2]),
+            helper.make_tensor_value_info("sequence_x", TensorProto.FLOAT, [3, 2]),
+            helper.make_tensor_value_info("view_x", TensorProto.FLOAT, [2, 2]),
+        ],
+        [
+            helper.make_tensor_value_info("pow_out", TensorProto.FLOAT, []),
+            helper.make_tensor_value_info("ln_out", TensorProto.FLOAT, [1, 2]),
+            helper.make_tensor_value_info("gathered", TensorProto.FLOAT, [2]),
+            helper.make_tensor_value_info("viewed", TensorProto.FLOAT, [2, 2]),
+            helper.make_tensor_value_info("reduced", TensorProto.FLOAT, [2, 1]),
+        ],
+        initializer=[
+            numpy_helper.from_array(np.ones(2, dtype=np.float32), name="ln_scale"),
+            numpy_helper.from_array(np.zeros(2, dtype=np.float32), name="ln_bias"),
+        ],
+    )
+    model = helper.make_model(
+        graph,
+        ir_version=9,
+        opset_imports=[
+            helper.make_opsetid("", 18),
+            helper.make_opsetid("pkg.onnxscript.torch_lib", 1),
+        ],
+    )
+    path = tmp_path / "crop.onnx"
+    onnx.save(model, path)
+
+    stats = _canonicalize_crop_onnx(
+        path,
+        expected={
+            "as_strided_reshapes": 1,
+            "layer_norm_aux_outputs_removed": 2,
+            "pow_base_casts": 1,
+            "reduce_axes_initializers": 1,
+            "sequence_gathers": 1,
+            "split_sequences_removed": 1,
+        },
+    )
+
+    canonical = onnx.load(path)
+    onnx.checker.check_model(canonical, full_check=True)
+    assert stats["sequence_gathers"] == 1
+    assert not canonical.functions
+    assert all(not node.domain for node in canonical.graph.node)
+    assert all("Sequence" not in node.op_type for node in canonical.graph.node)
+    layer_norm = next(
+        node for node in canonical.graph.node if node.op_type == "LayerNormalization"
+    )
+    assert list(layer_norm.output) == ["ln_out"]
+    initializer_names = {value.name for value in canonical.graph.initializer}
+    reduction = next(node for node in canonical.graph.node if node.op_type == "ReduceMean")
+    assert reduction.input[1] in initializer_names

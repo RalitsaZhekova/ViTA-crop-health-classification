@@ -44,6 +44,14 @@ CLOUD_MAX_CLASS_MISMATCH = 0.001
 CROP_MAX_CLASS_MISMATCH = 0.002
 CROP_MAX_MEAN_PROBABILITY_ERROR = 0.005
 ONNX_OPSET = 18
+_EXPECTED_CROP_CANONICALIZATION = {
+    "as_strided_reshapes": 1,
+    "layer_norm_aux_outputs_removed": 50,
+    "pow_base_casts": 4,
+    "reduce_axes_initializers": 2,
+    "sequence_gathers": 36,
+    "split_sequences_removed": 12,
+}
 
 
 class TensorRTBuildError(RuntimeError):
@@ -194,12 +202,13 @@ def _validate_onnx(
     *,
     expected_inputs: tuple[str, ...],
     expected_outputs: tuple[str, ...],
+    full_check: bool = True,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     import onnx
 
     try:
         model = onnx.load(str(path), load_external_data=True)
-        onnx.checker.check_model(model, full_check=True)
+        onnx.checker.check_model(model, full_check=full_check)
     except Exception as error:
         raise TensorRTBuildError(f"ONNX validation failed for {path}: {error}") from error
 
@@ -283,6 +292,327 @@ def _normalize_onnxscript_integer_attributes(program: Any) -> int:
     return normalized
 
 
+def _onnx_constant_evaluator(model: Any) -> Any:
+    """Return a strict evaluator for the small constant subgraphs we canonicalize."""
+
+    import onnx
+    from onnx import helper, numpy_helper
+
+    initializers = {
+        initializer.name: initializer for initializer in model.graph.initializer
+    }
+    producers = {
+        output: node for node in model.graph.node for output in node.output if output
+    }
+    cache: dict[str, np.ndarray] = {}
+
+    def evaluate(name: str) -> np.ndarray:
+        if name in cache:
+            return cache[name]
+        if name in initializers:
+            value = numpy_helper.to_array(initializers[name])
+            cache[name] = value
+            return value
+        try:
+            node = producers[name]
+        except KeyError as error:
+            raise TensorRTBuildError(
+                f"ONNX value {name!r} is not a compile-time constant"
+            ) from error
+
+        attributes = {
+            attribute.name: helper.get_attribute_value(attribute)
+            for attribute in node.attribute
+        }
+        if node.op_type == "Constant":
+            if "value" in attributes:
+                value = numpy_helper.to_array(attributes["value"])
+            elif "value_int" in attributes:
+                value = np.asarray(attributes["value_int"], dtype=np.int64)
+            elif "value_ints" in attributes:
+                value = np.asarray(attributes["value_ints"], dtype=np.int64)
+            else:
+                raise TensorRTBuildError(
+                    f"Unsupported ONNX Constant representation for {name!r}"
+                )
+        elif node.op_type == "Identity":
+            value = evaluate(node.input[0])
+        elif node.op_type == "Reshape":
+            value = np.reshape(evaluate(node.input[0]), evaluate(node.input[1]))
+        elif node.op_type == "Cast":
+            value = evaluate(node.input[0]).astype(
+                onnx.helper.tensor_dtype_to_np_dtype(attributes["to"])
+            )
+        else:
+            raise TensorRTBuildError(
+                f"Unsupported ONNX constant expression {node.op_type} for {name!r}"
+            )
+        cache[name] = value
+        return value
+
+    return evaluate
+
+
+def _is_contiguous_index_view(
+    size: np.ndarray,
+    stride: np.ndarray,
+    storage_offset: int,
+) -> bool:
+    """Whether as_strided enumerates the source storage in ordinary row-major order."""
+
+    dimensions = [int(value) for value in np.asarray(size).reshape(-1)]
+    strides = [int(value) for value in np.asarray(stride).reshape(-1)]
+    if storage_offset != 0 or len(dimensions) != len(strides):
+        return False
+    if not dimensions or any(dimension <= 0 for dimension in dimensions):
+        return False
+    expected_stride = 1
+    for dimension, actual_stride in zip(
+        reversed(dimensions), reversed(strides), strict=True
+    ):
+        # A singleton axis never advances storage, so any non-negative stride is
+        # value-equivalent. Non-singleton axes must be exactly contiguous.
+        if actual_stride < 0 or (dimension > 1 and actual_stride != expected_stride):
+            return False
+        expected_stride *= dimension
+    return True
+
+
+def _remove_dead_onnx_nodes(model: Any) -> int:
+    """Remove side-effect-free exporter helpers unreachable from graph outputs."""
+
+    import onnx
+
+    for node in model.graph.node:
+        if any(
+            attribute.type
+            in (onnx.AttributeProto.GRAPH, onnx.AttributeProto.GRAPHS)
+            for attribute in node.attribute
+        ):
+            raise TensorRTBuildError(
+                f"Crop ONNX graph still contains control flow at {node.name or node.op_type}"
+            )
+
+    needed = {output.name for output in model.graph.output}
+    kept = []
+    for node in reversed(model.graph.node):
+        if any(output in needed for output in node.output):
+            kept.append(node)
+            needed.update(name for name in node.input if name)
+    kept.reverse()
+    removed = len(model.graph.node) - len(kept)
+    del model.graph.node[:]
+    model.graph.node.extend(kept)
+    return removed
+
+
+def _canonicalize_crop_onnx(
+    path: Path,
+    *,
+    expected: dict[str, int] | None = None,
+) -> dict[str, int]:
+    """Lower pinned PyTorch 2.6-alpha ONNX encodings to TensorRT 10.8 ONNX.
+
+    Every rewrite is value-preserving and guarded by structural assertions. The
+    target parser check and real-scene parity gates remain authoritative.
+    """
+
+    import onnx
+    from onnx import helper, inliner, numpy_helper
+
+    model = onnx.load(str(path), load_external_data=True)
+    evaluate = _onnx_constant_evaluator(model)
+    stats = {
+        "as_strided_reshapes": 0,
+        "layer_norm_aux_outputs_removed": 0,
+        "pow_base_casts": 0,
+        "reduce_axes_initializers": 0,
+        "sequence_gathers": 0,
+        "split_sequences_removed": 0,
+    }
+
+    # The crop decoder's 1x1 adaptive-pool view is exported as a local
+    # as_strided function containing ONNX sequence/control-flow operators.
+    # Its fixed sizes and strides enumerate contiguous storage exactly, so a
+    # Reshape is identical and directly supported by TensorRT.
+    preinline_nodes = []
+    for node in model.graph.node:
+        if not (
+            node.domain == "pkg.onnxscript.torch_lib"
+            and node.op_type == "_aten_as_strided_onnx"
+        ):
+            preinline_nodes.append(node)
+            continue
+        if len(node.input) not in (3, 4):
+            raise TensorRTBuildError(
+                f"Unexpected crop as_strided signature at {node.name}: {node.input}"
+            )
+        size = np.asarray(evaluate(node.input[1]), dtype=np.int64)
+        stride = np.asarray(evaluate(node.input[2]), dtype=np.int64)
+        storage_offset = (
+            int(np.asarray(evaluate(node.input[3])).item())
+            if len(node.input) == 4
+            else 0
+        )
+        if not _is_contiguous_index_view(size, stride, storage_offset):
+            raise TensorRTBuildError(
+                f"Crop as_strided at {node.name} is not a contiguous value-preserving view"
+            )
+        preinline_nodes.append(
+            helper.make_node(
+                "Reshape",
+                [node.input[0], node.input[1]],
+                list(node.output),
+                name=f"{node.name}_contiguous_reshape",
+            )
+        )
+        stats["as_strided_reshapes"] += 1
+    del model.graph.node[:]
+    model.graph.node.extend(preinline_nodes)
+
+    model = inliner.inline_local_functions(model)
+    custom_nodes = [
+        f"{node.domain}::{node.op_type}" for node in model.graph.node if node.domain
+    ]
+    if model.functions or custom_nodes:
+        raise TensorRTBuildError(
+            "Crop ONNX local-function inlining was incomplete: "
+            f"functions={len(model.functions)}, custom_nodes={sorted(set(custom_nodes))}"
+        )
+
+    users: dict[str, list[Any]] = {}
+    for node in model.graph.node:
+        for name in node.input:
+            users.setdefault(name, []).append(node)
+    graph_outputs = {output.name for output in model.graph.output}
+    for node in model.graph.node:
+        if node.op_type != "LayerNormalization" or len(node.output) <= 1:
+            continue
+        auxiliary = list(node.output[1:])
+        if any(users.get(name) or name in graph_outputs for name in auxiliary):
+            raise TensorRTBuildError(
+                f"Crop LayerNormalization auxiliary output is used at {node.name}"
+            )
+        stats["layer_norm_aux_outputs_removed"] += len(auxiliary)
+        del node.output[1:]
+
+    evaluate = _onnx_constant_evaluator(model)
+    split_sources: dict[str, tuple[str, int]] = {}
+    for node in model.graph.node:
+        if node.op_type != "SplitToSequence":
+            continue
+        attributes = {
+            attribute.name: helper.get_attribute_value(attribute)
+            for attribute in node.attribute
+        }
+        if attributes.get("keepdims") != 0 or len(node.input) != 2:
+            raise TensorRTBuildError(
+                f"Unexpected crop SplitToSequence encoding at {node.name}"
+            )
+        split = np.asarray(evaluate(node.input[1])).reshape(-1)
+        if split.size != 1 or int(split.item()) != 1:
+            raise TensorRTBuildError(
+                f"Crop SplitToSequence at {node.name} is not an unbind-by-one"
+            )
+        sequence_name = node.output[0]
+        if sequence_name in graph_outputs or any(
+            user.op_type != "SequenceAt" for user in users.get(sequence_name, [])
+        ):
+            raise TensorRTBuildError(
+                f"Crop sequence {sequence_name} has unsupported consumers"
+            )
+        split_sources[sequence_name] = (
+            node.input[0],
+            int(attributes.get("axis", 0)),
+        )
+
+    rewritten_nodes = []
+    for index, node in enumerate(model.graph.node):
+        if node.op_type == "SplitToSequence" and node.output[0] in split_sources:
+            stats["split_sequences_removed"] += 1
+            continue
+        if node.op_type == "SequenceAt" and node.input[0] in split_sources:
+            index_value = np.asarray(evaluate(node.input[1]))
+            if index_value.size != 1:
+                raise TensorRTBuildError(
+                    f"Crop SequenceAt index is not scalar at {node.name}"
+                )
+            data, axis = split_sources[node.input[0]]
+            rewritten_nodes.append(
+                helper.make_node(
+                    "Gather",
+                    [data, node.input[1]],
+                    list(node.output),
+                    name=f"{node.name}_direct_gather",
+                    axis=axis,
+                )
+            )
+            stats["sequence_gathers"] += 1
+            continue
+        if node.op_type == "Pow":
+            cast_output = f"{node.input[0]}__pow_castlike__{index}"
+            rewritten_nodes.append(
+                helper.make_node(
+                    "CastLike",
+                    [node.input[0], node.input[1]],
+                    [cast_output],
+                    name=f"{node.name}_base_castlike",
+                )
+            )
+            node.input[0] = cast_output
+            stats["pow_base_casts"] += 1
+        rewritten_nodes.append(node)
+    del model.graph.node[:]
+    model.graph.node.extend(rewritten_nodes)
+
+    evaluate = _onnx_constant_evaluator(model)
+    initializer_names = {initializer.name for initializer in model.graph.initializer}
+    for index, node in enumerate(model.graph.node):
+        if (
+            not node.op_type.startswith("Reduce")
+            or len(node.input) < 2
+            or not node.input[1]
+            or node.input[1] in initializer_names
+        ):
+            continue
+        try:
+            axes = np.asarray(evaluate(node.input[1]), dtype=np.int64)
+        except TensorRTBuildError:
+            continue
+        name = f"{node.input[1]}__trt_initializer_{index}"
+        model.graph.initializer.append(numpy_helper.from_array(axes, name=name))
+        initializer_names.add(name)
+        node.input[1] = name
+        stats["reduce_axes_initializers"] += 1
+
+    _remove_dead_onnx_nodes(model)
+    del model.graph.value_info[:]
+    remaining_sequences = sorted(
+        {node.op_type for node in model.graph.node if "Sequence" in node.op_type}
+    )
+    if remaining_sequences:
+        raise TensorRTBuildError(
+            f"Crop ONNX still contains sequence operators: {remaining_sequences}"
+        )
+
+    required = _EXPECTED_CROP_CANONICALIZATION if expected is None else expected
+    if stats != required:
+        raise TensorRTBuildError(
+            "Crop ONNX export does not match the pinned canonicalization contract: "
+            f"observed={stats}, expected={required}"
+        )
+
+    # Validate the in-memory candidate before atomically replacing the raw export.
+    onnx.checker.check_model(model, full_check=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.canonical.tmp")
+    try:
+        onnx.save_model(model, str(temporary), save_as_external_data=False)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return stats
+
+
 def _exception_summary(error: BaseException) -> str:
     parts: list[str] = []
     current: BaseException | None = error
@@ -299,6 +629,7 @@ def _export_program_to_onnx(
     *,
     input_names: tuple[str, ...],
     output_names: tuple[str, ...],
+    canonicalize_crop: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     print(f"[onnx] exporting {path.name}", flush=True)
     try:
@@ -321,6 +652,12 @@ def _export_program_to_onnx(
                 flush=True,
             )
         _save_onnx_program(program, path)
+        if canonicalize_crop:
+            canonicalization = _canonicalize_crop_onnx(path)
+            print(
+                f"[onnx] canonicalized crop graph: {canonicalization}",
+                flush=True,
+            )
     except Exception as error:
         raise TensorRTBuildError(
             f"PyTorch ONNX export failed for {path}: {_exception_summary(error)}"
@@ -329,6 +666,7 @@ def _export_program_to_onnx(
         path,
         expected_inputs=input_names,
         expected_outputs=output_names,
+        full_check=not canonicalize_crop,
     )
 
 
@@ -346,6 +684,7 @@ def _export_crop_onnx(runtime: Any, path: Path) -> dict[str, Any]:
         path,
         input_names=("image", "temporal_coords", "location_coords"),
         output_names=("logits",),
+        canonicalize_crop=True,
     )
     return {"path": path, "inputs": input_specs, "outputs": output_specs}
 
