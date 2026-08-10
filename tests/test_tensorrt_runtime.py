@@ -14,10 +14,13 @@ from prithvi_payload.tensorrt_builder import (
     _canonicalize_cloud_onnx,
     _canonicalize_crop_onnx,
     _discover_cloud_scene_patch_sizes,
+    _load_reusable_cloud_candidates,
     _load_reusable_cloud_records,
     _load_reusable_crop_record,
     _normalize_onnxscript_integer_attributes,
     _prune_unaccepted_build_artifacts,
+    _target_digest,
+    _trtexec_build_arguments,
 )
 from prithvi_payload.tensorrt_runtime import (
     MANIFEST_SCHEMA_VERSION,
@@ -203,6 +206,73 @@ def test_direct_tensorrt_reuses_checksum_bound_matching_crop_plan(
     )
 
     assert reusable == record
+
+
+def test_direct_tensorrt_revalidates_matching_inert_cloud_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_path = tmp_path / "direct" / "accepted.json"
+    onnx_path = (
+        manifest_path.parent
+        / "onnx"
+        / f"cloud.{OMNICLOUDMASK_ENSEMBLE_SHA256[:12]}.b1.1000.fp16.onnx"
+    )
+    onnx_path.parent.mkdir(parents=True)
+    onnx_path.write_bytes(b"canonical-onnx")
+    onnx_digest = file_sha256(onnx_path)
+    target = {"gpu": "test"}
+    plan_path = manifest_path.parent / "plans" / (
+        f"cloud-1000.{onnx_digest[:12]}.{_target_digest(target)[:12]}.plan"
+    )
+    plan_path.parent.mkdir()
+    plan_path.write_bytes(b"candidate-plan")
+    graph = {
+        "path": onnx_path,
+        "batch_size": 1,
+        "patch_size": 1000,
+        "profile": None,
+    }
+    build_key = {
+        "onnx_sha256": onnx_digest,
+        "target": target,
+        "precision": "fp16",
+        "arguments": _trtexec_build_arguments(
+            graph,
+            name="cloud-1000",
+            precision="fp16",
+            manifest_path=manifest_path,
+        ),
+    }
+    plan_path.with_suffix(".build.json").write_text(
+        json.dumps(
+            {"build_key": build_key, "plan_sha256": file_sha256(plan_path)}
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "prithvi_payload.tensorrt_builder._validate_onnx",
+        lambda *args, **kwargs: (
+            [
+                {
+                    "name": "image",
+                    "dtype": "float16",
+                    "shape": [1, 3, 1000, 1000],
+                }
+            ],
+            [{"name": "logits", "dtype": "float16", "shape": [1, 4, 1000, 1000]}],
+        ),
+    )
+
+    recovered = _load_reusable_cloud_candidates(
+        manifest_path,
+        target=target,
+        precision="fp16",
+        profiles=[(1000, 1)],
+    )
+
+    assert recovered[1000]["plan_sha256"] == file_sha256(plan_path)
+    assert recovered[1000]["inputs"][0]["shape"] == [1, 3, 1000, 1000]
 
 
 def test_direct_tensorrt_prunes_only_unaccepted_build_artifacts(tmp_path: Path) -> None:

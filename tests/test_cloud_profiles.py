@@ -9,6 +9,7 @@ from prithvi_payload.cloud_profiles import (
     CLOUD_MODEL_HALO,
     CLOUD_MODEL_TILE_SIZE,
     read_fixed_scene_cloud_input,
+    select_fixed_scene_cloud_output,
 )
 from rasterio.transform import from_origin
 
@@ -57,3 +58,30 @@ def test_fixed_sentinel_profile_reads_the_operational_haloed_tile(tmp_path: Path
         values,
     )
     np.testing.assert_array_equal(balkan, values)
+
+
+def test_fixed_sentinel_parity_selects_only_the_delivered_core() -> None:
+    model_output = np.arange(
+        CLOUD_MODEL_TILE_SIZE * CLOUD_MODEL_TILE_SIZE,
+        dtype=np.int32,
+    ).reshape(CLOUD_MODEL_TILE_SIZE, CLOUD_MODEL_TILE_SIZE)
+
+    sentinel = select_fixed_scene_cloud_output(
+        {"sensor": "sentinel-2"},
+        model_output,
+    )
+    balkan = select_fixed_scene_cloud_output(
+        {"sensor": "balkan-1"},
+        model_output,
+    )
+
+    core_end = CLOUD_MODEL_HALO + CLOUD_MODEL_CORE_SIZE
+    np.testing.assert_array_equal(
+        sentinel,
+        model_output[
+            CLOUD_MODEL_HALO:core_end,
+            CLOUD_MODEL_HALO:core_end,
+        ],
+    )
+    assert sentinel.shape == (700, 700)
+    assert balkan is model_output

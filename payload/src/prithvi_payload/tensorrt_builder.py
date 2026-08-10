@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import gc
+import hashlib
 import json
 import math
 import os
@@ -31,7 +32,10 @@ from cloud_detection.tensorrt_backend import (
 from prithvi_shared import SELECTED_CHECKPOINT_SHA256
 from torch import Tensor, nn
 
-from prithvi_payload.cloud_profiles import read_fixed_scene_cloud_input
+from prithvi_payload.cloud_profiles import (
+    read_fixed_scene_cloud_input,
+    select_fixed_scene_cloud_output,
+)
 from prithvi_payload.crop_parity import build_crop_parity_inputs
 from prithvi_payload.inference import (
     OPTIMIZED_BATCH_SIZE,
@@ -1069,28 +1073,17 @@ def _tail(path: Path, lines: int = 80) -> str:
         return "<build log unavailable>"
 
 
-def _build_plan(
+def _target_digest(target: dict[str, Any]) -> str:
+    return hashlib.sha256(json.dumps(target, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _trtexec_build_arguments(
     graph: dict[str, Any],
     *,
     name: str,
     precision: str,
     manifest_path: Path,
-    executable: Path,
-    target: dict[str, Any],
-) -> dict[str, Any]:
-    onnx_path = graph["path"]
-    onnx_digest = file_sha256(onnx_path)
-    target_digest = __import__("hashlib").sha256(
-        json.dumps(target, sort_keys=True).encode("utf-8")
-    ).hexdigest()
-    plans_root = manifest_path.parent / "plans"
-    logs_root = manifest_path.parent / "logs"
-    plans_root.mkdir(parents=True, exist_ok=True)
-    logs_root.mkdir(parents=True, exist_ok=True)
-    plan_path = plans_root / f"{name}.{onnx_digest[:12]}.{target_digest[:12]}.plan"
-    build_record_path = plan_path.with_suffix(".build.json")
-    timing_cache = manifest_path.parent / "timing" / f"{name}.{precision}.cache"
-    timing_cache.parent.mkdir(parents=True, exist_ok=True)
+) -> list[str]:
     workspace_mib = int(os.environ.get("VITA_TRT_WORKSPACE_MIB", "4096"))
     if workspace_mib < 256:
         raise TensorRTBuildError("VITA_TRT_WORKSPACE_MIB must be at least 256")
@@ -1101,9 +1094,10 @@ def _build_plan(
         raise TensorRTBuildError(
             "VITA_TRT_BUILDER_OPTIMIZATION_LEVEL must be between 0 and 5"
         )
+    timing_cache = manifest_path.parent / "timing" / f"{name}.{precision}.cache"
+    timing_cache.parent.mkdir(parents=True, exist_ok=True)
     arguments = [
-        str(executable),
-        f"--onnx={onnx_path}",
+        f"--onnx={graph['path']}",
         "--noTF32",
         "--skipInference",
         f"--memPoolSize=workspace:{workspace_mib}",
@@ -1123,11 +1117,39 @@ def _build_plan(
         for key in ("min", "opt", "max"):
             dimensions = "x".join(str(value) for value in profile[key])
             arguments.append(f"--{key}Shapes=image:{dimensions}")
+    return arguments
+
+
+def _build_plan(
+    graph: dict[str, Any],
+    *,
+    name: str,
+    precision: str,
+    manifest_path: Path,
+    executable: Path,
+    target: dict[str, Any],
+) -> dict[str, Any]:
+    onnx_path = graph["path"]
+    onnx_digest = file_sha256(onnx_path)
+    target_digest = _target_digest(target)
+    plans_root = manifest_path.parent / "plans"
+    logs_root = manifest_path.parent / "logs"
+    plans_root.mkdir(parents=True, exist_ok=True)
+    logs_root.mkdir(parents=True, exist_ok=True)
+    plan_path = plans_root / f"{name}.{onnx_digest[:12]}.{target_digest[:12]}.plan"
+    build_record_path = plan_path.with_suffix(".build.json")
+    build_arguments = _trtexec_build_arguments(
+        graph,
+        name=name,
+        precision=precision,
+        manifest_path=manifest_path,
+    )
+    arguments = [str(executable), *build_arguments]
     build_key = {
         "onnx_sha256": onnx_digest,
         "target": target,
         "precision": precision,
-        "arguments": arguments[1:],
+        "arguments": build_arguments,
     }
     if plan_path.is_file() and build_record_path.is_file():
         try:
@@ -1344,6 +1366,102 @@ def _load_reusable_crop_record(
     return dict(record)
 
 
+def _load_reusable_cloud_candidates(
+    manifest_path: Path,
+    *,
+    target: dict[str, Any],
+    precision: str,
+    profiles: list[tuple[int, int]],
+) -> dict[int, dict[str, Any]]:
+    """Recover inert candidates for a new scientific acceptance pass.
+
+    A failed parity pass never publishes these plans. Reuse is allowed only
+    when the ONNX digest, target, build flags, plan digest, and fixed I/O shape
+    all match the current build contract; full source-vs-plan parity still runs
+    before the candidate can enter the accepted manifest.
+    """
+
+    onnx_root = manifest_path.parent / "onnx"
+    plans_root = manifest_path.parent / "plans"
+    target_digest = _target_digest(target)
+    recovered: dict[int, dict[str, Any]] = {}
+    for patch_size, batch_size in profiles:
+        onnx_path = onnx_root / (
+            f"cloud.{OMNICLOUDMASK_ENSEMBLE_SHA256[:12]}."
+            f"b{batch_size}.{patch_size}.{precision}.onnx"
+        )
+        if not onnx_path.is_file():
+            continue
+        try:
+            onnx_digest = file_sha256(onnx_path)
+            plan_path = plans_root / (
+                f"cloud-{patch_size}.{onnx_digest[:12]}.{target_digest[:12]}.plan"
+            )
+            build_record_path = plan_path.with_suffix(".build.json")
+            if not plan_path.is_file() or not build_record_path.is_file():
+                continue
+            cached = json.loads(build_record_path.read_text(encoding="utf-8"))
+            graph = {
+                "path": onnx_path,
+                "batch_size": batch_size,
+                "patch_size": patch_size,
+                "profile": None,
+            }
+            expected_build_key = {
+                "onnx_sha256": onnx_digest,
+                "target": target,
+                "precision": precision,
+                "arguments": _trtexec_build_arguments(
+                    graph,
+                    name=f"cloud-{patch_size}",
+                    precision=precision,
+                    manifest_path=manifest_path,
+                ),
+            }
+            plan_digest = cached.get("plan_sha256")
+            if (
+                cached.get("build_key") != expected_build_key
+                or not isinstance(plan_digest, str)
+                or file_sha256(plan_path) != plan_digest
+            ):
+                continue
+            inputs, outputs = _validate_onnx(
+                onnx_path,
+                expected_inputs=("image",),
+                expected_outputs=("logits",),
+                full_check=False,
+            )
+            expected_dtype = "float16" if precision == "fp16" else "float32"
+            if inputs != [
+                {
+                    "name": "image",
+                    "dtype": expected_dtype,
+                    "shape": [batch_size, 3, patch_size, patch_size],
+                }
+            ]:
+                continue
+        except (OSError, json.JSONDecodeError, TensorRTBuildError):
+            continue
+        recovered[patch_size] = {
+            "plan": _relative_plan_path(manifest_path, plan_path),
+            "plan_sha256": plan_digest,
+            "onnx_sha256": onnx_digest,
+            "precision": precision,
+            "inputs": inputs,
+            "outputs": outputs,
+            "patch_size": patch_size,
+            "logical_min_batch_size": 1,
+            "logical_max_batch_size": batch_size,
+        }
+    if recovered:
+        print(
+            "[tensorrt] revalidating checksum-bound cloud candidate profiles: "
+            + ", ".join(str(value) for value in sorted(recovered)),
+            flush=True,
+        )
+    return recovered
+
+
 def _prune_unaccepted_build_artifacts(
     manifest_path: Path,
     manifest: dict[str, Any],
@@ -1554,9 +1672,17 @@ def _validate_cloud_parity(
                 input_config=runtime.cloud.config["input"],
             )
             backend.models = source_models
-            reference = backend.predict_semantic(image)
+            reference_model_output = backend.predict_semantic(image)
             backend.models = [router]
-            accelerated = backend.predict_semantic(image)
+            accelerated_model_output = backend.predict_semantic(image)
+            reference = select_fixed_scene_cloud_output(
+                profile,
+                reference_model_output,
+            )
+            accelerated = select_fixed_scene_cloud_output(
+                profile,
+                accelerated_model_output,
+            )
             mismatches = int(np.count_nonzero(accelerated != reference))
             pixels = int(reference.size)
             fraction = mismatches / pixels
@@ -1566,6 +1692,13 @@ def _validate_cloud_parity(
                 {
                     "input": scene_input,
                     "patch_size": patch_size,
+                    "model_input_height": int(image.shape[-2]),
+                    "model_input_width": int(image.shape[-1]),
+                    "comparison_region": (
+                        "operational_core"
+                        if profile.get("sensor") == "sentinel-2"
+                        else "complete_analysis_grid"
+                    ),
                     "class_mismatch_fraction": fraction,
                     "mismatch_count": mismatches,
                     "pixel_count": pixels,
@@ -1668,6 +1801,19 @@ def build(manifest_path: Path = DEFAULT_MANIFEST_PATH) -> dict[str, Any]:
         target=target,
         precision=cloud_precision,
         profiles=cloud_profiles,
+    )
+    missing_cloud_profiles = [
+        profile
+        for profile in cloud_profiles
+        if profile[0] not in reusable_cloud_records
+    ]
+    reusable_cloud_records.update(
+        _load_reusable_cloud_candidates(
+            manifest_path,
+            target=target,
+            precision=cloud_precision,
+            profiles=missing_cloud_profiles,
+        )
     )
     missing_cloud_profiles = [
         profile

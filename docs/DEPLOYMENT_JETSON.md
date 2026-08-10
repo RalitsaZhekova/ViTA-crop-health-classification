@@ -38,7 +38,7 @@ The acceleration policy is:
 
 | Stage | MVP execution | Reason |
 |---|---|---|
-| OmniCloudMask ensemble | Direct FP16 TensorRT plans: fixed batch 1 at the operational 1000 px Sentinel tile and batch 4 with exact logical-batch padding at 869/891 px | Offline acceptance derives every fixed-scene patch size, evaluates all four complete scenes, preserves a 0.1% aggregate class-mismatch budget, and caps every scene at 0.2% before publishing any plan |
+| OmniCloudMask ensemble | Direct FP16 TensorRT plans: fixed batch 1 at the operational 1000 px Sentinel tile and batch 4 with exact logical-batch padding at 869/891 px | Offline acceptance derives every fixed-scene patch size, evaluates the complete Balkan grids and the delivered 700 px Sentinel cores, preserves a 0.1% aggregate class-mismatch budget, and caps every scene at 0.2% before publishing any plan |
 | Prithvi crop segmentation | Direct weakly typed mixed-FP16 TensorRT plan, FP32 I/O, TF32 disabled, fixed batch 16 | Offline acceptance compares balanced real-scene tiles with the established CUDA-autocast FP16 source using unchanged 0.2% decision and 0.5% mean-probability gates; logits and thresholds are not calibrated or altered |
 | Balkan 10 m preparation | Embedded overview read, one multiband average GDAL warp, checksum-keyed persistent grid | Avoids decoding four full-resolution bands separately while preserving the existing 10 m UTM, band-order, nodata, and reflectance contracts |
 | Health indices and packaging | Exact vectorized NumPy statistics in RAM, concurrent RGB/overlay/grid/codec work | Routine runs avoid non-downlinked science rasters; lossless PNG level 1 and WebP method 0 favor the two-second latency contract |

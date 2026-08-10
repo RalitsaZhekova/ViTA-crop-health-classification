@@ -37,3 +37,24 @@ def read_fixed_scene_cloud_input(profile: dict[str, Any]) -> np.ndarray:
                 halo=CLOUD_MODEL_HALO,
             )
         return source.read(profile["source_band_indices"])
+
+
+def select_fixed_scene_cloud_output(
+    profile: dict[str, Any],
+    values: np.ndarray,
+) -> np.ndarray:
+    """Select the pixels delivered by the operational executor for parity."""
+
+    output = np.asarray(values)
+    if profile.get("sensor") != "sentinel-2":
+        return output
+    if output.shape[-2:] != (CLOUD_MODEL_TILE_SIZE, CLOUD_MODEL_TILE_SIZE):
+        raise ValueError(
+            "Sentinel cloud parity requires the operational 1000 px model output"
+        )
+    core_end = CLOUD_MODEL_HALO + CLOUD_MODEL_CORE_SIZE
+    return output[
+        ...,
+        CLOUD_MODEL_HALO:core_end,
+        CLOUD_MODEL_HALO:core_end,
+    ]
