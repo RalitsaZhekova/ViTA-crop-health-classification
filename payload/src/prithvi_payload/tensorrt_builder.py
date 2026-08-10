@@ -52,6 +52,16 @@ _EXPECTED_CROP_CANONICALIZATION = {
     "sequence_gathers": 36,
     "split_sequences_removed": 12,
 }
+_EXPECTED_CLOUD_CANONICALIZATION = {
+    "layer_norm_aux_outputs_removed": 50,
+    "matmul_wrappers_removed": 6,
+    "pow_base_casts": 1,
+    "reduce_axes_initializers": 16,
+    "sequence_gathers": 9,
+    "sequence_slices": 9,
+    "split_sequences_removed": 6,
+    "vector_norm_wrappers_removed": 6,
+}
 
 
 class TensorRTBuildError(RuntimeError):
@@ -613,6 +623,277 @@ def _canonicalize_crop_onnx(
     return stats
 
 
+def _canonicalize_cloud_onnx(
+    path: Path,
+    *,
+    expected: dict[str, int] | None = None,
+) -> dict[str, int]:
+    """Lower the pinned fixed-batch OmniCloudMask export to TensorRT 10.8 ONNX."""
+
+    import onnx
+    from onnx import helper, inliner, numpy_helper
+
+    model = onnx.load(str(path), load_external_data=True)
+    value_specs = {
+        value.name: value
+        for value in [
+            *model.graph.input,
+            *model.graph.value_info,
+            *model.graph.output,
+        ]
+    }
+    evaluate = _onnx_constant_evaluator(model)
+    stats = {
+        "layer_norm_aux_outputs_removed": 0,
+        "matmul_wrappers_removed": 0,
+        "pow_base_casts": 0,
+        "reduce_axes_initializers": 0,
+        "sequence_gathers": 0,
+        "sequence_slices": 0,
+        "split_sequences_removed": 0,
+        "vector_norm_wrappers_removed": 0,
+    }
+
+    # ONNX Script's generic wrappers branch over scalar cases. Every pinned
+    # attention operand has a recorded rank >= 2, and every vector norm is the
+    # fixed ord=2/keepdim form, so the corresponding standard ONNX nodes are
+    # exactly equivalent and avoid unsupported control-flow branches.
+    preinline_nodes = []
+    for index, node in enumerate(model.graph.node):
+        if node.domain == "pkg.onnxscript.torch_lib" and node.op_type == "aten_matmul":
+            ranks = []
+            for name in node.input:
+                value = value_specs.get(name)
+                ranks.append(
+                    len(value.type.tensor_type.shape.dim) if value is not None else -1
+                )
+            if len(ranks) != 2 or any(rank < 2 for rank in ranks):
+                raise TensorRTBuildError(
+                    f"Cloud matmul at {node.name} is not a recorded rank>=2 operation: {ranks}"
+                )
+            preinline_nodes.append(
+                helper.make_node(
+                    "MatMul",
+                    list(node.input),
+                    list(node.output),
+                    name=f"{node.name}_ranked",
+                )
+            )
+            stats["matmul_wrappers_removed"] += 1
+            continue
+        if (
+            node.domain == "pkg.onnxscript.torch_lib"
+            and node.op_type == "_aten_linalg_vector_norm_onnx"
+        ):
+            attributes = {
+                attribute.name: helper.get_attribute_value(attribute)
+                for attribute in node.attribute
+            }
+            value = value_specs.get(node.input[0])
+            rank = len(value.type.tensor_type.shape.dim) if value is not None else -1
+            axes = np.asarray(evaluate(node.input[1]), dtype=np.int64).reshape(-1)
+            if (
+                float(attributes.get("ord", math.nan)) != 2.0
+                or int(attributes.get("keepdim", -1)) != 1
+                or rank < 1
+                or axes.size == 0
+                or any(not -rank <= int(axis) < rank for axis in axes)
+            ):
+                raise TensorRTBuildError(
+                    f"Cloud vector norm at {node.name} is not the pinned rank/ord/axes form"
+                )
+            axes_name = f"{node.name}_axes_{index}"
+            model.graph.initializer.append(
+                numpy_helper.from_array(axes, name=axes_name)
+            )
+            preinline_nodes.append(
+                helper.make_node(
+                    "ReduceL2",
+                    [node.input[0], axes_name],
+                    list(node.output),
+                    name=f"{node.name}_reduce_l2",
+                    keepdims=1,
+                )
+            )
+            stats["vector_norm_wrappers_removed"] += 1
+            continue
+        preinline_nodes.append(node)
+    del model.graph.node[:]
+    model.graph.node.extend(preinline_nodes)
+
+    model = inliner.inline_local_functions(model)
+    custom_nodes = [
+        f"{node.domain}::{node.op_type}" for node in model.graph.node if node.domain
+    ]
+    if model.functions or custom_nodes:
+        raise TensorRTBuildError(
+            "Cloud ONNX local-function inlining was incomplete: "
+            f"functions={len(model.functions)}, custom_nodes={sorted(set(custom_nodes))}"
+        )
+
+    users: dict[str, list[Any]] = {}
+    for node in model.graph.node:
+        for name in node.input:
+            users.setdefault(name, []).append(node)
+    graph_outputs = {output.name for output in model.graph.output}
+    for node in model.graph.node:
+        if node.op_type != "LayerNormalization" or len(node.output) <= 1:
+            continue
+        auxiliary = list(node.output[1:])
+        if any(users.get(name) or name in graph_outputs for name in auxiliary):
+            raise TensorRTBuildError(
+                f"Cloud LayerNormalization auxiliary output is used at {node.name}"
+            )
+        stats["layer_norm_aux_outputs_removed"] += len(auxiliary)
+        del node.output[1:]
+
+    evaluate = _onnx_constant_evaluator(model)
+    split_sources: dict[str, tuple[str, int, int, int]] = {}
+    for node in model.graph.node:
+        if node.op_type != "SplitToSequence":
+            continue
+        attributes = {
+            attribute.name: helper.get_attribute_value(attribute)
+            for attribute in node.attribute
+        }
+        if len(node.input) != 2:
+            raise TensorRTBuildError(
+                f"Unexpected cloud SplitToSequence signature at {node.name}"
+            )
+        split = np.asarray(evaluate(node.input[1])).reshape(-1)
+        keepdims = int(attributes.get("keepdims", 1))
+        if split.size != 1 or int(split.item()) <= 0 or keepdims not in (0, 1):
+            raise TensorRTBuildError(
+                f"Unexpected cloud SplitToSequence contract at {node.name}"
+            )
+        sequence_name = node.output[0]
+        if sequence_name in graph_outputs or any(
+            user.op_type != "SequenceAt" for user in users.get(sequence_name, [])
+        ):
+            raise TensorRTBuildError(
+                f"Cloud sequence {sequence_name} has unsupported consumers"
+            )
+        split_sources[sequence_name] = (
+            node.input[0],
+            int(attributes.get("axis", 0)),
+            keepdims,
+            int(split.item()),
+        )
+
+    rewritten_nodes = []
+    for index, node in enumerate(model.graph.node):
+        if node.op_type == "SplitToSequence" and node.output[0] in split_sources:
+            stats["split_sequences_removed"] += 1
+            continue
+        if node.op_type == "SequenceAt" and node.input[0] in split_sources:
+            data, axis, keepdims, split_size = split_sources[node.input[0]]
+            item_array = np.asarray(evaluate(node.input[1]))
+            if item_array.size != 1 or int(item_array.item()) < 0:
+                raise TensorRTBuildError(
+                    f"Cloud SequenceAt index is not a non-negative scalar at {node.name}"
+                )
+            item = int(item_array.item())
+            if keepdims == 0:
+                rewritten_nodes.append(
+                    helper.make_node(
+                        "Gather",
+                        [data, node.input[1]],
+                        list(node.output),
+                        name=f"{node.name}_direct_gather",
+                        axis=axis,
+                    )
+                )
+                stats["sequence_gathers"] += 1
+            else:
+                values = {
+                    "starts": [item * split_size],
+                    "ends": [(item + 1) * split_size],
+                    "axes": [axis],
+                    "steps": [1],
+                }
+                inputs = [data]
+                for kind, value in values.items():
+                    name = f"{node.name}_{kind}_{index}"
+                    model.graph.initializer.append(
+                        numpy_helper.from_array(
+                            np.asarray(value, dtype=np.int64),
+                            name=name,
+                        )
+                    )
+                    inputs.append(name)
+                rewritten_nodes.append(
+                    helper.make_node(
+                        "Slice",
+                        inputs,
+                        list(node.output),
+                        name=f"{node.name}_direct_slice",
+                    )
+                )
+                stats["sequence_slices"] += 1
+            continue
+        if node.op_type == "Pow":
+            cast_output = f"{node.input[0]}__pow_castlike__{index}"
+            rewritten_nodes.append(
+                helper.make_node(
+                    "CastLike",
+                    [node.input[0], node.input[1]],
+                    [cast_output],
+                    name=f"{node.name}_base_castlike",
+                )
+            )
+            node.input[0] = cast_output
+            stats["pow_base_casts"] += 1
+        rewritten_nodes.append(node)
+    del model.graph.node[:]
+    model.graph.node.extend(rewritten_nodes)
+
+    evaluate = _onnx_constant_evaluator(model)
+    initializer_names = {initializer.name for initializer in model.graph.initializer}
+    for index, node in enumerate(model.graph.node):
+        if (
+            not node.op_type.startswith("Reduce")
+            or len(node.input) < 2
+            or not node.input[1]
+            or node.input[1] in initializer_names
+        ):
+            continue
+        try:
+            axes = np.asarray(evaluate(node.input[1]), dtype=np.int64)
+        except TensorRTBuildError:
+            continue
+        name = f"{node.input[1]}__trt_initializer_{index}"
+        model.graph.initializer.append(numpy_helper.from_array(axes, name=name))
+        initializer_names.add(name)
+        node.input[1] = name
+        stats["reduce_axes_initializers"] += 1
+
+    _remove_dead_onnx_nodes(model)
+    del model.graph.value_info[:]
+    remaining_sequences = sorted(
+        {node.op_type for node in model.graph.node if "Sequence" in node.op_type}
+    )
+    if remaining_sequences:
+        raise TensorRTBuildError(
+            f"Cloud ONNX still contains sequence operators: {remaining_sequences}"
+        )
+
+    required = _EXPECTED_CLOUD_CANONICALIZATION if expected is None else expected
+    if stats != required:
+        raise TensorRTBuildError(
+            "Cloud ONNX export does not match the pinned canonicalization contract: "
+            f"observed={stats}, expected={required}"
+        )
+
+    onnx.checker.check_model(model, full_check=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.canonical.tmp")
+    try:
+        onnx.save_model(model, str(temporary), save_as_external_data=False)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return stats
+
+
 def _exception_summary(error: BaseException) -> str:
     parts: list[str] = []
     current: BaseException | None = error
@@ -630,7 +911,10 @@ def _export_program_to_onnx(
     input_names: tuple[str, ...],
     output_names: tuple[str, ...],
     canonicalize_crop: bool = False,
+    canonicalize_cloud: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if canonicalize_crop and canonicalize_cloud:
+        raise TensorRTBuildError("An ONNX graph cannot use two canonicalization contracts")
     print(f"[onnx] exporting {path.name}", flush=True)
     try:
         program = torch.onnx.export(
@@ -658,6 +942,12 @@ def _export_program_to_onnx(
                 f"[onnx] canonicalized crop graph: {canonicalization}",
                 flush=True,
             )
+        if canonicalize_cloud:
+            canonicalization = _canonicalize_cloud_onnx(path)
+            print(
+                f"[onnx] canonicalized cloud graph: {canonicalization}",
+                flush=True,
+            )
     except Exception as error:
         raise TensorRTBuildError(
             f"PyTorch ONNX export failed for {path}: {_exception_summary(error)}"
@@ -666,7 +956,7 @@ def _export_program_to_onnx(
         path,
         expected_inputs=input_names,
         expected_outputs=output_names,
-        full_check=not canonicalize_crop,
+        full_check=not (canonicalize_crop or canonicalize_cloud),
     )
 
 
@@ -696,21 +986,15 @@ def _export_cloud_onnx(
     batch_size: int,
     patch_size: int,
     dtype: torch.dtype,
-    dynamic_batch: bool,
 ) -> dict[str, Any]:
     sample = torch.zeros(
         (batch_size, 3, patch_size, patch_size),
         device="cuda",
         dtype=dtype,
     )
-    dynamic_shapes = None
-    if dynamic_batch:
-        batch = torch.export.Dim("batch", min=1, max=batch_size)
-        dynamic_shapes = ({0: batch},)
     exported = torch.export.export(
         source,
         (sample,),
-        dynamic_shapes=dynamic_shapes,
         strict=False,
     )
     removed = _remove_zero_channel_cat_noops(exported)
@@ -724,22 +1008,16 @@ def _export_cloud_onnx(
         path,
         input_names=("image",),
         output_names=("logits",),
+        canonicalize_cloud=True,
     )
-    profile = None
-    if dynamic_batch:
-        profile = {
-            "min": [1, 3, patch_size, patch_size],
-            "opt": [batch_size, 3, patch_size, patch_size],
-            "max": [batch_size, 3, patch_size, patch_size],
-        }
-        input_specs[0]["profile"] = profile
     del sample
     return {
         "path": path,
         "inputs": input_specs,
         "outputs": output_specs,
+        "batch_size": batch_size,
         "patch_size": patch_size,
-        "profile": profile,
+        "profile": None,
     }
 
 
@@ -1064,7 +1342,6 @@ def build(manifest_path: Path = DEFAULT_MANIFEST_PATH) -> dict[str, Any]:
             batch_size=int(os.environ.get("VITA_CLOUD_BATCH_SIZE", "4")),
             patch_size=869,
             dtype=cloud_dtype,
-            dynamic_batch=True,
         ),
         _export_cloud_onnx(
             cloud_source,
@@ -1076,7 +1353,6 @@ def build(manifest_path: Path = DEFAULT_MANIFEST_PATH) -> dict[str, Any]:
             batch_size=1,
             patch_size=1000,
             dtype=cloud_dtype,
-            dynamic_batch=False,
         ),
     ]
 
@@ -1129,6 +1405,8 @@ def build(manifest_path: Path = DEFAULT_MANIFEST_PATH) -> dict[str, Any]:
                     precision=cloud_precision,
                 ),
                 "patch_size": built["patch_size"],
+                "logical_min_batch_size": 1,
+                "logical_max_batch_size": built["batch_size"],
             }
         )
 

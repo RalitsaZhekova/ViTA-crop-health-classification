@@ -112,6 +112,7 @@ class CloudTensorRTRouter(nn.Module):
         expected_precision = "fp16" if dtype == torch.float16 else "fp32"
         self._plans: dict[tuple[int, int], NativeTensorRTPlan] = {}
         self._records: dict[tuple[int, int], dict[str, Any]] = {}
+        self._batch_contracts: dict[tuple[int, int], tuple[int, int, int]] = {}
         self._used_profiles: set[tuple[int, int, int]] = set()
         self._lock = threading.Lock()
         for record in records:
@@ -129,12 +130,31 @@ class CloudTensorRTRouter(nn.Module):
                 raise TensorRTArtifactError(
                     f"Duplicate cloud TensorRT plan for {patch_size}px patches"
                 )
-            self._plans[key] = NativeTensorRTPlan(
+            plan = NativeTensorRTPlan(
                 record,
                 manifest_path=manifest_path,
                 device=device,
             )
+            physical_batch_size = int(plan.input_specs[0]["shape"][0])
+            minimum_batch_size = record.get("logical_min_batch_size")
+            maximum_batch_size = record.get("logical_max_batch_size")
+            if (
+                physical_batch_size < 1
+                or not isinstance(minimum_batch_size, int)
+                or not isinstance(maximum_batch_size, int)
+                or not 1 <= minimum_batch_size <= maximum_batch_size
+                or maximum_batch_size > physical_batch_size
+            ):
+                raise TensorRTArtifactError(
+                    f"Cloud TensorRT batch contract is invalid for {patch_size}px"
+                )
+            self._plans[key] = plan
             self._records[key] = record
+            self._batch_contracts[key] = (
+                minimum_batch_size,
+                maximum_batch_size,
+                physical_batch_size,
+            )
         if not self._plans:
             raise TensorRTArtifactError("No accepted cloud TensorRT plans were supplied")
 
@@ -147,17 +167,12 @@ class CloudTensorRTRouter(nn.Module):
         profiles: list[dict[str, Any]] = []
         for key in sorted(self._records):
             record = self._records[key]
-            profile = record["inputs"][0].get("profile")
-            static_batch_size = record["inputs"][0]["shape"][0]
+            minimum_batch_size, maximum_batch_size, _ = self._batch_contracts[key]
             profiles.append(
                 {
                     "patch_size": record["patch_size"],
-                    "minimum_batch_size": (
-                        profile["min"][0] if profile else static_batch_size
-                    ),
-                    "maximum_batch_size": (
-                        profile["max"][0] if profile else static_batch_size
-                    ),
+                    "minimum_batch_size": minimum_batch_size,
+                    "maximum_batch_size": maximum_batch_size,
                     "engine_count": 1,
                     "precision": record["precision"],
                     "plan_sha256": record["plan_sha256"],
@@ -181,11 +196,29 @@ class CloudTensorRTRouter(nn.Module):
                 "Cloud TensorRT has no accepted plan for "
                 f"batch={batch_size}, height={height}, width={width}"
             )
+        contract = getattr(self, "_batch_contracts", {}).get((height, width))
+        if contract is None:
+            # Compatibility for lightweight unit-test plans without manifest specs.
+            contract = (batch_size, batch_size, batch_size)
+        minimum_batch_size, maximum_batch_size, physical_batch_size = contract
+        if not minimum_batch_size <= batch_size <= maximum_batch_size:
+            raise RuntimeError(
+                "Cloud TensorRT batch is outside the accepted contract: "
+                f"{batch_size} not in {minimum_batch_size}..{maximum_batch_size}"
+            )
         with self._lock:
             self._used_profiles.add((batch_size, height, width))
+        if batch_size < physical_batch_size:
+            padding = physical_batch_size - batch_size
+            image = torch.cat(
+                (image, image[-1:].expand(padding, -1, -1, -1)),
+                dim=0,
+            )
         output = plan(image)
         if not isinstance(output, Tensor):
             raise RuntimeError("Cloud TensorRT plan returned multiple outputs")
+        if batch_size < physical_batch_size:
+            output = output[:batch_size]
         return output
 
     def freeze(self) -> None:

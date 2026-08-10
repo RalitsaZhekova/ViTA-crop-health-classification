@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 
+import pytest
 import torch
 from cloud_detection.tensorrt_backend import (
     CloudTensorRTRouter,
@@ -23,6 +24,17 @@ class _Scale(nn.Module):
         self.value = value
 
     def forward(self, image: torch.Tensor) -> torch.Tensor:
+        return image * self.value
+
+
+class _FixedBatchScale(nn.Module):
+    def __init__(self, batch_size: int, value: float) -> None:
+        super().__init__()
+        self.batch_size = batch_size
+        self.value = value
+
+    def forward(self, image: torch.Tensor) -> torch.Tensor:
+        assert image.shape[0] == self.batch_size
         return image * self.value
 
 
@@ -94,3 +106,32 @@ def test_cloud_tensorrt_router_uses_module_forward_dispatch() -> None:
 
     torch.testing.assert_close(router(image), image * 2.0)
     assert router._used_profiles == {(1, 8, 8)}
+
+
+def test_cloud_tensorrt_router_pads_to_fixed_engine_batch_and_slices_output() -> None:
+    router = _empty_router()
+    router._plans = {(8, 8): _FixedBatchScale(4, 2.0)}
+    router._batch_contracts = {(8, 8): (1, 4, 4)}
+    router._used_profiles = set()
+    router._lock = threading.Lock()
+    image = torch.arange(2 * 3 * 8 * 8, dtype=torch.float32).reshape(2, 3, 8, 8)
+
+    output = router(image)
+
+    assert output.shape == image.shape
+    torch.testing.assert_close(output, image * 2.0)
+    assert router._used_profiles == {(2, 8, 8)}
+
+
+def test_cloud_tensorrt_router_rejects_batch_outside_manifest_contract() -> None:
+    router = _empty_router()
+    router._plans = {(8, 8): _FixedBatchScale(4, 2.0)}
+    router._batch_contracts = {(8, 8): (1, 4, 4)}
+    router._used_profiles = set()
+    router._lock = threading.Lock()
+
+    with torch.no_grad(), pytest.raises(
+        RuntimeError,
+        match="outside the accepted contract",
+    ):
+        router(torch.ones((5, 3, 8, 8)))
