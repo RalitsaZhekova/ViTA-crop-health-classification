@@ -109,8 +109,10 @@ execution state.
    shared-grid caches. The former singular variable remains supported for local use.
 4. It loads the two OmniCloudMask ensemble checkpoints once.
 5. It loads the selected Prithvi crop model once on native CUDA.
-6. It warms the resident FP16 cloud ensemble, all four exact cloud paths, and the
-   fixed FP32 crop batch directly on CUDA. No production model compiler runs here.
+6. It warms every accepted FP16 cloud TensorRT shape and the fixed batch-16
+   mixed-FP16 crop TensorRT path directly on CUDA. The 700 px Sentinel plan is
+   physically batch 1; the 869/891 px Balkan plans are batch 4. No production
+   model compiler runs here.
 7. Only then does `/healthz` report `status: ready`. Readiness includes a tiny
    synchronized CUDA operation on the model worker, so a stale context after a
    laptop sleep, driver reset, or GPU switch is detected before a job starts.
@@ -292,8 +294,8 @@ accepted requests. `/healthz` exposes startup costs separately.
 
 ### Explicit warmup and correct warmup shapes
 
-Cloud warmup includes batch 1 at 1,000 pixels plus batches 1 and 4 at the reviewed
-700, 869, and 891 pixel scene sizes. Crop warmup uses fixed batch 16 at 224×224. The crop model runs before
+Cloud warmup follows the physical accepted plans exactly: batch 1 at 700 pixels and
+batches 1 and 4 at 869/891 pixels. Crop warmup uses fixed batch 16 at 224×224. The crop model runs before
 the final exact cloud warmups because it can displace convolution/workspace state.
 Warmup predictions are discarded; no scientific output is cached as a substitute for
 inference.
@@ -305,24 +307,30 @@ lock returns HTTP 409 for concurrent work instead of letting two GPU pipelines c
 This eliminated severe first-request and multi-process timing variance observed during
 local validation.
 
-### Direct FP32 cloud TensorRT, semantic-only inference, and batching
+### Direct FP16 cloud TensorRT, semantic-only inference, and batching
 
-The reviewed two-model mean-logit ensemble is exported and compiled offline into four
+The reviewed two-model mean-logit ensemble is exported and compiled offline into three
 fixed-shape native TensorRT plans. The builder derives the 700, 869, and 891 pixel
-scene profiles with OmniCloudMask's own no-data rule and retains the 1,000 pixel base
-profile. Fixed batch-4 scene plans pad logical batches 1-3 by repeating the final
-sample and discard the padded outputs. `predict_semantic()` returns only class IDs to
-the CPU. The service loads only checksum-sealed plans that passed all four real-scene
-comparisons against the source model; it never compiles during startup or requests.
+scene profiles with OmniCloudMask's own no-data rule. The 700 px profile is fixed
+batch 1 because each Sentinel scene is exactly one
+patch; this avoids executing three synthetic padded copies. The 869/891 px Balkan
+profiles remain fixed batch 4, padding only their final logical batch. The unused
+1,000 px base profile is deliberately not built for the checksum-pinned release.
+`predict_semantic()` returns only class IDs to the CPU. The service loads only
+checksum-sealed FP16 plans that passed all four real-scene
+comparisons against the FP16 PyTorch source; it never compiles during startup or
+requests.
 
 ### Prithvi fixed batching through direct TensorRT
 
 Crop tiles run in batches of 16 on Orin. The final short batch is padded to the same
-static shape and only real outputs are retained. The exact exported FP32 Prithvi graph
-runs through one native TensorRT plan with TF32 disabled. The offline builder compares
-balanced real-scene tiles against the unchanged PyTorch model and publishes the plan
-only when both the 0.2% decision-mismatch and 0.5% mean-probability gates pass. No
-calibration or relaxed tolerance is applied.
+static shape and only real outputs are retained. The exported Prithvi graph keeps FP32
+inputs and outputs, while TensorRT's weakly typed FP16 mode selects FP16 tactics for
+supported internal layers and retains higher precision where required. TF32 remains
+disabled. The offline builder compares balanced real-scene tiles against the existing
+PyTorch CUDA-autocast FP16 execution and publishes the plan only when both the 0.2%
+decision-mismatch and 0.5% mean-probability gates pass. No calibration or relaxed
+tolerance is applied.
 
 ### One Balkan grid instead of repeated preprocessing
 
@@ -451,9 +459,10 @@ The next local command recreates the necessary runtime layout.
 - The factor-4 Balkan overview path is an MVP speed/accuracy trade, not bitwise
   equivalence to full-resolution averaging; measured parity and limitations are
   recorded in the Jetson guide.
-- FP16 and any future compiler backend require comparison against the FP32/PyTorch
-  reference on the same scenes; production currently uses native FP16 CUDA for cloud
-  and native FP32 CUDA for crop.
+- Every TensorRT precision/profile candidate is compared with its operational PyTorch
+  reference on the same scenes before publication: FP16 for cloud and CUDA-autocast
+  FP16 for crop. Candidate plans cannot replace the checksum-sealed manifest until all
+  scientific gates pass.
 - INT8/quantization remains disabled until a representative calibration dataset and
   mission tolerance exist. The optional ModelOpt warning does not affect FP16.
 - The two-second target applies to a ready payload and the approved four-scene image-size

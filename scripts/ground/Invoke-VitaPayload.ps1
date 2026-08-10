@@ -200,6 +200,7 @@ if (-not $SkipDashboard) {
     payload_seconds = $response.payload_seconds
     under_two_seconds = $response.under_two_seconds
     under_five_seconds = $response.under_five_seconds
+    pipeline_timing_seconds = $response.pipeline_timing_seconds
     acceleration = $response.stack
     downlink = $downlinkRoot
     ingest = $ingest

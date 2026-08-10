@@ -289,14 +289,26 @@ class OmniCloudMaskBackend:
 
     def warmup(self, additional_patch_sizes: tuple[int, ...] = ()) -> list[dict[str, int]]:
         """Warm the CUDA convolution profiles used by the fixed MVP scenes."""
-        profiles = {(1, self.patch_size)}
-        for patch_size in additional_patch_sizes:
-            if patch_size < 32 or patch_size > self.patch_size:
+        if self._tensorrt_router is not None:
+            profiles = set(self._tensorrt_router.warmup_profiles)
+            accepted_sizes = {patch_size for _, patch_size in profiles}
+            requested_sizes = set(additional_patch_sizes)
+            if requested_sizes != accepted_sizes:
                 raise BackendError(
-                    f"Cloud warmup patch size must be in 32..{self.patch_size}, got {patch_size}."
+                    "Cloud TensorRT warmup sizes do not match the accepted plans: "
+                    f"requested={sorted(requested_sizes)}, "
+                    f"accepted={sorted(accepted_sizes)}"
                 )
-            profiles.add((1, patch_size))
-            profiles.add((self.batch_size, patch_size))
+        else:
+            profiles = {(1, self.patch_size)}
+            for patch_size in additional_patch_sizes:
+                if patch_size < 32 or patch_size > self.patch_size:
+                    raise BackendError(
+                        "Cloud warmup patch size must be in "
+                        f"32..{self.patch_size}, got {patch_size}."
+                    )
+                profiles.add((1, patch_size))
+                profiles.add((self.batch_size, patch_size))
 
         with self.torch.inference_mode():
             for batch_size, patch_size in sorted(profiles):

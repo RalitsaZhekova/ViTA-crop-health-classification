@@ -454,12 +454,9 @@ class PayloadRuntime:
                 int(profile["patch_size"])
                 for profile in self.cloud.backend.tensorrt_profiles
             }
-            base_patch_size = int(self.cloud.backend.patch_size)
-            if base_patch_size not in accepted_sizes:
-                raise RuntimeError(
-                    "Accepted cloud TensorRT plans omit the base warmup patch size"
-                )
-            patch_sizes = tuple(sorted(accepted_sizes - {base_patch_size}))
+            if not accepted_sizes:
+                raise RuntimeError("Accepted cloud TensorRT plans have no warmup shapes")
+            patch_sizes = tuple(sorted(accepted_sizes))
         else:
             raw_patch_sizes = os.environ.get(
                 "VITA_CLOUD_WARMUP_PATCH_SIZES",

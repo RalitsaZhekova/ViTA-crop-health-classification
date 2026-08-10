@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 from prithvi_payload.performance_acceptance import (
     _remove_acceptance_output,
     _requests,
+    _write_report_atomic,
 )
 
 
@@ -35,6 +38,21 @@ def test_performance_acceptance_removes_only_its_exact_run(tmp_path, monkeypatch
 
     assert not acceptance.exists()
     assert retained.is_dir()
+
+
+def test_performance_acceptance_persists_release_evidence_atomically(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    runs = tmp_path / "runs"
+    monkeypatch.setenv("VITA_OUTPUT_ROOT", str(runs))
+    report = {"status": "UNDER_TWO_SECONDS", "scenes": []}
+
+    path = _write_report_atomic(report)
+
+    assert path == tmp_path / "performance-acceptance.json"
+    assert json.loads(path.read_text(encoding="utf-8")) == report
+    assert not list(tmp_path.glob("*.tmp"))
 
 
 @pytest.mark.parametrize("job_id", ["operator-job", "accept-../operator-job"])

@@ -20,6 +20,7 @@ import torch
 from cloud_detection.backend import OMNICLOUDMASK_ENSEMBLE_SHA256
 from cloud_detection.tensorrt_backend import (
     REVIEWED_CLOUD_BASE_PATCH_SIZE,
+    REVIEWED_CLOUD_SCENE_BATCH_SIZES,
     REVIEWED_CLOUD_SCENE_PATCH_SIZES,
     CloudTensorRTRouter,
     _CloudEnsemble,
@@ -91,6 +92,15 @@ def _precision_dtype(value: str, *, name: str) -> torch.dtype:
     if normalized == "fp16":
         return torch.float16
     raise TensorRTBuildError(f"{name} must be fp32 or fp16")
+
+
+def _crop_precision(value: str) -> str:
+    normalized = value.strip().casefold()
+    if normalized not in {"fp32", "mixed-fp16"}:
+        raise TensorRTBuildError(
+            "VITA_CROP_TRT_PRECISION must be fp32 or mixed-fp16"
+        )
+    return normalized
 
 
 def _load_source_runtime(cloud_precision: str) -> Any:
@@ -167,6 +177,8 @@ def _validate_trtexec(executable: Path) -> str:
         "--memPoolSize",
         "--timingCacheFile",
         "--noTF32",
+        "--fp16",
+        "--builderOptimizationLevel",
     )
     missing = [flag for flag in required if flag not in help_text]
     if result.returncode != 0 or missing:
@@ -1073,20 +1085,35 @@ def _build_plan(
     logs_root.mkdir(parents=True, exist_ok=True)
     plan_path = plans_root / f"{name}.{onnx_digest[:12]}.{target_digest[:12]}.plan"
     build_record_path = plan_path.with_suffix(".build.json")
-    timing_cache = manifest_path.parent / "timing" / f"{name}.cache"
+    timing_cache = manifest_path.parent / "timing" / f"{name}.{precision}.cache"
     timing_cache.parent.mkdir(parents=True, exist_ok=True)
     workspace_mib = int(os.environ.get("VITA_TRT_WORKSPACE_MIB", "4096"))
     if workspace_mib < 256:
         raise TensorRTBuildError("VITA_TRT_WORKSPACE_MIB must be at least 256")
+    builder_optimization_level = int(
+        os.environ.get("VITA_TRT_BUILDER_OPTIMIZATION_LEVEL", "5")
+    )
+    if not 0 <= builder_optimization_level <= 5:
+        raise TensorRTBuildError(
+            "VITA_TRT_BUILDER_OPTIMIZATION_LEVEL must be between 0 and 5"
+        )
     arguments = [
         str(executable),
         f"--onnx={onnx_path}",
-        "--stronglyTyped",
         "--noTF32",
         "--skipInference",
         f"--memPoolSize=workspace:{workspace_mib}",
         f"--timingCacheFile={timing_cache}",
+        f"--builderOptimizationLevel={builder_optimization_level}",
     ]
+    if precision == "mixed-fp16":
+        # TensorRT 10.8 weak typing retains the FP32 ONNX I/O contract while
+        # selecting FP16 tactics internally where supported. This mirrors the
+        # established PyTorch CUDA autocast execution used by the operational
+        # baseline without converting numerically sensitive unsupported layers.
+        arguments.append("--fp16")
+    else:
+        arguments.append("--stronglyTyped")
     profile = graph.get("profile")
     if profile:
         for key in ("min", "opt", "max"):
@@ -1176,7 +1203,8 @@ def _validate_crop_parity(
     *,
     manifest_path: Path,
     profiles: list[dict[str, Any]],
-) -> dict[str, float]:
+    precision: str,
+) -> dict[str, Any]:
     batch = build_crop_parity_inputs(profiles, batch_size=OPTIMIZED_BATCH_SIZE)
     image, temporal, location, thresholds, valid_mask = [value.cuda() for value in batch]
     runner = NativeTensorRTPlan(
@@ -1184,8 +1212,14 @@ def _validate_crop_parity(
         manifest_path=manifest_path,
         device=torch.device("cuda"),
     )
-    with torch.inference_mode():
+    reference_context = (
+        torch.autocast(device_type="cuda", dtype=torch.float16)
+        if precision == "mixed-fp16"
+        else contextlib.nullcontext()
+    )
+    with torch.inference_mode(), reference_context:
         reference = source(image, temporal, location)
+    with torch.inference_mode():
         accelerated = runner(image, temporal, location)
     if not isinstance(accelerated, Tensor) or accelerated.shape != reference.shape:
         raise TensorRTBuildError("Crop TensorRT output contract does not match PyTorch")
@@ -1207,6 +1241,11 @@ def _validate_crop_parity(
     absolute_error = (accelerated_probability - reference_probability).abs()[valid]
     mean_error = float(absolute_error.mean().item())
     parity = {
+        "reference": (
+            "pytorch_cuda_autocast_fp16"
+            if precision == "mixed-fp16"
+            else "pytorch_cuda_fp32"
+        ),
         "class_mismatch_fraction": mismatch,
         "mean_absolute_probability_error": mean_error,
         "maximum_absolute_probability_error": float(absolute_error.max().item()),
@@ -1372,14 +1411,11 @@ def build(manifest_path: Path = DEFAULT_MANIFEST_PATH) -> dict[str, Any]:
     target = current_target_signature()
     executable = _find_trtexec()
     trtexec_record = _validate_trtexec(executable)
-    crop_precision = os.environ.get("VITA_CROP_TRT_PRECISION", "fp32").strip().casefold()
-    cloud_precision = os.environ.get("VITA_CLOUD_TRT_PRECISION", "fp32").strip().casefold()
-    crop_dtype = _precision_dtype(crop_precision, name="VITA_CROP_TRT_PRECISION")
+    crop_precision = _crop_precision(
+        os.environ.get("VITA_CROP_TRT_PRECISION", "mixed-fp16")
+    )
+    cloud_precision = os.environ.get("VITA_CLOUD_TRT_PRECISION", "fp16").strip().casefold()
     cloud_dtype = _precision_dtype(cloud_precision, name="VITA_CLOUD_TRT_PRECISION")
-    if crop_dtype != torch.float32:
-        raise TensorRTBuildError(
-            "The first direct crop qualification is accuracy-first and requires FP32"
-        )
 
     print("[preflight] direct TensorRT dependencies and trtexec passed", flush=True)
     runtime = _load_source_runtime(cloud_precision)
@@ -1400,12 +1436,15 @@ def build(manifest_path: Path = DEFAULT_MANIFEST_PATH) -> dict[str, Any]:
     cloud_batch_size = int(os.environ.get("VITA_CLOUD_BATCH_SIZE", "4"))
     if cloud_batch_size < 1:
         raise TensorRTBuildError("VITA_CLOUD_BATCH_SIZE must be positive")
+    reviewed_batches = dict(REVIEWED_CLOUD_SCENE_BATCH_SIZES)
+    if max(reviewed_batches.values()) != cloud_batch_size:
+        raise TensorRTBuildError(
+            "VITA_CLOUD_BATCH_SIZE does not match the reviewed Balkan batch contract"
+        )
     cloud_profiles = [
-        (patch_size, cloud_batch_size)
+        (patch_size, reviewed_batches[patch_size])
         for patch_size in sorted(set(scene_patch_sizes.values()))
     ]
-    if REVIEWED_CLOUD_BASE_PATCH_SIZE not in scene_patch_sizes.values():
-        cloud_profiles.append((REVIEWED_CLOUD_BASE_PATCH_SIZE, 1))
     cloud_graphs = [
         _export_cloud_onnx(
             cloud_source,
@@ -1434,12 +1473,36 @@ def build(manifest_path: Path = DEFAULT_MANIFEST_PATH) -> dict[str, Any]:
 
     built_crop = _build_plan(
         crop_graph,
-        name="crop",
+        name=f"crop-{crop_precision}",
         precision=crop_precision,
         manifest_path=manifest_path,
         executable=executable,
         target=target,
     )
+    crop_record = {
+        **_plan_record(
+            built_crop,
+            manifest_path=manifest_path,
+            precision=crop_precision,
+        ),
+        "source_sha256": SELECTED_CHECKPOINT_SHA256,
+        "tf32": False,
+    }
+    # Qualify the crop candidate before spending time constructing every cloud
+    # plan. Candidate files remain inert and the previous accepted manifest is
+    # untouched if this first scientific gate fails.
+    runtime = _load_source_runtime(cloud_precision)
+    print("[parity] validating crop plan on balanced real-scene tiles", flush=True)
+    crop_record["parity"] = _validate_crop_parity(
+        runtime.crop.model,
+        crop_record,
+        manifest_path=manifest_path,
+        profiles=runtime._crop_parity_profiles,
+        precision=crop_precision,
+    )
+    del runtime
+    _release_cuda_memory()
+
     built_cloud = [
         _build_plan(
             graph,
@@ -1451,15 +1514,6 @@ def build(manifest_path: Path = DEFAULT_MANIFEST_PATH) -> dict[str, Any]:
         )
         for graph in cloud_graphs
     ]
-    crop_record = {
-        **_plan_record(
-            built_crop,
-            manifest_path=manifest_path,
-            precision=crop_precision,
-        ),
-        "source_sha256": SELECTED_CHECKPOINT_SHA256,
-        "tf32": False,
-    }
     cloud_records = []
     for built in built_cloud:
         cloud_records.append(
@@ -1475,16 +1529,9 @@ def build(manifest_path: Path = DEFAULT_MANIFEST_PATH) -> dict[str, Any]:
             }
         )
 
-    # Reload the untouched PyTorch source only after all plans exist. The
-    # accepted manifest is still absent, so no unvalidated plan can start.
+    # Reload the untouched source for the complete-scene cloud comparison only
+    # after every required shape-specific plan exists.
     runtime = _load_source_runtime(cloud_precision)
-    print("[parity] validating crop plan on balanced real-scene tiles", flush=True)
-    crop_record["parity"] = _validate_crop_parity(
-        runtime.crop.model,
-        crop_record,
-        manifest_path=manifest_path,
-        profiles=runtime._crop_parity_profiles,
-    )
     print("[parity] validating cloud plans on all four complete scenes", flush=True)
     cloud_parity = _validate_cloud_parity(
         runtime,

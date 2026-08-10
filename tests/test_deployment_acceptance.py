@@ -126,27 +126,28 @@ def test_jetson_acceptance_accepts_checksum_bound_direct_tensorrt(
     _production_flags(monkeypatch)
     monkeypatch.setenv("VITA_CROP_BACKEND", "tensorrt")
     monkeypatch.setenv("VITA_CLOUD_BACKEND", "tensorrt")
-    monkeypatch.setenv("VITA_CROP_TRT_PRECISION", "fp32")
-    monkeypatch.setenv("VITA_CLOUD_INFERENCE_DTYPE", "fp32")
+    monkeypatch.setenv("VITA_CROP_TRT_PRECISION", "mixed-fp16")
+    monkeypatch.setenv("VITA_CLOUD_INFERENCE_DTYPE", "fp16")
     health = _health()
     stack = health["stack"]
     stack.update(
         {
             "crop_backend": "tensorrt",
+            "crop_inference_dtype": "mixed-fp16",
             "crop_tensorrt_engine_count": 1,
-            "crop_tensorrt_precision": "fp32",
+            "crop_tensorrt_precision": "mixed-fp16",
             "crop_tensorrt_tf32": False,
             "crop_tensorrt_parity": {
                 "class_mismatch_fraction": 0.0005,
                 "mean_absolute_probability_error": 0.001,
             },
-            "cloud_backend": "omnicloudmask_tensorrt_fp32",
-            "cloud_tensorrt_engine_count": 4,
+            "cloud_backend": "omnicloudmask_tensorrt_fp16",
+            "cloud_tensorrt_engine_count": 3,
             "cloud_tensorrt_profiles": [
                 {
                     "patch_size": 700,
                     "minimum_batch_size": 1,
-                    "maximum_batch_size": 4,
+                    "maximum_batch_size": 1,
                 },
                 {
                     "patch_size": 869,
@@ -158,25 +159,27 @@ def test_jetson_acceptance_accepts_checksum_bound_direct_tensorrt(
                     "minimum_batch_size": 1,
                     "maximum_batch_size": 4,
                 },
-                {
-                    "patch_size": 1000,
-                    "minimum_batch_size": 1,
-                    "maximum_batch_size": 1,
-                },
             ],
             "cloud_tensorrt_parity": {
                 "class_mismatch_fraction": 0.0002,
                 "scenes": [{"input": f"scene-{index}.tif"} for index in range(4)],
             },
             "tensorrt_manifest_sha256": "a" * 64,
+            "cloud_warmup_profiles": [
+                {"batch_size": 1, "patch_size": 700},
+                {"batch_size": 1, "patch_size": 869},
+                {"batch_size": 1, "patch_size": 891},
+                {"batch_size": 4, "patch_size": 869},
+                {"batch_size": 4, "patch_size": 891},
+            ],
         }
     )
 
     accepted = validate_health(health)
 
     assert accepted["crop_backend"] == "tensorrt"
-    assert accepted["cloud_tensorrt_engine_count"] == 4
-    assert accepted["cloud_profile_count"] == 4
+    assert accepted["cloud_tensorrt_engine_count"] == 3
+    assert accepted["cloud_profile_count"] == 3
 
 
 def test_jetson_acceptance_rejects_direct_tensorrt_parity_regression(
@@ -187,8 +190,9 @@ def test_jetson_acceptance_rejects_direct_tensorrt_parity_regression(
     monkeypatch.setenv("VITA_CLOUD_BACKEND", "tensorrt")
     health = _health()
     health["stack"]["crop_backend"] = "tensorrt"
+    health["stack"]["crop_inference_dtype"] = "mixed-fp16"
     health["stack"]["crop_tensorrt_engine_count"] = 1
-    health["stack"]["crop_tensorrt_precision"] = "fp32"
+    health["stack"]["crop_tensorrt_precision"] = "mixed-fp16"
     health["stack"]["crop_tensorrt_tf32"] = False
     health["stack"]["cloud_backend"] = "omnicloudmask_tensorrt_fp16"
     health["stack"]["crop_tensorrt_parity"] = {

@@ -163,6 +163,8 @@ def test_direct_tensorrt_is_offline_and_does_not_import_torch_tensorrt() -> None
     )
     assert "torch.onnx.export" in builder
     assert '"--stronglyTyped"' in builder
+    assert 'arguments.append("--fp16")' in builder
+    assert '"--builderOptimizationLevel"' in builder
     assert '"--skipInference"' in builder
     assert "_parse_onnx_with_tensorrt" in builder
     assert "zero-sized initializer" in builder
@@ -173,6 +175,9 @@ def test_direct_tensorrt_is_offline_and_does_not_import_torch_tensorrt() -> None
     build_body = builder.split("def build(", maxsplit=1)[1]
     assert build_body.index("_release_cuda_memory()") < build_body.index(
         "built_crop = _build_plan"
+    )
+    assert build_body.index("_validate_crop_parity(") < build_body.index(
+        "built_cloud = ["
     )
     assert build_body.index("_validate_crop_parity(") < build_body.index(
         "write_manifest_atomic("
@@ -196,11 +201,17 @@ def test_payload_env_matches_the_production_crop_acceleration_contract() -> None
 
     assert environment["VITA_CROP_BACKEND"] == "tensorrt"
     assert environment["VITA_CROP_BATCH_SIZE"] == "16"
-    assert environment["VITA_CROP_TRT_PRECISION"] == "fp32"
+    assert environment["VITA_CROP_TRT_PRECISION"] == "mixed-fp16"
     assert environment["VITA_CLOUD_BACKEND"] == "tensorrt"
-    assert environment["VITA_CLOUD_INFERENCE_DTYPE"] == "fp32"
-    assert environment["VITA_CLOUD_TRT_PRECISION"] == "fp32"
+    assert environment["VITA_CLOUD_INFERENCE_DTYPE"] == "fp16"
+    assert environment["VITA_CLOUD_TRT_PRECISION"] == "fp16"
+    assert environment["VITA_TRT_BUILDER_OPTIMIZATION_LEVEL"] == "5"
     assert environment["VITA_CLOUD_WARMUP_PATCH_SIZES"] == "700,869,891"
+    assert environment["VITA_SKIP_PERFORMANCE_ACCEPTANCE"] == "0"
+    compose = (
+        Path(__file__).resolve().parents[1] / "deploy/compose.payload.yaml"
+    ).read_text(encoding="utf-8")
+    assert "VITA_PERFORMANCE_REPORT: /runtime/performance-acceptance.json" in compose
 
 
 def test_deploy_builds_plans_before_starting_the_service() -> None:
@@ -210,3 +221,14 @@ def test_deploy_builds_plans_before_starting_the_service() -> None:
     builder = "python payload -m prithvi_payload.tensorrt_builder"
     assert builder in deploy
     assert deploy.index(builder) < deploy.index('docker compose "${compose_args[@]}" up -d')
+    assert 'fail_startup "payload acceleration acceptance failed"' in deploy
+    assert 'fail_startup "payload two-second performance acceptance failed"' in deploy
+
+
+def test_ground_demo_reports_payload_stage_timings() -> None:
+    wrapper = (
+        Path(__file__).resolve().parents[1]
+        / "scripts/ground/Invoke-VitaPayload.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert "pipeline_timing_seconds = $response.pipeline_timing_seconds" in wrapper

@@ -29,11 +29,11 @@ case "$crop_backend" in
     *) echo "ERROR: VITA_CROP_BACKEND must be pytorch or tensorrt" >&2; exit 1 ;;
 esac
 if [ "$crop_backend" = "tensorrt" ]; then
-    if [ "${VITA_CROP_TRT_PRECISION:-fp32}" != "fp32" ]; then
-        echo "ERROR: direct crop TensorRT qualification requires fp32" >&2
-        exit 1
-    fi
-    if [ "${VITA_CLOUD_INFERENCE_DTYPE:-fp32}" != "${VITA_CLOUD_TRT_PRECISION:-fp32}" ]; then
+    case "${VITA_CROP_TRT_PRECISION:-mixed-fp16}" in
+        fp32|mixed-fp16) ;;
+        *) echo "ERROR: direct crop TensorRT precision must be fp32 or mixed-fp16" >&2; exit 1 ;;
+    esac
+    if [ "${VITA_CLOUD_INFERENCE_DTYPE:-fp16}" != "${VITA_CLOUD_TRT_PRECISION:-fp16}" ]; then
         echo "ERROR: cloud inference dtype must match VITA_CLOUD_TRT_PRECISION" >&2
         exit 1
     fi
@@ -164,13 +164,19 @@ for attempt in $(seq 1 "$attempts"); do
     container_state="$(docker inspect --format '{{.State.Status}}' "$container_id")"
     restart_count="$(docker inspect --format '{{.RestartCount}}' "$container_id")"
     if [ "$status" = "healthy" ]; then
-        docker compose "${compose_args[@]}" exec -T payload \
+        if ! docker compose "${compose_args[@]}" exec -T payload \
             python -m prithvi_payload.deployment_acceptance \
-            --url http://127.0.0.1:8090/healthz
+            --url http://127.0.0.1:8090/healthz; then
+            fail_startup "payload acceleration acceptance failed"
+        fi
         if [ "${VITA_SKIP_PERFORMANCE_ACCEPTANCE:-0}" != "1" ]; then
-            docker compose "${compose_args[@]}" exec -T payload \
+            if ! docker compose "${compose_args[@]}" exec -T payload \
                 python -m prithvi_payload.performance_acceptance \
-                --url http://127.0.0.1:8090/v1/jobs
+                --url http://127.0.0.1:8090/v1/jobs; then
+                fail_startup "payload two-second performance acceptance failed"
+            fi
+        else
+            echo "WARNING: performance acceptance was explicitly skipped; deployment is not SLO-qualified." >&2
         fi
         echo "Payload service is ready on Jetson loopback."
         exit 0

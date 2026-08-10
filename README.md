@@ -39,10 +39,13 @@ commands remain supported. Use the persistent service above for latency measurem
 the one-shot CLI must reload models in every process.
 
 The Jetson production path builds direct TensorRT 10.8 plans offline on the target
-Orin and loads them through TensorRT's native Python runtime. The checksum-sealed plans
-remain unavailable to the service until FP32 crop parity and all-four-scene cloud
-parity pass against the unchanged PyTorch sources. Deployment never substitutes a
-cached prediction for inference.
+Orin and loads them through TensorRT's native Python runtime. Crop retains FP32 I/O
+with qualified mixed-FP16 tactics, cloud uses strongly typed FP16, and the 700 px
+Sentinel plan uses physical batch one while the 869/891 px Balkan plans use batch four.
+The checksum-sealed plans remain unavailable until balanced crop parity and
+all-four-scene cloud parity pass against the operational PyTorch CUDA references.
+Deployment then requires every repeated scene run to remain below two seconds and
+never substitutes a cached prediction for inference.
 
 ## Documentation
 

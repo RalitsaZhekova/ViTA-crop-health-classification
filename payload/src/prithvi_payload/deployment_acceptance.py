@@ -10,6 +10,7 @@ from urllib.request import urlopen
 
 from cloud_detection.tensorrt_backend import (
     REVIEWED_CLOUD_BASE_PATCH_SIZE,
+    REVIEWED_CLOUD_SCENE_BATCH_SIZES,
     REVIEWED_CLOUD_SCENE_PATCH_SIZES,
 )
 
@@ -34,7 +35,9 @@ def validate_health(health: dict[str, Any]) -> dict[str, Any]:
     expected_crop_precision = (
         "fp32"
         if requested_backend == "pytorch"
-        else os.environ.get("VITA_CROP_TRT_PRECISION", "fp32").strip().casefold()
+        else os.environ.get(
+            "VITA_CROP_TRT_PRECISION", "mixed-fp16"
+        ).strip().casefold()
     )
     if stack.get("crop_inference_dtype") != expected_crop_precision:
         raise RuntimeError("Crop inference is not using the accepted precision")
@@ -89,7 +92,7 @@ def validate_health(health: dict[str, Any]) -> dict[str, Any]:
             raise RuntimeError("Direct crop TensorRT exceeds the decision parity gate")
         if float(crop_parity.get("mean_absolute_probability_error", 1.0)) > 0.005:
             raise RuntimeError("Direct crop TensorRT exceeds the probability parity gate")
-        expected_profile_count = len(REVIEWED_CLOUD_SCENE_PATCH_SIZES) + 1
+        expected_profile_count = len(REVIEWED_CLOUD_SCENE_PATCH_SIZES)
         if stack.get("cloud_tensorrt_engine_count") != expected_profile_count:
             raise RuntimeError(
                 f"Direct cloud TensorRT must load exactly {expected_profile_count} engines"
@@ -106,9 +109,9 @@ def validate_health(health: dict[str, Any]) -> dict[str, Any]:
             if isinstance(profile, dict)
         }
         expected_profile_contract = {
-            (patch_size, 1, stack["cloud_batch_size"])
-            for patch_size in REVIEWED_CLOUD_SCENE_PATCH_SIZES
-        } | {(REVIEWED_CLOUD_BASE_PATCH_SIZE, 1, 1)}
+            (patch_size, 1, batch_size)
+            for patch_size, batch_size in REVIEWED_CLOUD_SCENE_BATCH_SIZES
+        }
         if profile_contract != expected_profile_contract:
             raise RuntimeError("Direct cloud TensorRT profiles do not match payload shapes")
         cloud_parity = stack.get("cloud_tensorrt_parity")
@@ -124,11 +127,17 @@ def validate_health(health: dict[str, Any]) -> dict[str, Any]:
             raise RuntimeError("Direct TensorRT accepted manifest is missing")
 
     warmup_profiles = stack.get("cloud_warmup_profiles")
-    expected_cloud_warmups = {(1, REVIEWED_CLOUD_BASE_PATCH_SIZE)} | {
-        (batch_size, patch_size)
-        for patch_size in REVIEWED_CLOUD_SCENE_PATCH_SIZES
-        for batch_size in (1, stack["cloud_batch_size"])
-    }
+    if requested_backend == "tensorrt":
+        expected_cloud_warmups: set[tuple[int, int]] = set()
+        for patch_size, batch_size in REVIEWED_CLOUD_SCENE_BATCH_SIZES:
+            expected_cloud_warmups.add((1, patch_size))
+            expected_cloud_warmups.add((batch_size, patch_size))
+    else:
+        expected_cloud_warmups = {(1, REVIEWED_CLOUD_BASE_PATCH_SIZE)} | {
+            (batch_size, patch_size)
+            for patch_size in REVIEWED_CLOUD_SCENE_PATCH_SIZES
+            for batch_size in (1, stack["cloud_batch_size"])
+        }
     if not isinstance(warmup_profiles, list) or any(
         not isinstance(profile, dict) for profile in warmup_profiles
     ):

@@ -13,6 +13,32 @@ from typing import Any
 from urllib.request import Request, urlopen
 
 
+def _write_report_atomic(report: dict[str, Any]) -> Path:
+    """Persist target qualification evidence inside the payload runtime."""
+
+    runs_root = Path(os.environ.get("VITA_OUTPUT_ROOT", "/runtime/runs")).resolve()
+    runtime_root = runs_root.parent
+    report_path = Path(
+        os.environ.get(
+            "VITA_PERFORMANCE_REPORT",
+            str(runtime_root / "performance-acceptance.json"),
+        )
+    ).resolve()
+    if report_path.parent != runtime_root:
+        raise RuntimeError("VITA_PERFORMANCE_REPORT must be directly below the runtime root")
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = report_path.with_name(f".{report_path.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_text(
+            json.dumps(report, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary, report_path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return report_path
+
+
 def _paths(name: str) -> tuple[str, str]:
     values = tuple(value.strip() for value in os.environ.get(name, "").split(","))
     values = tuple(value for value in values if value)
@@ -130,6 +156,7 @@ def run_acceptance(
         "repetitions_per_scene": repetitions,
         "scenes": results,
     }
+    _write_report_atomic(report)
     if not accepted:
         raise RuntimeError(json.dumps(report, indent=2, sort_keys=True))
     return report

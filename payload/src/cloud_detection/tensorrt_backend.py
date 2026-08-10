@@ -11,7 +11,14 @@ from prithvi_payload.tensorrt_runtime import NativeTensorRTPlan, TensorRTArtifac
 from torch import Tensor, nn
 
 REVIEWED_CLOUD_BASE_PATCH_SIZE = 1000
-REVIEWED_CLOUD_SCENE_PATCH_SIZES = (700, 869, 891)
+# The two complete 700 px Sentinel scenes each produce exactly one model patch.
+# Building their engine at the global batch size would execute three padded
+# copies for every request. The two Balkan profiles produce multiple patches
+# and retain the reviewed throughput batch of four.
+REVIEWED_CLOUD_SCENE_BATCH_SIZES = ((700, 1), (869, 4), (891, 4))
+REVIEWED_CLOUD_SCENE_PATCH_SIZES = tuple(
+    patch_size for patch_size, _ in REVIEWED_CLOUD_SCENE_BATCH_SIZES
+)
 
 
 def _remove_zero_channel_cat_noops(exported: torch.export.ExportedProgram) -> int:
@@ -182,6 +189,18 @@ class CloudTensorRTRouter(nn.Module):
                 }
             )
         return profiles
+
+    @property
+    def warmup_profiles(self) -> tuple[tuple[int, int], ...]:
+        """Return every distinct physical profile required by accepted plans."""
+
+        profiles: set[tuple[int, int]] = set()
+        for key in self._records:
+            minimum_batch_size, maximum_batch_size, _ = self._batch_contracts[key]
+            patch_size = key[0]
+            profiles.add((minimum_batch_size, patch_size))
+            profiles.add((maximum_batch_size, patch_size))
+        return tuple(sorted(profiles))
 
     def forward(self, image: Tensor) -> Tensor:
         if image.ndim != 4 or image.shape[1] != 3:

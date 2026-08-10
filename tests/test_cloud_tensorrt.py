@@ -5,6 +5,7 @@ import threading
 import pytest
 import torch
 from cloud_detection.tensorrt_backend import (
+    REVIEWED_CLOUD_SCENE_BATCH_SIZES,
     CloudTensorRTRouter,
     _CloudEnsemble,
     _remove_zero_channel_cat_noops,
@@ -135,3 +136,21 @@ def test_cloud_tensorrt_router_rejects_batch_outside_manifest_contract() -> None
         match="outside the accepted contract",
     ):
         router(torch.ones((5, 3, 8, 8)))
+
+
+def test_reviewed_cloud_batches_avoid_sentinel_padding() -> None:
+    assert dict(REVIEWED_CLOUD_SCENE_BATCH_SIZES) == {700: 1, 869: 4, 891: 4}
+
+
+def test_cloud_tensorrt_warmup_profiles_follow_physical_engines() -> None:
+    router = _empty_router()
+    router._records = {
+        (700, 700): {"patch_size": 700},
+        (891, 891): {"patch_size": 891},
+    }
+    router._batch_contracts = {
+        (700, 700): (1, 1, 1),
+        (891, 891): (1, 4, 4),
+    }
+
+    assert router.warmup_profiles == ((1, 700), (1, 891), (4, 891))

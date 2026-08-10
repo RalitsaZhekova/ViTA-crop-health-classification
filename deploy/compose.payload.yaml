@@ -23,8 +23,8 @@ services:
       - "127.0.0.1:${VITA_PAYLOAD_PORT:-8090}:8090"
     environment:
       CUDA_REQUIRED: "1"
-      # The NGC base sets this to 1; disable its TF32 override so the accepted
-      # native-CUDA Prithvi path retains the exported FP32 numerical contract.
+      # The NGC base sets this to 1; keep TF32 out of the accepted
+      # FP32-I/O/mixed-FP16 crop contract.
       TORCH_ALLOW_TF32_CUBLAS_OVERRIDE: "0"
       HOME: /home/vita
       LOGNAME: vita-payload
@@ -34,6 +34,7 @@ services:
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
       VITA_INPUT_ROOT: /data
       VITA_OUTPUT_ROOT: /runtime/runs
+      VITA_PERFORMANCE_REPORT: /runtime/performance-acceptance.json
       VITA_BALKAN_ANALYSIS_CACHE_DIR: /runtime/cache/balkan-analysis
       VITA_BALKAN_PREPARE_INPUTS: ${VITA_BALKAN_PREPARE_INPUTS:-balkan1/preprocessed/3370_L1ORT.tif,balkan1/preprocessed/3408_L1ORT.tif}
       VITA_BALKAN_OVERVIEW_FAST_PATH: ${VITA_BALKAN_OVERVIEW_FAST_PATH:-1}
@@ -48,12 +49,13 @@ services:
       VITA_TRT_MANIFEST: /engine-cache/tensorrt/direct/accepted.json
       VITA_CROP_BACKEND: ${VITA_CROP_BACKEND:-pytorch}
       VITA_CROP_BATCH_SIZE: ${VITA_CROP_BATCH_SIZE:-16}
-      VITA_CROP_TRT_PRECISION: ${VITA_CROP_TRT_PRECISION:-fp32}
+      VITA_CROP_TRT_PRECISION: ${VITA_CROP_TRT_PRECISION:-mixed-fp16}
       VITA_TRT_CUDAGRAPHS: ${VITA_TRT_CUDAGRAPHS:-0}
       VITA_CLOUD_BACKEND: ${VITA_CLOUD_BACKEND:-pytorch}
       VITA_CLOUD_INFERENCE_DTYPE: ${VITA_CLOUD_INFERENCE_DTYPE:-fp16}
-      VITA_CLOUD_TRT_PRECISION: ${VITA_CLOUD_TRT_PRECISION:-fp32}
+      VITA_CLOUD_TRT_PRECISION: ${VITA_CLOUD_TRT_PRECISION:-fp16}
       VITA_TRT_WORKSPACE_MIB: ${VITA_TRT_WORKSPACE_MIB:-4096}
+      VITA_TRT_BUILDER_OPTIMIZATION_LEVEL: ${VITA_TRT_BUILDER_OPTIMIZATION_LEVEL:-5}
       VITA_CLOUD_BATCH_SIZE: ${VITA_CLOUD_BATCH_SIZE:-4}
       VITA_CLOUD_WARMUP_PATCH_SIZES: ${VITA_CLOUD_WARMUP_PATCH_SIZES:-700,869,891}
       VITA_DEMO_SENTINEL_IMAGES: ${VITA_DEMO_SENTINEL_IMAGES:-sentinel2/S2_20260610T091331_T35TLG_bulgaria-thrace.tif,sentinel2/S2_20260115T135659_T21LXF_brazil-mato-grosso.tif}
