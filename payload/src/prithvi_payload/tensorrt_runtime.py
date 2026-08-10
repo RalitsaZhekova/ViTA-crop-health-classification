@@ -167,6 +167,21 @@ def _shape(value: Any, *, name: str) -> tuple[int, ...]:
     return tuple(value)
 
 
+def _resolve_cuda_device(device: torch.device) -> torch.device:
+    """Resolve an unindexed CUDA alias to the active device used by TensorRT."""
+
+    if device.type != "cuda":
+        raise TensorRTArtifactError("TensorRT plans can only execute on CUDA")
+    current_index = torch.cuda.current_device()
+    requested_index = current_index if device.index is None else device.index
+    if requested_index != current_index:
+        raise TensorRTArtifactError(
+            "TensorRT plan device must match the active CUDA device: "
+            f"requested cuda:{requested_index}, active cuda:{current_index}"
+        )
+    return torch.device("cuda", requested_index)
+
+
 class NativeTensorRTPlan(nn.Module):
     """One checksum-verified TensorRT engine with a private execution context."""
 
@@ -178,8 +193,7 @@ class NativeTensorRTPlan(nn.Module):
         device: torch.device,
     ) -> None:
         super().__init__()
-        if device.type != "cuda":
-            raise TensorRTArtifactError("TensorRT plans can only execute on CUDA")
+        resolved_device = _resolve_cuda_device(device)
         try:
             import tensorrt as trt
         except ImportError as error:
@@ -205,7 +219,7 @@ class NativeTensorRTPlan(nn.Module):
             raise TensorRTArtifactError("TensorRT plan has an invalid I/O contract")
         self.input_specs = self._validate_specs(inputs, kind="input")
         self.output_specs = self._validate_specs(outputs, kind="output")
-        self.device = device
+        self.device = resolved_device
         self.record = record
         self.plan_path = plan_path
         self._logger = trt.Logger(trt.Logger.ERROR)

@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import torch
 from prithvi_payload import tensorrt_runtime
 from prithvi_payload.tensorrt_builder import (
     _canonicalize_cloud_onnx,
@@ -15,6 +16,7 @@ from prithvi_payload.tensorrt_builder import (
 from prithvi_payload.tensorrt_runtime import (
     MANIFEST_SCHEMA_VERSION,
     TensorRTArtifactError,
+    _resolve_cuda_device,
     load_accepted_manifest,
     write_manifest_atomic,
 )
@@ -27,6 +29,18 @@ def _manifest() -> dict:
         "target": {"gpu": "test"},
         "models": {"crop": {}, "cloud": {}},
     }
+
+
+def test_direct_tensorrt_resolves_cuda_alias_to_active_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+
+    assert _resolve_cuda_device(torch.device("cuda")) == torch.device("cuda:0")
+    assert _resolve_cuda_device(torch.device("cuda:0")) == torch.device("cuda:0")
+
+    with pytest.raises(TensorRTArtifactError, match="active CUDA device"):
+        _resolve_cuda_device(torch.device("cuda:1"))
 
 
 def test_direct_tensorrt_manifest_is_atomic_and_integrity_bound(
