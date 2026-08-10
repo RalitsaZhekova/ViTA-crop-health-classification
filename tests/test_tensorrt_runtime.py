@@ -47,24 +47,35 @@ class _ReferenceDtype(torch.nn.Module):
     def __init__(self) -> None:
         super().__init__()
         self.seen: torch.dtype | None = None
+        self.offset = torch.nn.Parameter(torch.zeros((), dtype=torch.float32))
 
     def forward(self, image: torch.Tensor) -> torch.Tensor:
         self.seen = image.dtype
-        return image
+        return image + self.offset
 
 
 def test_cloud_precision_reference_promotes_operational_input() -> None:
+    from omnicloudmask.cloud_mask import collect_models
+
     first = _ReferenceDtype()
     second = _ReferenceDtype()
     reference = _CloudPrecisionReference(
         [first, second],
         dtype=torch.float32,
     )
+    collected = collect_models(
+        custom_models=[reference],
+        inference_device=torch.device("cpu"),
+        inference_dtype=torch.float16,
+        source="hugging_face",
+    )
 
-    output = reference(torch.ones((1, 3, 8, 8), dtype=torch.float16))
+    output = collected[0](torch.ones((1, 3, 8, 8), dtype=torch.float16))
 
     assert first.seen == torch.float32
     assert second.seen == torch.float32
+    assert first.offset.dtype == torch.float32
+    assert second.offset.dtype == torch.float32
     assert output.dtype == torch.float32
 
 

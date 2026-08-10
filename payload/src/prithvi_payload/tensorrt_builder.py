@@ -95,7 +95,31 @@ class _CloudPrecisionReference(nn.Module):
         self.ensemble = _CloudEnsemble(models)
         self.dtype = dtype
 
+    def to(self, *args: Any, **kwargs: Any) -> _CloudPrecisionReference:
+        """Keep source weights at the reviewed profile precision.
+
+        OmniCloudMask calls ``.to(inference_dtype)`` on every custom model for
+        every prediction. Its inference dtype describes the incoming patch, but
+        this wrapper deliberately owns a potentially different profile-local
+        reference dtype. Preserve that dtype while still honoring the requested
+        device move.
+        """
+
+        if "dtype" in kwargs:
+            kwargs["dtype"] = self.dtype
+        return super().to(*args, **kwargs)
+
     def forward(self, image: Tensor) -> Tensor:
+        model_dtypes: set[torch.dtype] = set()
+        for model in self.ensemble.models:
+            parameter = next(model.parameters(), None)
+            if parameter is not None:
+                model_dtypes.add(parameter.dtype)
+        if model_dtypes and model_dtypes != {self.dtype}:
+            raise RuntimeError(
+                "Cloud parity source weights do not match the declared "
+                f"profile precision: observed={model_dtypes}, expected={self.dtype}"
+            )
         return self.ensemble(image.to(dtype=self.dtype))
 
 
