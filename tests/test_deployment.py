@@ -220,6 +220,9 @@ def test_deploy_builds_plans_before_starting_the_service() -> None:
     ).read_text(encoding="utf-8")
     builder = "python payload -m prithvi_payload.tensorrt_builder"
     assert builder in deploy
+    stop = 'docker compose "${compose_args[@]}" stop payload'
+    assert stop in deploy
+    assert deploy.index(stop) < deploy.index(builder)
     assert deploy.index(builder) < deploy.index('docker compose "${compose_args[@]}" up -d')
     assert 'fail_startup "payload acceleration acceptance failed"' in deploy
     assert 'fail_startup "payload two-second performance acceptance failed"' in deploy

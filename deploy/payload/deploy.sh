@@ -133,6 +133,11 @@ echo "Validating the two Sentinel and two Balkan payload inputs inside the final
 docker compose "${compose_args[@]}" run --rm --no-deps \
     --entrypoint python payload -m prithvi_payload.deployment_check
 if [ "$crop_backend" = "tensorrt" ]; then
+    running_payload_id="$(docker compose "${compose_args[@]}" ps --status running -q payload)"
+    if [ -n "$running_payload_id" ]; then
+        echo "Stopping the existing VITA payload service before exclusive TensorRT tactic search."
+        docker compose "${compose_args[@]}" stop payload
+    fi
     echo "Building and accepting direct TensorRT plans offline before service startup."
     docker compose "${compose_args[@]}" run --rm --no-deps \
         --entrypoint python payload -m prithvi_payload.tensorrt_builder
