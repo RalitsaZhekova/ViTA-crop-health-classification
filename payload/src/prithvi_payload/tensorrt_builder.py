@@ -12,7 +12,7 @@ import shutil
 import subprocess
 import time
 from collections.abc import Iterator
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import numpy as np
@@ -31,6 +31,7 @@ from cloud_detection.tensorrt_backend import (
 from prithvi_shared import SELECTED_CHECKPOINT_SHA256
 from torch import Tensor, nn
 
+from prithvi_payload.cloud_profiles import read_fixed_scene_cloud_input
 from prithvi_payload.crop_parity import build_crop_parity_inputs
 from prithvi_payload.inference import (
     OPTIMIZED_BATCH_SIZE,
@@ -40,8 +41,10 @@ from prithvi_payload.tensorrt_runtime import (
     DEFAULT_MANIFEST_PATH,
     MANIFEST_SCHEMA_VERSION,
     NativeTensorRTPlan,
+    TensorRTArtifactError,
     current_target_signature,
     file_sha256,
+    load_accepted_manifest,
     write_manifest_atomic,
 )
 
@@ -1198,6 +1201,192 @@ def _plan_record(
     }
 
 
+def _manifest_artifact_path(manifest_path: Path, relative_value: Any) -> Path:
+    """Resolve one manifest artifact without allowing it outside the cache root."""
+
+    if not isinstance(relative_value, str) or not relative_value:
+        raise TensorRTArtifactError("TensorRT plan path is missing")
+    relative = PurePosixPath(relative_value)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise TensorRTArtifactError("TensorRT plan path is not cache-relative")
+    root = manifest_path.parent.resolve()
+    candidate = root.joinpath(*relative.parts).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError as error:
+        raise TensorRTArtifactError("TensorRT plan escaped the cache root") from error
+    return candidate
+
+
+def _load_reusable_cloud_records(
+    manifest_path: Path,
+    *,
+    target: dict[str, Any],
+    precision: str,
+    profiles: list[tuple[int, int]],
+) -> dict[int, dict[str, Any]]:
+    """Reuse checksum-bound accepted plans whose complete contract is unchanged."""
+
+    try:
+        accepted = load_accepted_manifest(manifest_path, required_models=("cloud",))
+    except TensorRTArtifactError as error:
+        print(f"[tensorrt] no reusable accepted cloud plans: {error}", flush=True)
+        return {}
+    cloud = accepted["models"]["cloud"]
+    if (
+        accepted.get("target") != target
+        or not isinstance(cloud, dict)
+        or cloud.get("source_sha256") != OMNICLOUDMASK_ENSEMBLE_SHA256
+        or cloud.get("precision") != precision
+    ):
+        print("[tensorrt] accepted cloud plans use a different contract", flush=True)
+        return {}
+
+    expected = dict(profiles)
+    dtype = "float16" if precision == "fp16" else "float32"
+    reusable: dict[int, dict[str, Any]] = {}
+    records = cloud.get("plans")
+    if not isinstance(records, list):
+        return {}
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        patch_size = record.get("patch_size")
+        batch_size = expected.get(patch_size)
+        if batch_size is None:
+            continue
+        inputs = record.get("inputs")
+        expected_shape = [batch_size, 3, patch_size, patch_size]
+        if (
+            record.get("precision") != precision
+            or record.get("logical_min_batch_size") != 1
+            or record.get("logical_max_batch_size") != batch_size
+            or not isinstance(inputs, list)
+            or len(inputs) != 1
+            or not isinstance(inputs[0], dict)
+            or inputs[0].get("name") != "image"
+            or inputs[0].get("dtype") != dtype
+            or inputs[0].get("shape") != expected_shape
+        ):
+            continue
+        try:
+            plan_path = _manifest_artifact_path(manifest_path, record.get("plan"))
+            expected_digest = record.get("plan_sha256")
+            if (
+                not plan_path.is_file()
+                or not isinstance(expected_digest, str)
+                or file_sha256(plan_path) != expected_digest
+            ):
+                continue
+        except (OSError, TensorRTArtifactError):
+            continue
+        reusable[int(patch_size)] = dict(record)
+
+    if reusable:
+        print(
+            "[tensorrt] reusing accepted cloud profiles: "
+            + ", ".join(str(value) for value in sorted(reusable)),
+            flush=True,
+        )
+    return reusable
+
+
+def _load_reusable_crop_record(
+    manifest_path: Path,
+    *,
+    target: dict[str, Any],
+    precision: str,
+) -> dict[str, Any] | None:
+    """Reuse the accepted crop plan when its model, target, and I/O are exact."""
+
+    try:
+        accepted = load_accepted_manifest(manifest_path, required_models=("crop",))
+    except TensorRTArtifactError:
+        return None
+    record = accepted["models"]["crop"]
+    expected_inputs = [
+        ("image", [OPTIMIZED_BATCH_SIZE, 4, 1, 224, 224]),
+        ("temporal_coords", [OPTIMIZED_BATCH_SIZE, 1, 2]),
+        ("location_coords", [OPTIMIZED_BATCH_SIZE, 2]),
+    ]
+    inputs = record.get("inputs") if isinstance(record, dict) else None
+    if (
+        accepted.get("target") != target
+        or not isinstance(record, dict)
+        or record.get("source_sha256") != SELECTED_CHECKPOINT_SHA256
+        or record.get("precision") != precision
+        or record.get("tf32") is not False
+        or not isinstance(inputs, list)
+        or len(inputs) != len(expected_inputs)
+        or any(
+            not isinstance(spec, dict)
+            or spec.get("name") != expected_name
+            or spec.get("dtype") != "float32"
+            or spec.get("shape") != expected_shape
+            for spec, (expected_name, expected_shape) in zip(
+                inputs, expected_inputs, strict=True
+            )
+        )
+    ):
+        return None
+    try:
+        plan_path = _manifest_artifact_path(manifest_path, record.get("plan"))
+        expected_digest = record.get("plan_sha256")
+        if (
+            not plan_path.is_file()
+            or not isinstance(expected_digest, str)
+            or file_sha256(plan_path) != expected_digest
+        ):
+            return None
+    except (OSError, TensorRTArtifactError):
+        return None
+    print("[tensorrt] reusing accepted crop plan", flush=True)
+    return dict(record)
+
+
+def _prune_unaccepted_build_artifacts(
+    manifest_path: Path,
+    manifest: dict[str, Any],
+) -> None:
+    """Remove obsolete candidates only after a replacement manifest is sealed."""
+
+    plans = manifest["models"]["cloud"]["plans"]
+    plans = [manifest["models"]["crop"], *plans]
+    accepted_paths = {
+        _manifest_artifact_path(manifest_path, record["plan"])
+        for record in plans
+    }
+    plans_root = (manifest_path.parent / "plans").resolve()
+    removed_plans = 0
+    if plans_root.is_dir():
+        for candidate in plans_root.glob("*.plan"):
+            resolved = candidate.resolve()
+            if resolved not in accepted_paths:
+                resolved.unlink()
+                resolved.with_suffix(".build.json").unlink(missing_ok=True)
+                removed_plans += 1
+        for build_record in plans_root.glob("*.build.json"):
+            plan_name = build_record.name.removesuffix(".build.json") + ".plan"
+            if not (plans_root / plan_name).is_file():
+                build_record.unlink()
+
+    # ONNX is a build intermediate, never a runtime dependency. It is exported
+    # afresh before a new plan build, while accepted plans retain their own
+    # checksums and build records for deterministic reuse.
+    onnx_root = (manifest_path.parent / "onnx").resolve()
+    removed_onnx = 0
+    if onnx_root.is_dir():
+        for candidate in onnx_root.glob("*.onnx"):
+            candidate.unlink()
+            removed_onnx += 1
+    if removed_plans or removed_onnx:
+        print(
+            "[cleanup] removed "
+            f"{removed_plans} unaccepted plan(s) and {removed_onnx} ONNX intermediate(s)",
+            flush=True,
+        )
+
+
 def _validate_crop_parity(
     source: nn.Module,
     record: dict[str, Any],
@@ -1267,11 +1456,9 @@ def _load_cloud_scene(
     *,
     input_config: dict[str, Any],
 ) -> np.ndarray:
-    import rasterio
     from cloud_detection.preprocessing import normalize_reflectance, strict_valid_mask
 
-    with rasterio.open(profile["source_path"]) as source:
-        raw_image = source.read(profile["source_band_indices"])
+    raw_image = read_fixed_scene_cloud_input(profile)
     image, invalid = normalize_reflectance(
         raw_image,
         scale=profile["reflectance_scale"],
@@ -1447,16 +1634,23 @@ def build(manifest_path: Path = DEFAULT_MANIFEST_PATH) -> dict[str, Any]:
 
     onnx_root = manifest_path.parent / "onnx"
     onnx_root.mkdir(parents=True, exist_ok=True)
-    crop_graph = _export_crop_onnx(
-        runtime,
-        onnx_root
-        / f"crop.{SELECTED_CHECKPOINT_SHA256[:12]}.batch{OPTIMIZED_BATCH_SIZE}.fp32.onnx",
+    crop_record = _load_reusable_crop_record(
+        manifest_path,
+        target=target,
+        precision=crop_precision,
     )
-    cloud_source = _CloudEnsemble(runtime.cloud.backend.models).to(
-        device="cuda",
-        dtype=cloud_dtype,
+    crop_graph = (
+        _export_crop_onnx(
+            runtime,
+            onnx_root
+            / (
+                f"crop.{SELECTED_CHECKPOINT_SHA256[:12]}."
+                f"batch{OPTIMIZED_BATCH_SIZE}.fp32.onnx"
+            ),
+        )
+        if crop_record is None
+        else None
     )
-    cloud_source.eval()
     cloud_batch_size = int(os.environ.get("VITA_CLOUD_BATCH_SIZE", "4"))
     if cloud_batch_size < 1:
         raise TensorRTBuildError("VITA_CLOUD_BATCH_SIZE must be positive")
@@ -1469,49 +1663,70 @@ def build(manifest_path: Path = DEFAULT_MANIFEST_PATH) -> dict[str, Any]:
         (patch_size, reviewed_batches[patch_size])
         for patch_size in sorted(set(scene_patch_sizes.values()))
     ]
-    cloud_graphs = [
-        _export_cloud_onnx(
-            cloud_source,
-            onnx_root
-            / (
-                f"cloud.{OMNICLOUDMASK_ENSEMBLE_SHA256[:12]}."
-                f"b{batch_size}.{patch_size}.{cloud_precision}.onnx"
-            ),
-            batch_size=batch_size,
-            patch_size=patch_size,
+    reusable_cloud_records = _load_reusable_cloud_records(
+        manifest_path,
+        target=target,
+        precision=cloud_precision,
+        profiles=cloud_profiles,
+    )
+    missing_cloud_profiles = [
+        profile
+        for profile in cloud_profiles
+        if profile[0] not in reusable_cloud_records
+    ]
+    cloud_graphs = []
+    if missing_cloud_profiles:
+        cloud_source = _CloudEnsemble(runtime.cloud.backend.models).to(
+            device="cuda",
             dtype=cloud_dtype,
         )
-        for patch_size, batch_size in cloud_profiles
-    ]
+        cloud_source.eval()
+        cloud_graphs = [
+            _export_cloud_onnx(
+                cloud_source,
+                onnx_root
+                / (
+                    f"cloud.{OMNICLOUDMASK_ENSEMBLE_SHA256[:12]}."
+                    f"b{batch_size}.{patch_size}.{cloud_precision}.onnx"
+                ),
+                batch_size=batch_size,
+                patch_size=patch_size,
+                dtype=cloud_dtype,
+            )
+            for patch_size, batch_size in missing_cloud_profiles
+        ]
+        del cloud_source
 
     # trtexec is a separate process. Do not make its tactic selection compete
     # with two complete source ensembles left resident by ONNX export.
-    del cloud_source
     del runtime
     _release_cuda_memory()
 
     print("[parse] validating every ONNX graph with TensorRT before builds", flush=True)
-    for graph in [crop_graph, *cloud_graphs]:
+    graphs_to_parse = [*([crop_graph] if crop_graph is not None else []), *cloud_graphs]
+    for graph in graphs_to_parse:
         _parse_onnx_with_tensorrt(graph["path"])
     print("[parse] all ONNX graphs accepted by TensorRT", flush=True)
 
-    built_crop = _build_plan(
-        crop_graph,
-        name=f"crop-{crop_precision}",
-        precision=crop_precision,
-        manifest_path=manifest_path,
-        executable=executable,
-        target=target,
-    )
-    crop_record = {
-        **_plan_record(
-            built_crop,
-            manifest_path=manifest_path,
+    if crop_graph is not None:
+        built_crop = _build_plan(
+            crop_graph,
+            name=f"crop-{crop_precision}",
             precision=crop_precision,
-        ),
-        "source_sha256": SELECTED_CHECKPOINT_SHA256,
-        "tf32": False,
-    }
+            manifest_path=manifest_path,
+            executable=executable,
+            target=target,
+        )
+        crop_record = {
+            **_plan_record(
+                built_crop,
+                manifest_path=manifest_path,
+                precision=crop_precision,
+            ),
+            "source_sha256": SELECTED_CHECKPOINT_SHA256,
+            "tf32": False,
+        }
+    assert crop_record is not None
     # Qualify the crop candidate before spending time constructing every cloud
     # plan. Candidate files remain inert and the previous accepted manifest is
     # untouched if this first scientific gate fails.
@@ -1538,7 +1753,7 @@ def build(manifest_path: Path = DEFAULT_MANIFEST_PATH) -> dict[str, Any]:
         )
         for graph in cloud_graphs
     ]
-    cloud_records = []
+    cloud_records = list(reusable_cloud_records.values())
     for built in built_cloud:
         cloud_records.append(
             {
@@ -1552,6 +1767,7 @@ def build(manifest_path: Path = DEFAULT_MANIFEST_PATH) -> dict[str, Any]:
                 "logical_max_batch_size": built["batch_size"],
             }
         )
+    cloud_records.sort(key=lambda record: int(record["patch_size"]))
 
     # Reload the untouched source for the complete-scene cloud comparison only
     # after every required shape-specific plan exists.
@@ -1587,6 +1803,7 @@ def build(manifest_path: Path = DEFAULT_MANIFEST_PATH) -> dict[str, Any]:
         },
     }
     sealed = write_manifest_atomic(manifest_path, manifest)
+    _prune_unaccepted_build_artifacts(manifest_path, sealed)
     del runtime
     _release_cuda_memory()
     print(

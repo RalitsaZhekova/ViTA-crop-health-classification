@@ -11,11 +11,11 @@ from prithvi_payload.tensorrt_runtime import NativeTensorRTPlan, TensorRTArtifac
 from torch import Tensor, nn
 
 REVIEWED_CLOUD_BASE_PATCH_SIZE = 1000
-# The two complete 700 px Sentinel scenes each produce exactly one model patch.
-# Building their engine at the global batch size would execute three padded
-# copies for every request. The two Balkan profiles produce multiple patches
-# and retain the reviewed throughput batch of four.
-REVIEWED_CLOUD_SCENE_BATCH_SIZES = ((700, 1), (869, 4), (891, 4))
+# Each complete 700 px Sentinel source is reflect-padded by the operational
+# cloud executor into one 1000 px tile with a 150 px halo. Building that engine
+# at the global batch size would execute three padded copies for every request.
+# The two Balkan profiles produce multiple patches and retain batch four.
+REVIEWED_CLOUD_SCENE_BATCH_SIZES = ((869, 4), (891, 4), (1000, 1))
 REVIEWED_CLOUD_SCENE_PATCH_SIZES = tuple(
     patch_size for patch_size, _ in REVIEWED_CLOUD_SCENE_BATCH_SIZES
 )

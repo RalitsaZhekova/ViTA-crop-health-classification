@@ -38,7 +38,7 @@ The acceleration policy is:
 
 | Stage | MVP execution | Reason |
 |---|---|---|
-| OmniCloudMask ensemble | Direct FP16 TensorRT plans: fixed batch 1 at 700 px and batch 4 with exact logical-batch padding at 869/891 px | Offline acceptance derives every fixed-scene patch size, evaluates all four complete scenes, preserves a 0.1% aggregate class-mismatch budget, and caps every scene at 0.2% before publishing any plan |
+| OmniCloudMask ensemble | Direct FP16 TensorRT plans: fixed batch 1 at the operational 1000 px Sentinel tile and batch 4 with exact logical-batch padding at 869/891 px | Offline acceptance derives every fixed-scene patch size, evaluates all four complete scenes, preserves a 0.1% aggregate class-mismatch budget, and caps every scene at 0.2% before publishing any plan |
 | Prithvi crop segmentation | Direct weakly typed mixed-FP16 TensorRT plan, FP32 I/O, TF32 disabled, fixed batch 16 | Offline acceptance compares balanced real-scene tiles with the established CUDA-autocast FP16 source using unchanged 0.2% decision and 0.5% mean-probability gates; logits and thresholds are not calibrated or altered |
 | Balkan 10 m preparation | Embedded overview read, one multiband average GDAL warp, checksum-keyed persistent grid | Avoids decoding four full-resolution bands separately while preserving the existing 10 m UTM, band-order, nodata, and reflectance contracts |
 | Health indices and packaging | Exact vectorized NumPy statistics in RAM, concurrent RGB/overlay/grid/codec work | Routine runs avoid non-downlinked science rasters; lossless PNG level 1 and WebP method 0 favor the two-second latency contract |
@@ -205,15 +205,17 @@ A production-ready health response must show:
 - one checksum-bound direct crop TensorRT engine with its accepted parity record;
 - `tensorrt_cudagraphs: false`;
 - `cloud_backend: "omnicloudmask_tensorrt_fp16"` and `cloud_batch_size: 4`;
-- three checksum-bound direct cloud TensorRT engines at 700, 869, and 891 px;
-- cloud warmup profiles for batch 1 at 700 px and batches 1 and 4 at 869/891 px;
+- three checksum-bound direct cloud TensorRT engines at 869, 891, and 1000 px;
+- cloud warmup profiles for batch 1 at 1000 px and batches 1 and 4 at 869/891 px;
 - four distinct `cloud_scene_warmup_profiles`, each with `kind: "fixed_input_profile"` and `prediction_retained: false`;
 - two `balkan_analysis_caches` entries (a first build may report `cache_hit: false`; later startups report true);
 - each Balkan cache reports `preprocessing_mode: "embedded_overview_then_average"` and `overview_factor: 4`.
 
-The two fixed Sentinel scenes use 700 px model patches. OmniCloudMask's reviewed
+The two fixed 700 px Sentinel scenes are reflect-padded into the same 1000 px
+tiles used by the operational executor. OmniCloudMask's reviewed
 no-data rule reduces the prepared 3408 and 3370 Balkan grids to 869 and 891 px. The
-unused 1,000 px backend base is not built for this checksum-pinned release. The service
+1,000 px profile is therefore both the backend base and the real Sentinel execution
+shape for this checksum-pinned release. The service
 also reads each fixed input and runs a discarded cloud prediction so CUDA/cuDNN sees
 every exact Sentinel and Balkan mosaic shape before readiness. Model construction,
 warmup, and inference are pinned
@@ -358,7 +360,7 @@ Use the stage timings in the response and payload `result.json`, not only the to
   `payload_seconds`; cloud/crop inference and mask-processing values are nested inside
   their corresponding stage totals and must not be added a second time;
 - high `cloud_inference_seconds`: validate all three accepted FP16 plans, the batch-1
-  700 and batch-4 869/891 contracts, and completed exact-scene warmups in
+  batch-1 1000 and batch-4 869/891 contracts, and completed exact-scene warmups in
   `/healthz`;
 - high `crop_inference_seconds`: validate one accepted mixed-FP16/no-TF32 direct plan
   and confirm that the service did not fall back to PyTorch;

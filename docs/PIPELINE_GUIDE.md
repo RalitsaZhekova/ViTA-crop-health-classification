@@ -110,7 +110,7 @@ execution state.
 4. It loads the two OmniCloudMask ensemble checkpoints once.
 5. It loads the selected Prithvi crop model once on native CUDA.
 6. It warms every accepted FP16 cloud TensorRT shape and the fixed batch-16
-   mixed-FP16 crop TensorRT path directly on CUDA. The 700 px Sentinel plan is
+   mixed-FP16 crop TensorRT path directly on CUDA. The 1000 px Sentinel plan is
    physically batch 1; the 869/891 px Balkan plans are batch 4. No production
    model compiler runs here.
 7. Only then does `/healthz` report `status: ready`. Readiness includes a tiny
@@ -294,7 +294,7 @@ accepted requests. `/healthz` exposes startup costs separately.
 
 ### Explicit warmup and correct warmup shapes
 
-Cloud warmup follows the physical accepted plans exactly: batch 1 at 700 pixels and
+Cloud warmup follows the physical accepted plans exactly: batch 1 at 1000 pixels and
 batches 1 and 4 at 869/891 pixels. Crop warmup uses fixed batch 16 at 224×224. The crop model runs before
 the final exact cloud warmups because it can displace convolution/workspace state.
 Warmup predictions are discarded; no scientific output is cached as a substitute for
@@ -310,12 +310,12 @@ local validation.
 ### Direct FP16 cloud TensorRT, semantic-only inference, and batching
 
 The reviewed two-model mean-logit ensemble is exported and compiled offline into three
-fixed-shape native TensorRT plans. The builder derives the 700, 869, and 891 pixel
-scene profiles with OmniCloudMask's own no-data rule. The 700 px profile is fixed
+fixed-shape native TensorRT plans. The builder derives the 869, 891, and 1000 pixel
+operational profiles with OmniCloudMask's own no-data rule. The 1000 px profile is fixed
 batch 1 because each Sentinel scene is exactly one
 patch; this avoids executing three synthetic padded copies. The 869/891 px Balkan
 profiles remain fixed batch 4, padding only their final logical batch. The unused
-1,000 px base profile is deliberately not built for the checksum-pinned release.
+700 px source-shape profile is deliberately not built because no model call uses it.
 `predict_semantic()` returns only class IDs to the CPU. The service loads only
 checksum-sealed FP16 plans that passed all four real-scene
 comparisons against the FP16 PyTorch source; it never compiles during startup or

@@ -207,7 +207,7 @@ def test_payload_env_matches_the_production_crop_acceleration_contract() -> None
     assert environment["VITA_CLOUD_INFERENCE_DTYPE"] == "fp16"
     assert environment["VITA_CLOUD_TRT_PRECISION"] == "fp16"
     assert environment["VITA_TRT_BUILDER_OPTIMIZATION_LEVEL"] == "5"
-    assert environment["VITA_CLOUD_WARMUP_PATCH_SIZES"] == "700,869,891"
+    assert environment["VITA_CLOUD_WARMUP_PATCH_SIZES"] == "869,891,1000"
     assert environment["VITA_SKIP_PERFORMANCE_ACCEPTANCE"] == "0"
     compose = (
         Path(__file__).resolve().parents[1] / "deploy/compose.payload.yaml"

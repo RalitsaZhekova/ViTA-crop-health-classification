@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from prithvi_payload.cloud_profiles import CLOUD_MODEL_HALO, CLOUD_MODEL_TILE_SIZE
+
 CLOUD_STAGE_SCHEMA_VERSION = "0.1-draft"
 
 
@@ -119,10 +121,10 @@ def build_cloud_stage_plan(
             "mode": "WINDOWED_GEOTIFF",
             "source_full_scene_materialization_allowed": False,
             "balkan_resampled_analysis_grid_materialization_allowed": True,
-            "tile_size": 1000,
+            "tile_size": CLOUD_MODEL_TILE_SIZE,
             # Adjacent model tiles overlap by 300 px: 150 px of context is
             # discarded on each side before the core is written.
-            "overlap": 150,
+            "overlap": CLOUD_MODEL_HALO,
             "model_patch_overlap": 300,
         },
         "output_contract": {

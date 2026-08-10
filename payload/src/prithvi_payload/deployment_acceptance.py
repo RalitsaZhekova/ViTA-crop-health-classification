@@ -169,6 +169,20 @@ def validate_health(health: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("Demo-scene warmups must exercise fixed input profiles")
     if any(profile.get("prediction_retained") is not False for profile in scene_profiles):
         raise RuntimeError("Startup must not retain cached demo predictions")
+    sentinel_profiles = [
+        profile for profile in scene_profiles if profile.get("sensor") == "sentinel-2"
+    ]
+    balkan_profiles = [
+        profile for profile in scene_profiles if profile.get("sensor") == "balkan-1"
+    ]
+    if len(sentinel_profiles) != 2 or len(balkan_profiles) != 2:
+        raise RuntimeError("Demo-scene warmups must cover both fixed scenes per sensor")
+    if any(
+        profile.get("height") != REVIEWED_CLOUD_BASE_PATCH_SIZE
+        or profile.get("width") != REVIEWED_CLOUD_BASE_PATCH_SIZE
+        for profile in sentinel_profiles
+    ):
+        raise RuntimeError("Sentinel warmups did not exercise operational haloed tiles")
 
     balkan_caches = stack.get("balkan_analysis_caches")
     if not isinstance(balkan_caches, list) or len(balkan_caches) != 2:

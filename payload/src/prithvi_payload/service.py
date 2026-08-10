@@ -321,6 +321,7 @@ class PayloadRuntime:
         )
         self._scene_cloud_warmups.append(
             {
+                "sensor": "balkan-1",
                 "source_path": analysis["source_path"],
                 "source_band_indices": analysis["model_band_routes"]["cloud_detection"][
                     "source_band_indices"
@@ -390,6 +391,7 @@ class PayloadRuntime:
             route = intake["model_band_routes"]["cloud_detection"]
             self._scene_cloud_warmups.append(
                 {
+                    "sensor": "sentinel-2",
                     "source_path": intake["source_path"],
                     "source_band_indices": route["source_band_indices"],
                     "reflectance_scale": float(
@@ -416,14 +418,14 @@ class PayloadRuntime:
         """Exercise one fixed scene path without retaining its prediction."""
 
         import numpy as np
-        import rasterio
         from cloud_detection.preprocessing import (
             normalize_reflectance,
             strict_valid_mask,
         )
 
-        with rasterio.open(profile["source_path"]) as source:
-            raw_image = source.read(profile["source_band_indices"])
+        from prithvi_payload.cloud_profiles import read_fixed_scene_cloud_input
+
+        raw_image = read_fixed_scene_cloud_input(profile)
         image, invalid = normalize_reflectance(
             raw_image,
             scale=profile["reflectance_scale"],
@@ -439,6 +441,7 @@ class PayloadRuntime:
             torch.cuda.synchronize()
         result = {
             "kind": "fixed_input_profile",
+            "sensor": profile["sensor"],
             "input": profile["input"],
             "height": int(image.shape[1]),
             "width": int(image.shape[2]),
@@ -460,7 +463,7 @@ class PayloadRuntime:
         else:
             raw_patch_sizes = os.environ.get(
                 "VITA_CLOUD_WARMUP_PATCH_SIZES",
-                "700,869,891",
+                "869,891,1000",
             )
             try:
                 patch_sizes = tuple(

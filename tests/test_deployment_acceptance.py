@@ -28,18 +28,20 @@ def _health() -> dict:
             "cloud_tensorrt_parity": {},
             "tensorrt_manifest_sha256": None,
             "cloud_warmup_profiles": [
-                {"batch_size": 1, "patch_size": 700},
                 {"batch_size": 1, "patch_size": 869},
                 {"batch_size": 1, "patch_size": 891},
                 {"batch_size": 1, "patch_size": 1000},
-                {"batch_size": 4, "patch_size": 700},
                 {"batch_size": 4, "patch_size": 869},
                 {"batch_size": 4, "patch_size": 891},
+                {"batch_size": 4, "patch_size": 1000},
             ],
             "cloud_scene_warmup_profiles": [
                 {
                     "kind": "fixed_input_profile",
                     "input": f"scene-{index}.tif",
+                    "sensor": "sentinel-2" if index < 2 else "balkan-1",
+                    "height": 1000 if index < 2 else 2000,
+                    "width": 1000 if index < 2 else 1700,
                     "prediction_retained": False,
                 }
                 for index in range(4)
@@ -145,7 +147,7 @@ def test_jetson_acceptance_accepts_checksum_bound_direct_tensorrt(
             "cloud_tensorrt_engine_count": 3,
             "cloud_tensorrt_profiles": [
                 {
-                    "patch_size": 700,
+                    "patch_size": 1000,
                     "minimum_batch_size": 1,
                     "maximum_batch_size": 1,
                 },
@@ -172,7 +174,7 @@ def test_jetson_acceptance_accepts_checksum_bound_direct_tensorrt(
             },
             "tensorrt_manifest_sha256": "a" * 64,
             "cloud_warmup_profiles": [
-                {"batch_size": 1, "patch_size": 700},
+                {"batch_size": 1, "patch_size": 1000},
                 {"batch_size": 1, "patch_size": 869},
                 {"batch_size": 1, "patch_size": 891},
                 {"batch_size": 4, "patch_size": 869},
@@ -217,7 +219,7 @@ def test_jetson_acceptance_rejects_cloud_scene_parity_regression(
                     "minimum_batch_size": 1,
                     "maximum_batch_size": maximum_batch_size,
                 }
-                for patch_size, maximum_batch_size in ((700, 1), (869, 4), (891, 4))
+                for patch_size, maximum_batch_size in ((869, 4), (891, 4), (1000, 1))
             ],
             "cloud_tensorrt_parity": {
                 "class_mismatch_fraction": 0.0009,
@@ -231,7 +233,7 @@ def test_jetson_acceptance_rejects_cloud_scene_parity_regression(
             },
             "tensorrt_manifest_sha256": "a" * 64,
             "cloud_warmup_profiles": [
-                {"batch_size": 1, "patch_size": 700},
+                {"batch_size": 1, "patch_size": 1000},
                 {"batch_size": 1, "patch_size": 869},
                 {"batch_size": 1, "patch_size": 891},
                 {"batch_size": 4, "patch_size": 869},
@@ -263,6 +265,18 @@ def test_jetson_acceptance_rejects_direct_tensorrt_parity_regression(
     }
 
     with pytest.raises(RuntimeError, match="decision parity"):
+        validate_health(health)
+
+
+def test_jetson_acceptance_rejects_raw_sentinel_scene_warmup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _production_flags(monkeypatch)
+    health = _health()
+    health["stack"]["cloud_scene_warmup_profiles"][0]["height"] = 700
+    health["stack"]["cloud_scene_warmup_profiles"][0]["width"] = 700
+
+    with pytest.raises(RuntimeError, match="operational haloed tiles"):
         validate_health(health)
 
 

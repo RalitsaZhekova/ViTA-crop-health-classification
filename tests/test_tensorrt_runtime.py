@@ -7,20 +7,27 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from cloud_detection.backend import OMNICLOUDMASK_ENSEMBLE_SHA256
 from prithvi_payload import tensorrt_runtime
+from prithvi_payload.inference import OPTIMIZED_BATCH_SIZE
 from prithvi_payload.tensorrt_builder import (
     _canonicalize_cloud_onnx,
     _canonicalize_crop_onnx,
     _discover_cloud_scene_patch_sizes,
+    _load_reusable_cloud_records,
+    _load_reusable_crop_record,
     _normalize_onnxscript_integer_attributes,
+    _prune_unaccepted_build_artifacts,
 )
 from prithvi_payload.tensorrt_runtime import (
     MANIFEST_SCHEMA_VERSION,
     TensorRTArtifactError,
     _resolve_cuda_device,
+    file_sha256,
     load_accepted_manifest,
     write_manifest_atomic,
 )
+from prithvi_shared import SELECTED_CHECKPOINT_SHA256
 
 
 def _manifest() -> dict:
@@ -51,8 +58,8 @@ def test_direct_tensorrt_discovers_every_reviewed_scene_patch(
     import omnicloudmask.cloud_mask
 
     sizes = {
-        "sentinel-a": 700,
-        "sentinel-b": 700,
+        "sentinel-a": 1000,
+        "sentinel-b": 1000,
         "balkan-3370": 891,
         "balkan-3408": 869,
     }
@@ -87,6 +94,146 @@ def test_direct_tensorrt_discovers_every_reviewed_scene_patch(
     )
 
     assert _discover_cloud_scene_patch_sizes(runtime) == sizes
+
+
+def test_direct_tensorrt_reuses_only_checksum_bound_matching_cloud_profiles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_path = tmp_path / "direct" / "accepted.json"
+    plan_path = manifest_path.parent / "plans" / "cloud-869.plan"
+    plan_path.parent.mkdir(parents=True)
+    plan_path.write_bytes(b"accepted-plan")
+    target = {"gpu": "test"}
+    record = {
+        "plan": "plans/cloud-869.plan",
+        "plan_sha256": file_sha256(plan_path),
+        "onnx_sha256": "b" * 64,
+        "precision": "fp16",
+        "inputs": [
+            {
+                "name": "image",
+                "dtype": "float16",
+                "shape": [4, 3, 869, 869],
+            }
+        ],
+        "outputs": [],
+        "patch_size": 869,
+        "logical_min_batch_size": 1,
+        "logical_max_batch_size": 4,
+    }
+    write_manifest_atomic(
+        manifest_path,
+        {
+            "schema_version": MANIFEST_SCHEMA_VERSION,
+            "status": "accepted",
+            "target": target,
+            "models": {
+                "crop": {},
+                "cloud": {
+                    "source_sha256": OMNICLOUDMASK_ENSEMBLE_SHA256,
+                    "precision": "fp16",
+                    "plans": [record],
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(tensorrt_runtime, "current_target_signature", lambda: target)
+
+    reusable = _load_reusable_cloud_records(
+        manifest_path,
+        target=target,
+        precision="fp16",
+        profiles=[(869, 4), (891, 4), (1000, 1)],
+    )
+
+    assert reusable == {869: record}
+
+
+def test_direct_tensorrt_reuses_checksum_bound_matching_crop_plan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_path = tmp_path / "direct" / "accepted.json"
+    plan_path = manifest_path.parent / "plans" / "crop.plan"
+    plan_path.parent.mkdir(parents=True)
+    plan_path.write_bytes(b"accepted-crop-plan")
+    target = {"gpu": "test"}
+    record = {
+        "plan": "plans/crop.plan",
+        "plan_sha256": file_sha256(plan_path),
+        "onnx_sha256": "c" * 64,
+        "precision": "mixed-fp16",
+        "source_sha256": SELECTED_CHECKPOINT_SHA256,
+        "tf32": False,
+        "inputs": [
+            {
+                "name": "image",
+                "dtype": "float32",
+                "shape": [OPTIMIZED_BATCH_SIZE, 4, 1, 224, 224],
+            },
+            {
+                "name": "temporal_coords",
+                "dtype": "float32",
+                "shape": [OPTIMIZED_BATCH_SIZE, 1, 2],
+            },
+            {
+                "name": "location_coords",
+                "dtype": "float32",
+                "shape": [OPTIMIZED_BATCH_SIZE, 2],
+            },
+        ],
+        "outputs": [],
+    }
+    write_manifest_atomic(
+        manifest_path,
+        {
+            "schema_version": MANIFEST_SCHEMA_VERSION,
+            "status": "accepted",
+            "target": target,
+            "models": {"crop": record, "cloud": {}},
+        },
+    )
+    monkeypatch.setattr(tensorrt_runtime, "current_target_signature", lambda: target)
+
+    reusable = _load_reusable_crop_record(
+        manifest_path,
+        target=target,
+        precision="mixed-fp16",
+    )
+
+    assert reusable == record
+
+
+def test_direct_tensorrt_prunes_only_unaccepted_build_artifacts(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "direct" / "accepted.json"
+    plans_root = manifest_path.parent / "plans"
+    onnx_root = manifest_path.parent / "onnx"
+    plans_root.mkdir(parents=True)
+    onnx_root.mkdir()
+    accepted_crop = plans_root / "crop.plan"
+    accepted_cloud = plans_root / "cloud-1000.plan"
+    obsolete = plans_root / "cloud-700.plan"
+    for path in (accepted_crop, accepted_cloud, obsolete):
+        path.write_bytes(path.name.encode())
+        path.with_suffix(".build.json").write_text("{}", encoding="utf-8")
+    (onnx_root / "candidate.onnx").write_bytes(b"intermediate")
+    manifest = {
+        "models": {
+            "crop": {"plan": "plans/crop.plan"},
+            "cloud": {"plans": [{"plan": "plans/cloud-1000.plan"}]},
+        }
+    }
+
+    _prune_unaccepted_build_artifacts(manifest_path, manifest)
+
+    assert accepted_crop.is_file()
+    assert accepted_cloud.is_file()
+    assert accepted_crop.with_suffix(".build.json").is_file()
+    assert accepted_cloud.with_suffix(".build.json").is_file()
+    assert not obsolete.exists()
+    assert not obsolete.with_suffix(".build.json").exists()
+    assert not list(onnx_root.glob("*.onnx"))
 
 
 def test_direct_tensorrt_manifest_is_atomic_and_integrity_bound(

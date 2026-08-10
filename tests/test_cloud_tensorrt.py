@@ -140,8 +140,8 @@ def test_cloud_tensorrt_router_rejects_batch_outside_manifest_contract() -> None
         router(torch.ones((5, 3, 8, 8)))
 
 
-def test_reviewed_cloud_batches_avoid_sentinel_padding() -> None:
-    assert dict(REVIEWED_CLOUD_SCENE_BATCH_SIZES) == {700: 1, 869: 4, 891: 4}
+def test_reviewed_cloud_batches_match_operational_payload_tiles() -> None:
+    assert dict(REVIEWED_CLOUD_SCENE_BATCH_SIZES) == {869: 4, 891: 4, 1000: 1}
     assert CLOUD_MAX_AGGREGATE_CLASS_MISMATCH == 0.001
     assert CLOUD_MAX_SCENE_CLASS_MISMATCH == 0.002
 
