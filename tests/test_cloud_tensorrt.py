@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import pytest
+import threading
+
 import torch
 from cloud_detection.tensorrt_backend import (
     CloudTensorRTRouter,
     _CloudEnsemble,
-    _engine_count,
     _remove_zero_channel_cat_noops,
 )
 from torch import nn
@@ -48,25 +48,6 @@ def test_cloud_tensorrt_wrapper_preserves_mean_logit_ensemble() -> None:
     torch.testing.assert_close(ensemble(image), image * 3.0)
 
 
-def test_cloud_tensorrt_parity_records_logit_error_without_class_change(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("VITA_CLOUD_TRT_MAX_CLASS_MISMATCH", "0")
-    router = _empty_router()
-    router._source = _CloudEnsemble([_Scale(1.0), _Scale(1.0)])
-    image = torch.arange(1 * 3 * 4 * 4, dtype=torch.float32).reshape(1, 3, 4, 4)
-    accelerated = router._source(image) + 1e-4
-
-    parity = router._validate_output(image, accelerated)
-
-    assert parity["class_mismatch_fraction"] == 0.0
-    assert parity["mean_absolute_logit_error"] == pytest.approx(1e-4, rel=0.01)
-
-
-def test_cloud_tensorrt_engine_detection_rejects_plain_pytorch() -> None:
-    assert _engine_count(nn.Sequential(nn.Conv2d(3, 4, 1))) == 0
-
-
 def test_cloud_tensorrt_removes_exact_zero_channel_cat_noop() -> None:
     image = torch.randn((1, 3, 8, 8), dtype=torch.float32)
     exported = torch.export.export(_ZeroChannelSkip(), (image,), strict=False)
@@ -91,7 +72,7 @@ def test_cloud_tensorrt_router_satisfies_omnicloudmask_custom_model_contract() -
     from omnicloudmask.cloud_mask import collect_models
 
     router = _empty_router()
-    router._source = _CloudEnsemble([_Scale(1.0), _Scale(1.0)])
+    router._plans = {(8, 8): _Scale(1.0)}
 
     collected = collect_models(
         custom_models=[router],
@@ -106,9 +87,10 @@ def test_cloud_tensorrt_router_satisfies_omnicloudmask_custom_model_contract() -
 
 def test_cloud_tensorrt_router_uses_module_forward_dispatch() -> None:
     router = _empty_router()
-    router._compiled = {(1, 8, 8): _Scale(2.0)}
-    router._frozen = True
-    router._lock = None
+    router._plans = {(8, 8): _Scale(2.0)}
+    router._used_profiles = set()
+    router._lock = threading.Lock()
     image = torch.ones((1, 3, 8, 8))
 
     torch.testing.assert_close(router(image), image * 2.0)
+    assert router._used_profiles == {(1, 8, 8)}

@@ -60,7 +60,7 @@ if docker image inspect "$BASE_IMAGE" >/dev/null 2>&1; then
         'architecture={{.Architecture}} id={{.Id}} repo_digests={{json .RepoDigests}}' \
         "$BASE_IMAGE"
     if ! docker run --rm --runtime nvidia --entrypoint python "$BASE_IMAGE" -c \
-        'import json, numpy, platform, tensorrt, torch, torch_tensorrt; print(json.dumps({"machine": platform.machine(), "python": platform.python_version(), "numpy": numpy.__version__, "torch": torch.__version__, "cuda_runtime": torch.version.cuda, "cuda_available": torch.cuda.is_available(), "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None, "tensorrt": tensorrt.__version__, "torch_tensorrt": torch_tensorrt.__version__}, sort_keys=True)); assert torch.cuda.is_available()'; then
+        'import json, numpy, platform, tensorrt, torch; print(json.dumps({"machine": platform.machine(), "python": platform.python_version(), "numpy": numpy.__version__, "torch": torch.__version__, "cuda_runtime": torch.version.cuda, "cuda_available": torch.cuda.is_available(), "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None, "tensorrt": tensorrt.__version__}, sort_keys=True)); assert torch.cuda.is_available()'; then
         failures=$((failures + 1))
     fi
 else

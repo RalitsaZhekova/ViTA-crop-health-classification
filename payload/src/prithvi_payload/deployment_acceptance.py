@@ -19,36 +19,97 @@ def validate_health(health: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("Payload health has no stack record")
     if stack.get("cuda_available") is not True:
         raise RuntimeError("CUDA is not available in the payload service")
-    if stack.get("crop_backend") != "pytorch":
-        raise RuntimeError("Crop inference is not using the accepted PyTorch graph")
+    requested_backend = os.environ.get("VITA_CROP_BACKEND", "pytorch").strip().casefold()
+    if requested_backend not in {"pytorch", "tensorrt"}:
+        raise RuntimeError("VITA_CROP_BACKEND must be pytorch or tensorrt")
+    if stack.get("crop_backend") != requested_backend:
+        raise RuntimeError("Crop inference is not using the requested accepted backend")
     if stack.get("crop_device") != "cuda":
         raise RuntimeError("Crop inference is not running on CUDA")
-    if stack.get("crop_inference_dtype") != "fp32":
-        raise RuntimeError("Crop inference is not using the accepted FP32 graph")
+    expected_crop_precision = (
+        "fp32"
+        if requested_backend == "pytorch"
+        else os.environ.get("VITA_CROP_TRT_PRECISION", "fp32").strip().casefold()
+    )
+    if stack.get("crop_inference_dtype") != expected_crop_precision:
+        raise RuntimeError("Crop inference is not using the accepted precision")
     if stack.get("crop_tf32") is not False:
         raise RuntimeError("Crop inference has TF32 enabled")
-    if stack.get("crop_tensorrt_engine_count") != 0:
-        raise RuntimeError("Rejected crop TensorRT engine partitions are still active")
     if stack.get("tensorrt_cudagraphs") is not False:
-        raise RuntimeError("Rejected TensorRT CUDA graph replay is still enabled")
+        raise RuntimeError("TensorRT CUDA graph replay must remain disabled")
     if int(stack.get("crop_batch_size", 0)) != int(
         os.environ.get("VITA_CROP_BATCH_SIZE", "16")
     ):
         raise RuntimeError("Crop CUDA inference uses the wrong fixed batch size")
-    if stack.get("crop_tensorrt_parity") != {}:
-        raise RuntimeError("Rejected crop TensorRT calibration is still active")
-    if stack.get("cloud_backend") != "omnicloudmask_cuda_fp16":
-        raise RuntimeError("Cloud inference is not using the accepted FP16 CUDA graph")
+    requested_cloud_backend = os.environ.get(
+        "VITA_CLOUD_BACKEND", "pytorch"
+    ).strip().casefold()
+    if requested_cloud_backend != requested_backend:
+        raise RuntimeError("Crop and cloud execution modes do not match")
+    cloud_precision = os.environ.get(
+        "VITA_CLOUD_INFERENCE_DTYPE", "fp16"
+    ).strip().casefold()
+    expected_cloud_backend = (
+        f"omnicloudmask_tensorrt_{cloud_precision}"
+        if requested_backend == "tensorrt"
+        else f"omnicloudmask_cuda_{cloud_precision}"
+    )
+    if stack.get("cloud_backend") != expected_cloud_backend:
+        raise RuntimeError("Cloud inference is not using the requested accepted backend")
     if int(stack.get("cloud_batch_size", 0)) != int(
         os.environ.get("VITA_CLOUD_BATCH_SIZE", "4")
     ):
         raise RuntimeError("Cloud CUDA inference uses the wrong fixed batch size")
-    if stack.get("cloud_tensorrt_engine_count") != 0:
-        raise RuntimeError("Rejected cloud TensorRT engine partitions are still active")
-
     profiles = stack.get("cloud_tensorrt_profiles")
-    if profiles != []:
-        raise RuntimeError("Rejected cloud TensorRT profiles are still active")
+    if requested_backend == "pytorch":
+        if stack.get("crop_tensorrt_engine_count") != 0:
+            raise RuntimeError("Crop TensorRT engines are active in PyTorch mode")
+        if stack.get("crop_tensorrt_parity") != {}:
+            raise RuntimeError("Crop TensorRT parity is active in PyTorch mode")
+        if stack.get("cloud_tensorrt_engine_count") != 0 or profiles != []:
+            raise RuntimeError("Cloud TensorRT engines are active in PyTorch mode")
+    else:
+        if stack.get("tensorrt_runtime") != "native-python":
+            raise RuntimeError("Direct TensorRT is not using the native Python runtime")
+        if stack.get("crop_tensorrt_engine_count") != 1:
+            raise RuntimeError("Direct crop TensorRT must load exactly one engine")
+        if stack.get("crop_tensorrt_precision") != expected_crop_precision:
+            raise RuntimeError("Direct crop TensorRT precision does not match acceptance")
+        if stack.get("crop_tensorrt_tf32") is not False:
+            raise RuntimeError("Direct crop TensorRT must disable TF32")
+        crop_parity = stack.get("crop_tensorrt_parity")
+        if not isinstance(crop_parity, dict):
+            raise RuntimeError("Direct crop TensorRT parity record is missing")
+        if float(crop_parity.get("class_mismatch_fraction", 1.0)) > 0.002:
+            raise RuntimeError("Direct crop TensorRT exceeds the decision parity gate")
+        if float(crop_parity.get("mean_absolute_probability_error", 1.0)) > 0.005:
+            raise RuntimeError("Direct crop TensorRT exceeds the probability parity gate")
+        if stack.get("cloud_tensorrt_engine_count") != 2:
+            raise RuntimeError("Direct cloud TensorRT must load exactly two engines")
+        if not isinstance(profiles, list) or len(profiles) != 2:
+            raise RuntimeError("Direct cloud TensorRT profile record is incomplete")
+        profile_contract = {
+            (
+                profile.get("patch_size"),
+                profile.get("minimum_batch_size"),
+                profile.get("maximum_batch_size"),
+            )
+            for profile in profiles
+            if isinstance(profile, dict)
+        }
+        if profile_contract != {(869, 1, stack["cloud_batch_size"]), (1000, 1, 1)}:
+            raise RuntimeError("Direct cloud TensorRT profiles do not match payload shapes")
+        cloud_parity = stack.get("cloud_tensorrt_parity")
+        if not isinstance(cloud_parity, dict) or float(
+            cloud_parity.get("class_mismatch_fraction", 1.0)
+        ) > 0.001:
+            raise RuntimeError("Direct cloud TensorRT exceeds the class parity gate")
+        scenes = cloud_parity.get("scenes")
+        if not isinstance(scenes, list) or len(scenes) != 4:
+            raise RuntimeError("Direct cloud TensorRT was not accepted on four scenes")
+        manifest_digest = stack.get("tensorrt_manifest_sha256")
+        if not isinstance(manifest_digest, str) or len(manifest_digest) != 64:
+            raise RuntimeError("Direct TensorRT accepted manifest is missing")
 
     warmup_profiles = stack.get("cloud_warmup_profiles")
     expected_cloud_warmups = {(1, 1000), (1, 869), (stack["cloud_batch_size"], 869)}
@@ -98,7 +159,7 @@ def validate_health(health: dict[str, Any]) -> dict[str, Any]:
         "cloud_backend": stack["cloud_backend"],
         "cloud_batch_size": stack["cloud_batch_size"],
         "cloud_tensorrt_engine_count": stack["cloud_tensorrt_engine_count"],
-        "cloud_profile_count": 0,
+        "cloud_profile_count": len(profiles),
         "warmed_scene_count": len(scene_profiles),
         "prepared_balkan_scene_count": len(balkan_caches),
         "target_payload_seconds": 2.0,

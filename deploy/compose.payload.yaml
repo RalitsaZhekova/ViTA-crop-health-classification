@@ -45,16 +45,15 @@ services:
       OMNICLOUDMASK_MODEL_DIR: /models/omnicloudmask
       VITA_MODEL_CACHE_DIR: /engine-cache/torch-export
       VITA_TRT_CACHE_DIR: /engine-cache/tensorrt
-      # TensorRT 10.8 failed the fixed Prithvi decision-parity gate on this
-      # Jetson stack. Keep the exact exported model on native CUDA in production.
+      VITA_TRT_MANIFEST: /engine-cache/tensorrt/direct/accepted.json
       VITA_CROP_BACKEND: ${VITA_CROP_BACKEND:-pytorch}
       VITA_CROP_BATCH_SIZE: ${VITA_CROP_BATCH_SIZE:-16}
-      # The same pinned TensorRT stack also failed the real-scene cloud parity
-      # gate (0.299% class mismatch versus the unchanged 0.1% limit). Run the
-      # reviewed FP16 PyTorch source models directly on CUDA in production.
+      VITA_CROP_TRT_PRECISION: ${VITA_CROP_TRT_PRECISION:-fp32}
       VITA_TRT_CUDAGRAPHS: ${VITA_TRT_CUDAGRAPHS:-0}
       VITA_CLOUD_BACKEND: ${VITA_CLOUD_BACKEND:-pytorch}
       VITA_CLOUD_INFERENCE_DTYPE: ${VITA_CLOUD_INFERENCE_DTYPE:-fp16}
+      VITA_CLOUD_TRT_PRECISION: ${VITA_CLOUD_TRT_PRECISION:-fp32}
+      VITA_TRT_WORKSPACE_MIB: ${VITA_TRT_WORKSPACE_MIB:-4096}
       VITA_CLOUD_BATCH_SIZE: ${VITA_CLOUD_BATCH_SIZE:-4}
       VITA_CLOUD_WARMUP_PATCH_SIZES: ${VITA_CLOUD_WARMUP_PATCH_SIZES:-869}
       VITA_DEMO_SENTINEL_IMAGES: ${VITA_DEMO_SENTINEL_IMAGES:-sentinel2/S2_20260610T091331_T35TLG_bulgaria-thrace.tif,sentinel2/S2_20260115T135659_T21LXF_brazil-mato-grosso.tif}

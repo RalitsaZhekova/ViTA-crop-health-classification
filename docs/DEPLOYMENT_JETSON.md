@@ -16,8 +16,8 @@ Invoke-VitaPayload.ps1              /data/code/VITA/data (read-only)
         | SSH local forward          |
         +===========================>| 127.0.0.1:8090
         |     small JSON request     | warm FastAPI worker
-        |                            |  cloud: native PyTorch CUDA FP16
-        |                            |  crop: native PyTorch CUDA FP32
+        |                            |  cloud: accepted direct TensorRT FP32
+        |                            |  crop: accepted direct TensorRT FP32
         |                            |  health/indices: CPU + GDAL threads
         |                            |  package exactly 3 artifacts
         | SCP + SHA-256              |
@@ -26,7 +26,7 @@ validate + catalog ingest
 ground dashboard on 127.0.0.1:8000
 ```
 
-The payload image extends `nvcr.io/nvidia/pytorch:25.01-py3-igpu`, matching the stack verified inside the target Orin's NVIDIA runtime: NumPy 1.26.4, PyTorch `2.6.0a0+ecf3bae40a.nv25.01`, CUDA 12.8, TensorRT 10.8.0.40, and Torch-TensorRT 2.6.0a0. This PyTorch build and the image's OpenCV binaries use the NumPy 1.x ABI, so the payload retains NumPy 1.26.4. TerraTorch 1.1.1 supports that ABI and pins segmentation-models-pytorch 0.5.0, which also satisfies OmniCloudMask 1.7.1. TorchGeo 0.7.1 is paired with Lightly 1.5.22 because later Lightly releases eagerly import a distributed-training API omitted by this Jetson PyTorch build; neither package's training path is used during VITA inference. The real 95,484,420-parameter Prithvi checkpoint was strict-loaded against this model stack with every key matched. The build runs `pip check`, imports every CPU-safe dependency, and records the installed optional Torch-TensorRT distribution version. Because standard Docker builds do not receive the NVIDIA runtime, `deploy.sh` launches the completed image with `runtime: nvidia` and requires the exact PyTorch/CUDA stack before starting the service. Dependency, GPU-runtime, readiness, and performance failures are all fatal. Neither production model invokes Torch-TensorRT.
+The payload image extends `nvcr.io/nvidia/pytorch:25.01-py3-igpu`, matching the stack verified inside the target Orin's NVIDIA runtime: NumPy 1.26.4, PyTorch `2.6.0a0+ecf3bae40a.nv25.01`, CUDA 12.8, and TensorRT 10.8.0.40. This PyTorch build and the image's OpenCV binaries use the NumPy 1.x ABI, so the payload retains NumPy 1.26.4. TerraTorch 1.1.1 supports that ABI and pins segmentation-models-pytorch 0.5.0, which also satisfies OmniCloudMask 1.7.1. TorchGeo 0.7.1 is paired with Lightly 1.5.22 because later Lightly releases eagerly import a distributed-training API omitted by this Jetson PyTorch build; neither package's training path is used during VITA inference. The real 95,484,420-parameter Prithvi checkpoint was strict-loaded against this model stack with every key matched. The image adds pinned ONNX 1.17 and ONNX Script 0.1 for offline export and verifies TensorRT's Python runtime plus `trtexec`. Torch-TensorRT is not imported by the builder or service. Because standard Docker builds do not receive the NVIDIA runtime, `deploy.sh` performs ONNX export, TensorRT parsing, plan construction, and scientific parity on the target GPU before starting the service. Dependency, parser, plan, parity, readiness, and performance failures are fatal.
 
 The target host is JetPack 7.2 / L4T R39.2. NVIDIA's published Jetson PyTorch compatibility table originally paired container 25.01 with JetPack 6.1, so this is not a vendor-certified version pairing. It is retained for the MVP because both the unmodified NGC image and the local NumPy-1.26 derivative passed a live `--runtime nvidia` CUDA check on this exact Orin, while moving to PyTorch 2.11 would change the inference/compiler stack. Record this exception in the release evidence and requalify against a JetPack-7.2-supported framework image before a mission production release.
 
@@ -38,8 +38,8 @@ The acceleration policy is:
 
 | Stage | MVP execution | Reason |
 |---|---|---|
-| OmniCloudMask ensemble | Reviewed FP16 PyTorch source ensemble on native CUDA, batch up to 4 | The target TensorRT engine changed 0.299141% of real-scene classes, above the unchanged 0.1% gate; native CUDA preserves the accepted source result and performs no model compilation |
-| Prithvi crop segmentation | Exact exported FP32 PyTorch graph on native CUDA, fixed batch 16 | TensorRT 10.8 builds changed about 2.2% of thresholded decisions on the fixed parity batch; native CUDA preserves the trained model without calibration or relaxed gates |
+| OmniCloudMask ensemble | Direct, strongly typed FP32 TensorRT plans for dynamic batch 1-4 at 869 px and batch 1 at 1000 px | Offline acceptance compares all four complete scenes with the unchanged 0.1% class-mismatch gate; a plan is unavailable to the service until that passes |
+| Prithvi crop segmentation | Direct, strongly typed FP32 TensorRT plan, TF32 disabled, fixed batch 16 | Offline acceptance compares balanced real-scene tiles with unchanged 0.2% decision and 0.5% mean-probability gates; logits and thresholds are not calibrated or altered |
 | Balkan 10 m preparation | Embedded overview read, one multiband average GDAL warp, checksum-keyed persistent grid | Avoids decoding four full-resolution bands separately while preserving the existing 10 m UTM, band-order, nodata, and reflectance contracts |
 | Health indices and packaging | Exact vectorized NumPy statistics in RAM, concurrent RGB/overlay/grid/codec work | Routine runs avoid non-downlinked science rasters; lossless PNG level 1 and WebP method 0 favor the two-second latency contract |
 
@@ -53,13 +53,13 @@ Jetson and is a sensible later C++ optimization if profiling on Orin still ident
 TIFF decode as material; it does not itself implement the GeoTIFF reprojection or the
 Python Rasterio contract used by the models.
 
-ModelOpt is not required for native FP16 or FP32 CUDA inference. The optional Torch-TensorRT package can still emit `Unable to import quantization op` during preflight dependency inspection; production never requests a TensorRT or quantized graph. INT8 should only be introduced after a representative calibration set and an accuracy acceptance test exist.
+ModelOpt is not required for FP32 TensorRT. The direct path does not import Torch-TensorRT, so its optional quantization warning is not part of this workflow. INT8 remains out of scope until a representative calibration set and a separate accuracy acceptance test exist.
 
-Production creates no TensorRT model engines. At the start of deployment, the script removes only the known rejected VITA crop/cloud engine and timing-cache paths below `runtime/engines/tensorrt`; it never prunes shared Docker state. Any future TensorRT experiment must build on the target Orin because serialized engines are tied to their platform, TensorRT version, and target GPU. Repository images contain code and dependencies only—not imagery, weights, or engine plans.
+Deployment builds TensorRT plans only in the offline builder container on the target Orin because serialized engines are tied to the TensorRT version and target GPU. It first exports and validates every ONNX graph, rejects zero-sized constants, parses all graphs before tactic construction, releases the PyTorch source models from GPU memory, and then runs `trtexec`. Plans and timing caches live below `runtime/engines/tensorrt/direct`; repository images contain code and dependencies only—not imagery, weights, or engine plans.
 
 The image creates a non-login service account with the numeric UID/GID of the account executing `deploy.sh`, which matches the owner of the VITA runtime directories; the target defaults are `2002:2002`. This gives Python and PyTorch a valid passwd identity while the NVIDIA runtime supplies the required video/render device groups. A private tmpfs home keeps library and compiler caches writable while the image filesystem remains read-only and all Linux capabilities remain dropped. The VITA-owned `runtime/payload` and `runtime/engines` bind mounts also use Docker's private `:Z` SELinux relabeling when SELinux is active. Before model loading, deployment creates and removes a probe file in each mount. All writable paths remain scoped below `/data/code/VITA` or private container tmpfs; no other team's directory or container is modified.
 
-An installed TensorRT SDK or `trtexec` binary is not itself a model engine. Production ignores any `.engine`/`.plan` file and fail-closed acceptance requires zero active TensorRT engine partitions for both models. A future engine path requires proof against these exact graphs, weights, scenes, and unchanged accuracy gates before it can replace native CUDA.
+An installed TensorRT SDK or `trtexec` binary is not itself an accepted model engine. The service loads only plans named in a checksum-sealed `accepted.json` whose exact GPU/software signature, model hashes, I/O contracts, plan hashes, and parity evidence all validate. Candidate `.plan` files are inert if the builder fails, and the accepted manifest is replaced atomically only after every gate passes.
 
 ## 1. Provision exactly four demo scenes
 
@@ -134,7 +134,7 @@ chmod +x deploy/payload/*.sh
 ./deploy/payload/preflight.sh
 ```
 
-`probe.sh` is read-only and can run before the data package is present. Save its complete output for the deployment record. The preflight is successful only when the machine is a 64 GB Jetson Orin running `aarch64`, at least 10 GiB is free, the exact six-file demo manifest and model checksums pass, the exact validated ARM64 base-image ID is local, the NVIDIA Docker runtime works, CUDA is visible, and the expected NumPy/PyTorch/CUDA/TensorRT/Torch-TensorRT versions import. It also installs the required Ubuntu packages inside a disposable container, verifies `gdal-config`, performs Python dependency resolution in that same temporary environment, and validates the resolved Compose configuration before building. These checks do not change the base image, host packages, or payload files; Docker removes the temporary container when the check exits.
+`probe.sh` is read-only and can run before the data package is present. Save its complete output for the deployment record. The preflight is successful only when the machine is a 64 GB Jetson Orin running `aarch64`, at least 10 GiB is free, the exact six-file demo manifest and model checksums pass, the exact validated ARM64 base-image ID is local, the NVIDIA Docker runtime works, CUDA is visible, and the expected NumPy/PyTorch/CUDA/TensorRT versions import. It also installs the required Ubuntu packages inside a disposable container, verifies `gdal-config`, performs Python dependency resolution including the pinned ONNX exporter in that same temporary environment, and validates the resolved Compose configuration before building. These checks do not change the base image, host packages, or payload files; Docker removes the temporary container when the check exits.
 
 For timing runs, inspect the current Orin power policy:
 
@@ -154,7 +154,7 @@ cp deploy/payload.env.example deploy/payload.env  # skip if already configured
 ./deploy/payload/deploy.sh
 ```
 
-The script first rejects any environment that requests a TensorRT model backend or TensorRT CUDA-graph mode. It then runs preflight, builds the app layer on the already-installed NVIDIA image, removes only VITA's known rejected model-engine/timing caches, validates all four sensor contracts from inside the final image, starts Compose with `runtime: nvidia`, and warms the resident FP16 cloud and FP32 crop models directly on CUDA together with both Balkan analysis grids and all four exact scene paths. It then runs fail-closed acceleration checks and three timed repetitions of all four scenes. There is no production model compilation step. Subsequent restarts reuse the exported PyTorch graph and checksum-keyed Balkan grid caches.
+The script requires both model backends to be either `pytorch` or `tensorrt` and rejects the retired TensorRT CUDA-graph switch. In direct TensorRT mode it runs preflight, builds the image, validates CUDA/ONNX/TensorRT and all four sensor contracts, runs the offline builder, and starts Compose only after the builder publishes an accepted manifest. Service startup only deserializes the accepted plans; it never compiles. Unchanged ONNX, target, precision, and build arguments reuse checksum-verified plans, so a later parity retry does not repeat tactic construction. The script then runs fail-closed acceleration checks and the configured timed repetitions of all four scenes.
 
 If startup fails or the container restarts, the script prints the last 200 log lines and
 brings down only the explicitly named `vita-payload` Compose project. It retains the
@@ -302,8 +302,8 @@ Ground catalog:     runtime/ground/scenes/<job-id>/
 
 The returned `payload_seconds` is the ready-service execution from scene intake through three-file packaging. It excludes SSH setup, service startup/model load/warmup, SCP, and ground ingest. `under_two_seconds` is computed from that value. No prediction or output is cached: each request still executes cloud, crop, condition, and packaging. Check `/healthz` before starting the clock; a request before readiness is a cold-start test.
 
-`./deploy/payload/deploy.sh` automatically validates native-CUDA Prithvi, native-CUDA
-FP16 OmniCloudMask, zero active TensorRT engines, fixed batches, four discarded scene
+`./deploy/payload/deploy.sh` automatically validates one accepted crop plan, two accepted
+cloud plans, their sealed target/parity record, fixed batches, four discarded scene
 warmups, both Balkan grids, and every required RAM fast path. It then runs all four
 scenes three times and fails if
 **any** run is 2.0 seconds or slower. Rerun the gate manually with:
@@ -337,28 +337,23 @@ Use the stage timings in the response and payload `result.json`, not only the to
   `orchestration_seconds` is the measured remainder, so they add back to
   `payload_seconds`; cloud/crop inference and mask-processing values are nested inside
   their corresponding stage totals and must not be added a second time;
-- high `cloud_inference_seconds`: validate native CUDA FP16, batch 4, zero TensorRT
-  engine counts, and completed exact-scene warmups in `/healthz`;
-- high `crop_inference_seconds`: profile the exact native-CUDA Prithvi stage; do not
-  enable the rejected whole-graph TensorRT conversion to hide an accuracy failure;
+- high `cloud_inference_seconds`: validate two accepted direct plans, batch 4, the
+  869/1000 profile contract, and completed exact-scene warmups in `/healthz`;
+- high `crop_inference_seconds`: validate one accepted FP32/no-TF32 direct plan and
+  confirm that the service did not fall back to PyTorch;
 - high `shared_analysis_grid_seconds`: verify `/healthz` reports
   `embedded_overview_then_average`, factor 4, the expected Balkan cache key, and a
   persistent writable `runtime/payload/cache/balkan-analysis` directory;
 - high condition or packaging time: inspect their detailed internal timings; the routine path uses exact in-memory science products, concurrent preparation/encoding, WebP method 0, and lossless PNG level 1;
 - high total only on the first request: warmup or engine caching is incomplete.
 
-Prithvi production inference uses the exact exported FP32 graph on native CUDA. Full
-TensorRT, immutable rebuilds, FP32/TF32-disabled conversion, logit calibration, and a
-hybrid exclusion attempt all produced about 2.2% decision disagreement on the fixed
-packaged-scene batch, above the unchanged 0.2% limit. Torch-TensorRT 2.6 decomposes
-composite operations before operator exclusions are applied, so the attempted hybrid
-did not establish a safe partition boundary. The cloud TensorRT engine also changed
-0.299141% of real-scene classes, above the unchanged 0.1% gate. Production therefore
-keeps Prithvi FP32 and OmniCloudMask FP16 on CUDA through their PyTorch source graphs.
-This changes no weights, logits, thresholds, or accepted source outputs. A future
-TensorRT path requires an explicitly isolated graph, proof that the intended boundary
-was honored, held-out parity, and the same end-to-end performance gate. Quantization
-remains out of scope until a representative calibration dataset and accuracy test exist.
+Earlier Torch-TensorRT experiments produced about 2.2% crop decision disagreement and
+0.299141% cloud class disagreement, so those engines remain rejected and none of their
+calibration or partition workarounds is used. The direct path exports ONNX itself,
+builds complete TensorRT plans with `trtexec`, preserves the source logits and
+thresholds, and applies the same unchanged parity gates before publication. This is a
+new qualification path, not evidence that the historical engines became accurate; the
+target Orin build must still pass before the service can report direct TensorRT ready.
 
 Historical optimization measurements on the RTX 3060 development machine showed that
 the reviewed FP32 change reduced the already

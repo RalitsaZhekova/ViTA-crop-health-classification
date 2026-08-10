@@ -223,9 +223,11 @@ reflectance multiplier, and unusable mask.
   the routine path; full/debug runs write the equivalent rasters;
 - calculates summary statistics during the existing output pass.
 
-`PayloadCropModel` in `inference.py` owns checkpoint validation, export caching,
-Torch-TensorRT compilation, and backend reporting. Strict deployment mode never labels
-the backend TensorRT unless the compiled graph contains TensorRT engine partitions.
+`PayloadCropModel` in `inference.py` owns checkpoint validation, source export caching,
+accepted-plan loading, and backend reporting. `tensorrt_builder.py` separately exports
+ONNX, validates it, builds direct plans with `trtexec`, and publishes a checksum-sealed
+manifest only after real-scene parity passes. Service startup never compiles and never
+imports Torch-TensorRT.
 
 ### 4.6 Health and condition analysis
 

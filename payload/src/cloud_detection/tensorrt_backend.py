@@ -1,46 +1,14 @@
-"""Strict, profile-cached TensorRT execution for the OmniCloudMask ensemble."""
+"""Direct TensorRT execution for the OmniCloudMask ensemble."""
 
 from __future__ import annotations
 
-import logging
-import os
 import threading
 from pathlib import Path
 from typing import Any
 
 import torch
+from prithvi_payload.tensorrt_runtime import NativeTensorRTPlan, TensorRTArtifactError
 from torch import Tensor, nn
-
-LOGGER = logging.getLogger(__name__)
-
-
-def _environment_flag(name: str, default: bool) -> bool:
-    value = os.environ.get(name)
-    if value is None:
-        return default
-    normalized = value.strip().casefold()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    raise ValueError(f"{name} must be one of 1/0, true/false, yes/no or on/off")
-
-
-def _engine_count(module: nn.Module) -> int:
-    graph = getattr(module, "graph", None)
-    graph_nodes = 0
-    if graph is not None:
-        graph_nodes = sum(
-            "tensorrt" in str(node.target).casefold()
-            or "run_on_acc" in str(node.target).casefold()
-            for node in graph.nodes
-        )
-    module_nodes = sum(
-        "tensorrt" in type(child).__module__.casefold()
-        or "tensorrt" in type(child).__name__.casefold()
-        for _, child in module.named_modules()
-    )
-    return max(graph_nodes, module_nodes)
 
 
 def _remove_zero_channel_cat_noops(exported: torch.export.ExportedProgram) -> int:
@@ -49,9 +17,9 @@ def _remove_zero_channel_cat_noops(exported: torch.export.ExportedProgram) -> in
     The EdgeNeXt encoder used by the pinned OmniCloudMask V4 ensemble emits one
     ``[N, 0, H, W]`` feature so that its feature-pyramid interface has the same
     number of levels as other encoders. PyTorch correctly treats concatenating
-    that tensor along the channel dimension as an identity operation. The pinned
-    Torch-TensorRT 2.6 stack instead constant-folds it and asks TensorRT 10.8 to
-    create a zero-element weight, which TensorRT rejects.
+    that tensor along the channel dimension as an identity operation. TensorRT
+    rejects a zero-element constant, so the offline ONNX exporter removes only
+    this exact mathematical no-op.
 
     Static profiles make the zero channel visible in FX metadata. Replacing only
     a two-input channel concatenation whose other input already has the complete
@@ -126,206 +94,100 @@ class _CloudEnsemble(nn.Module):
 
 
 class CloudTensorRTRouter(nn.Module):
-    """Build one strict static TensorRT engine for every observed MVP profile.
-
-    Static profiles are intentional on the payload: they are more predictable than
-    a broad dynamic range on the pinned Torch-TensorRT 2.6 stack, while exact scene
-    warmup discovers every batch/patch pair before readiness. After ``freeze`` an
-    unseen profile fails instead of compiling inside a timed job.
-    """
+    """Route fixed cloud patch sizes to prebuilt, accepted TensorRT plans."""
 
     def __init__(
         self,
-        models: list[nn.Module],
+        records: list[dict[str, Any]],
         *,
+        manifest_path: Path,
         device: torch.device,
         dtype: torch.dtype,
     ) -> None:
         super().__init__()
         if device.type != "cuda":
             raise RuntimeError("TensorRT cloud inference requires a CUDA device")
-        if dtype != torch.float16:
-            raise RuntimeError("TensorRT cloud inference currently requires FP16")
         self.device = device
         self.dtype = dtype
-        self._source: _CloudEnsemble | None = _CloudEnsemble(models).to(
-            device=device,
-            dtype=dtype,
-        )
-        self._source.eval()
-        self._compiled: dict[tuple[int, int, int], nn.Module] = {}
-        self._engine_counts: dict[tuple[int, int, int], int] = {}
-        self._parity: dict[tuple[int, int, int], dict[str, Any]] = {}
-        self._frozen = False
+        expected_precision = "fp16" if dtype == torch.float16 else "fp32"
+        self._plans: dict[tuple[int, int], NativeTensorRTPlan] = {}
+        self._records: dict[tuple[int, int], dict[str, Any]] = {}
+        self._used_profiles: set[tuple[int, int, int]] = set()
         self._lock = threading.Lock()
-        self.cache_root = Path(
-            os.environ.get("VITA_TRT_CACHE_DIR", "/tmp/vita-torch-tensorrt")
-        ).resolve()
-        self.engine_cache = self.cache_root / "cloud"
-        self.engine_cache.mkdir(parents=True, exist_ok=True)
+        for record in records:
+            if not isinstance(record, dict):
+                raise TensorRTArtifactError("Cloud TensorRT profile record is invalid")
+            if record.get("precision") != expected_precision:
+                raise TensorRTArtifactError(
+                    "Cloud TensorRT plan precision does not match inference_dtype"
+                )
+            patch_size = record.get("patch_size")
+            if not isinstance(patch_size, int) or patch_size < 32:
+                raise TensorRTArtifactError("Cloud TensorRT patch size is invalid")
+            key = (patch_size, patch_size)
+            if key in self._plans:
+                raise TensorRTArtifactError(
+                    f"Duplicate cloud TensorRT plan for {patch_size}px patches"
+                )
+            self._plans[key] = NativeTensorRTPlan(
+                record,
+                manifest_path=manifest_path,
+                device=device,
+            )
+            self._records[key] = record
+        if not self._plans:
+            raise TensorRTArtifactError("No accepted cloud TensorRT plans were supplied")
 
     @property
     def engine_count(self) -> int:
-        return sum(self._engine_counts.values())
+        return len(self._plans)
 
     @property
     def profiles(self) -> list[dict[str, Any]]:
-        return [
-            {
-                "batch_size": batch_size,
-                "height": height,
-                "width": width,
-                "engine_count": self._engine_counts[key],
-                **self._parity[key],
-            }
-            for key in sorted(self._compiled)
-            for batch_size, height, width in (key,)
-        ]
-
-    def _compile(
-        self, sample: Tensor
-    ) -> tuple[nn.Module, Tensor, int, dict[str, float | int]]:
-        source = self._source
-        if source is None:
-            raise RuntimeError("Cloud TensorRT profile compilation is frozen")
-        try:
-            import torch_tensorrt
-        except ImportError as error:
-            raise RuntimeError(
-                "VITA_CLOUD_BACKEND=tensorrt requires the NVIDIA Torch-TensorRT package"
-            ) from error
-
-        with torch.inference_mode():
-            reference = source(sample)
-        exported = torch.export.export(source, (sample,), strict=False)
-        zero_channel_cat_noops_removed = _remove_zero_channel_cat_noops(exported)
-        if zero_channel_cat_noops_removed != 1:
-            raise RuntimeError(
-                "Expected exactly one OmniCloudMask zero-channel concatenation, "
-                f"removed {zero_channel_cat_noops_removed}"
+        profiles: list[dict[str, Any]] = []
+        for key in sorted(self._records):
+            record = self._records[key]
+            profile = record["inputs"][0].get("profile")
+            static_batch_size = record["inputs"][0]["shape"][0]
+            profiles.append(
+                {
+                    "patch_size": record["patch_size"],
+                    "minimum_batch_size": (
+                        profile["min"][0] if profile else static_batch_size
+                    ),
+                    "maximum_batch_size": (
+                        profile["max"][0] if profile else static_batch_size
+                    ),
+                    "engine_count": 1,
+                    "precision": record["precision"],
+                    "plan_sha256": record["plan_sha256"],
+                }
             )
-        LOGGER.info(
-            "Removed %d zero-channel OmniCloudMask concatenation before TensorRT compilation",
-            zero_channel_cat_noops_removed,
-        )
-        compiled = torch_tensorrt.dynamo.compile(
-            exported,
-            arg_inputs=[sample],
-            enabled_precisions={torch.float16},
-            require_full_compilation=_environment_flag(
-                "VITA_CLOUD_TRT_REQUIRE_FULL", True
-            ),
-            pass_through_build_failures=True,
-            optimization_level=int(
-                os.environ.get("VITA_CLOUD_TRT_OPTIMIZATION_LEVEL", "3")
-            ),
-            num_avg_timing_iters=int(
-                os.environ.get("VITA_CLOUD_TRT_NUM_AVG_TIMING_ITERS", "3")
-            ),
-            workspace_size=int(
-                os.environ.get("VITA_CLOUD_TRT_WORKSPACE_BYTES", str(2 * 1024**3))
-            ),
-            timing_cache_path=str(self.cache_root / "cloud-timing-cache.bin"),
-            cache_built_engines=True,
-            reuse_cached_engines=True,
-            # Required by the Torch-TensorRT 2.6 persistent engine cache API.
-            make_refittable=True,
-            engine_cache_dir=str(self.engine_cache),
-            engine_cache_size=int(
-                os.environ.get("VITA_CLOUD_TRT_CACHE_BYTES", str(8 * 1024**3))
-            ),
-        )
-        count = _engine_count(compiled)
-        if count < 1:
-            raise RuntimeError("Torch-TensorRT produced no cloud engine partitions")
-        with torch.inference_mode():
-            accelerated = compiled(sample)
-        parity = self._validate_output(
-            sample,
-            accelerated,
-            reference=reference,
-        )
-        parity["zero_channel_cat_noops_removed"] = zero_channel_cat_noops_removed
-        return compiled, accelerated, count, parity
-
-    def _validate_output(
-        self,
-        sample: Tensor,
-        accelerated: Any,
-        *,
-        reference: Tensor | None = None,
-    ) -> dict[str, float]:
-        source = self._source
-        if source is None:
-            raise RuntimeError("Cloud TensorRT parity validation requires source models")
-        if reference is None:
-            with torch.inference_mode():
-                reference = source(sample)
-        if not isinstance(accelerated, Tensor) or accelerated.shape != reference.shape:
-            raise RuntimeError("Cloud TensorRT output contract does not match PyTorch")
-        if not bool(torch.isfinite(accelerated).all()):
-            raise RuntimeError("Cloud TensorRT produced non-finite logits")
-
-        mismatch = float(
-            (accelerated.argmax(dim=1) != reference.argmax(dim=1))
-            .float()
-            .mean()
-            .item()
-        )
-        maximum_mismatch = float(
-            os.environ.get("VITA_CLOUD_TRT_MAX_CLASS_MISMATCH", "0.001")
-        )
-        if not 0.0 <= maximum_mismatch <= 1.0:
-            raise RuntimeError("VITA_CLOUD_TRT_MAX_CLASS_MISMATCH must be within 0..1")
-        if mismatch > maximum_mismatch:
-            raise RuntimeError(
-                "Cloud TensorRT parity failed: "
-                f"class mismatch {mismatch:.8f} exceeds {maximum_mismatch:.8f}"
-            )
-        absolute_error = (accelerated.float() - reference.float()).abs()
-        parity = {
-            "class_mismatch_fraction": mismatch,
-            "mean_absolute_logit_error": float(absolute_error.mean().item()),
-            "maximum_absolute_logit_error": float(absolute_error.max().item()),
-        }
-        return parity
+        return profiles
 
     def forward(self, image: Tensor) -> Tensor:
         if image.ndim != 4 or image.shape[1] != 3:
             raise RuntimeError(
                 f"Cloud TensorRT expects [batch,3,height,width], got {tuple(image.shape)}"
             )
-        key = tuple(int(value) for value in (image.shape[0], image.shape[2], image.shape[3]))
-        compiled = self._compiled.get(key)
-        if compiled is not None:
-            accelerated = compiled(image)
-            if not self._frozen and _environment_flag(
-                "VITA_CLOUD_TRT_VALIDATE_WARMUP_CALLS", True
-            ):
-                self._parity[key] = self._validate_output(image, accelerated)
-            return accelerated
+        batch_size, height, width = (
+            int(image.shape[0]),
+            int(image.shape[2]),
+            int(image.shape[3]),
+        )
+        plan = self._plans.get((height, width))
+        if plan is None:
+            raise RuntimeError(
+                "Cloud TensorRT has no accepted plan for "
+                f"batch={batch_size}, height={height}, width={width}"
+            )
         with self._lock:
-            compiled = self._compiled.get(key)
-            if compiled is not None:
-                accelerated = compiled(image)
-                if not self._frozen and _environment_flag(
-                    "VITA_CLOUD_TRT_VALIDATE_WARMUP_CALLS", True
-                ):
-                    self._parity[key] = self._validate_output(image, accelerated)
-                return accelerated
-            if self._frozen:
-                raise RuntimeError(
-                    "Cloud TensorRT received an unwarmed profile after readiness: "
-                    f"batch={key[0]}, height={key[1]}, width={key[2]}"
-                )
-            compiled, output, engine_count, parity = self._compile(image)
-            self._compiled[key] = compiled
-            self._engine_counts[key] = engine_count
-            self._parity[key] = parity
-            return output
+            self._used_profiles.add((batch_size, height, width))
+        output = plan(image)
+        if not isinstance(output, Tensor):
+            raise RuntimeError("Cloud TensorRT plan returned multiple outputs")
+        return output
 
     def freeze(self) -> None:
-        if not self._compiled:
-            raise RuntimeError("Cloud TensorRT cannot freeze without a compiled profile")
-        self._frozen = True
-        self._source = None
+        if not self._plans:
+            raise RuntimeError("Cloud TensorRT has no accepted plans")

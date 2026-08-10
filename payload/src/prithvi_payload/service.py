@@ -213,15 +213,12 @@ def _sentinel_demo_inputs() -> tuple[str, ...]:
 
 
 def _configure_tensorrt_cudagraphs() -> bool:
-    """Enable static-shape CUDA graph replay before the service warmup calls."""
-    if not environment_flag("VITA_TRT_CUDAGRAPHS", False):
-        return False
-    try:
-        import torch_tensorrt
-    except ImportError as error:
-        raise RuntimeError("VITA_TRT_CUDAGRAPHS requires Torch-TensorRT") from error
-    torch_tensorrt.runtime.set_cudagraphs_mode(True)
-    return True
+    """Reject the retired Torch-TensorRT-specific CUDA graph switch."""
+    if environment_flag("VITA_TRT_CUDAGRAPHS", False):
+        raise RuntimeError(
+            "VITA_TRT_CUDAGRAPHS is not supported by the direct TensorRT runtime"
+        )
+    return False
 
 
 class JobRequest(BaseModel):
@@ -266,18 +263,7 @@ class PayloadRuntime:
         cloud_seconds = time.perf_counter() - cloud_started
         crop_started = time.perf_counter()
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        tensorrt_parity_inputs = None
-        if os.environ.get("VITA_CROP_BACKEND", "pytorch").strip().casefold() == "tensorrt":
-            from prithvi_payload.crop_parity import build_crop_parity_inputs
-
-            tensorrt_parity_inputs = build_crop_parity_inputs(
-                self._crop_parity_profiles,
-                batch_size=int(os.environ.get("VITA_CROP_BATCH_SIZE", "4")),
-            )
-        self.crop = PayloadCropModel.load(
-            device=device,
-            tensorrt_parity_inputs=tensorrt_parity_inputs,
-        )
+        self.crop = PayloadCropModel.load(device=device)
         crop_seconds = time.perf_counter() - crop_started
         self.tensorrt_cudagraphs = _configure_tensorrt_cudagraphs()
         self.cloud_warmup_profiles: list[dict[str, int]] = []
@@ -520,8 +506,8 @@ class PayloadRuntime:
             "cuda_available": torch.cuda.is_available(),
             "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
             "tensorrt": tensorrt_version,
-            "torch_tensorrt": _package_version("torch-tensorrt"),
             "modelopt": _package_version("nvidia-modelopt"),
+            "tensorrt_runtime": "native-python",
             "crop_backend": self.crop.backend,
             "crop_device": self.crop.device.type,
             "crop_inference_dtype": (
@@ -551,6 +537,14 @@ class PayloadRuntime:
             ),
             "cloud_tensorrt_profiles": list(
                 getattr(self.cloud.backend, "tensorrt_profiles", [])
+            ),
+            "cloud_tensorrt_parity": dict(
+                getattr(self.cloud.backend, "tensorrt_parity", {})
+            ),
+            "tensorrt_manifest_sha256": getattr(
+                self.cloud.backend,
+                "tensorrt_manifest_sha256",
+                None,
             ),
             "cloud_warmup_profiles": self.cloud_warmup_profiles,
             "cloud_scene_warmup_profile": self.cloud_scene_warmup_profile,

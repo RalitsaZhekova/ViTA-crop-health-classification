@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 from pathlib import Path
 
 import pytest
@@ -149,47 +148,39 @@ def test_default_cloud_configuration_is_installed_package_data() -> None:
     assert load_config(DEFAULT_CLOUD_CONFIG)["model"]["name"] == "omnicloudmask_v4"
 
 
-def _tensorrt_compile_keywords(relative_path: str) -> dict[str | None, ast.expr]:
-    repository_root = Path(__file__).resolve().parents[1]
-    tree = ast.parse((repository_root / relative_path).read_text(encoding="utf-8"))
-    compile_calls = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "compile"
-        and isinstance(node.func.value, ast.Attribute)
-        and node.func.value.attr == "dynamo"
+def test_direct_tensorrt_is_offline_and_does_not_import_torch_tensorrt() -> None:
+    root = Path(__file__).resolve().parents[1]
+    runtime_sources = [
+        root / "payload/src/prithvi_payload/inference.py",
+        root / "payload/src/prithvi_payload/service.py",
+        root / "payload/src/prithvi_payload/tensorrt_runtime.py",
+        root / "payload/src/cloud_detection/tensorrt_backend.py",
     ]
+    assert all("torch_tensorrt" not in path.read_text(encoding="utf-8") for path in runtime_sources)
 
-    assert len(compile_calls) == 1
-    return {keyword.arg: keyword.value for keyword in compile_calls[0].keywords}
-
-
-def test_crop_tensorrt_builds_immutable_engines_before_serializing() -> None:
-    keywords = _tensorrt_compile_keywords("payload/src/prithvi_payload/inference.py")
-
-    for name in ("cache_built_engines", "reuse_cached_engines", "make_refittable"):
-        assert isinstance(keywords.get(name), ast.Constant)
-        assert keywords[name].value is False
-    assert isinstance(keywords.get("use_fp32_acc"), ast.Constant)
-    assert keywords["use_fp32_acc"].value is True
-    assert isinstance(keywords.get("torch_executed_ops"), ast.Name)
-    assert keywords["torch_executed_ops"].id == "TENSORRT_NATIVE_CUDA_OPS"
-    assert isinstance(keywords.get("min_block_size"), ast.Constant)
-    assert keywords["min_block_size"].value == 1
-    assert isinstance(keywords.get("use_fast_partitioner"), ast.Constant)
-    assert keywords["use_fast_partitioner"].value is False
-
-    source = (
-        Path(__file__).resolve().parents[1]
-        / "payload/src/prithvi_payload/inference.py"
-    ).read_text(encoding="utf-8")
-    assert "torch_tensorrt.save(compiled" in source
-    assert "torch.export.load(artifact_path).module()" in source
-    assert source.index("reference = reference_model") < source.index(
-        "compiled = torch_tensorrt.dynamo.compile"
+    builder = (root / "payload/src/prithvi_payload/tensorrt_builder.py").read_text(
+        encoding="utf-8"
     )
+    assert "torch.onnx.export" in builder
+    assert '"--stronglyTyped"' in builder
+    assert '"--skipInference"' in builder
+    assert "_parse_onnx_with_tensorrt" in builder
+    assert "zero-sized initializer" in builder
+    assert "zero-sized Constant" in builder
+    build_body = builder.split("def build(", maxsplit=1)[1]
+    assert build_body.index("_release_cuda_memory()") < build_body.index(
+        "built_crop = _build_plan"
+    )
+    assert build_body.index("_validate_crop_parity(") < build_body.index(
+        "write_manifest_atomic("
+    )
+    assert build_body.index("_validate_cloud_parity(") < build_body.index(
+        "write_manifest_atomic("
+    )
+
+    service = (root / "payload/src/prithvi_payload/service.py").read_text(encoding="utf-8")
+    assert "torch.onnx.export" not in service
+    assert "trtexec" not in service
 
 
 def test_payload_env_matches_the_production_crop_acceleration_contract() -> None:
@@ -200,16 +191,18 @@ def test_payload_env_matches_the_production_crop_acceleration_contract() -> None
             name, value = line.split("=", maxsplit=1)
             environment[name] = value
 
-    assert environment["VITA_CROP_BACKEND"] == "pytorch"
+    assert environment["VITA_CROP_BACKEND"] == "tensorrt"
     assert environment["VITA_CROP_BATCH_SIZE"] == "16"
-    assert not any(name.startswith("VITA_CROP_TRT_") for name in environment)
+    assert environment["VITA_CROP_TRT_PRECISION"] == "fp32"
+    assert environment["VITA_CLOUD_BACKEND"] == "tensorrt"
+    assert environment["VITA_CLOUD_INFERENCE_DTYPE"] == "fp32"
+    assert environment["VITA_CLOUD_TRT_PRECISION"] == "fp32"
 
 
-def test_cloud_tensorrt_cache_builds_refittable_engines() -> None:
-    keywords = _tensorrt_compile_keywords(
-        "payload/src/cloud_detection/tensorrt_backend.py"
-    )
-
-    for name in ("cache_built_engines", "reuse_cached_engines", "make_refittable"):
-        assert isinstance(keywords.get(name), ast.Constant)
-        assert keywords[name].value is True
+def test_deploy_builds_plans_before_starting_the_service() -> None:
+    deploy = (
+        Path(__file__).resolve().parents[1] / "deploy/payload/deploy.sh"
+    ).read_text(encoding="utf-8")
+    builder = "python payload -m prithvi_payload.tensorrt_builder"
+    assert builder in deploy
+    assert deploy.index(builder) < deploy.index('docker compose "${compose_args[@]}" up -d')

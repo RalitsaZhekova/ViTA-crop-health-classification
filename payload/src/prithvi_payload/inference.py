@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import warnings
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,25 +28,6 @@ PAYLOAD_ROOT = Path(__file__).resolve().parents[2]
 OPTIMIZED_BATCH_SIZE = int(os.environ.get("VITA_CROP_BATCH_SIZE", "4"))
 if not 1 <= OPTIMIZED_BATCH_SIZE <= 16:
     raise RuntimeError("VITA_CROP_BATCH_SIZE must be within 1..16")
-
-# The NGC 25.01 Torch-TensorRT alpha stores these values in each engine's
-# metadata. Live OpOverload objects contain a PyCapsule and cannot be pickled by
-# that build, while qualified operator names are an equivalent, supported input
-# to the partitioner and remain safely serializable.
-TENSORRT_NATIVE_CUDA_OPS = frozenset(
-    {
-        "torch.ops.aten.scaled_dot_product_attention.default",
-        "torch.ops.aten.layer_norm.default",
-        "torch.ops.aten.gelu.default",
-        "torch.ops.aten.batch_norm.default",
-        "torch.ops.aten.upsample_bilinear2d.vec",
-        "torch.ops.aten.adaptive_avg_pool2d.default",
-        "torch.ops.aten.einsum.default",
-        "torch.ops.aten.sin.default",
-        "torch.ops.aten.cos.default",
-    }
-)
-
 
 def _environment_flag(name: str, default: bool) -> bool:
     value = os.environ.get(name)
@@ -79,191 +59,6 @@ class InferenceOutput:
     crop_probability: Tensor
     crop_binary: Tensor
     crop_confidence: Tensor
-
-
-def _fit_tensorrt_logit_calibration(
-    reference: Tensor,
-    accelerated: Tensor,
-    valid_mask: Tensor,
-    decision_thresholds: Tensor,
-    *,
-    maximum_mismatch: float,
-    maximum_mean_error: float,
-) -> tuple[dict[str, float], float, float]:
-    """Transfer a PyTorch binary threshold to TensorRT on disjoint scene tiles.
-
-    Even-numbered tiles calibrate one monotonic affine logit transform. Odd-numbered
-    tiles independently validate it. With four tiles from each packaged scene, both
-    halves contain every sensor/scene and calibration never consumes validation pixels.
-    """
-    if reference.shape != accelerated.shape or reference.ndim != 4:
-        raise RuntimeError("Crop TensorRT calibration requires matching BCHW logits")
-    batch_size = reference.shape[0]
-    if batch_size < 4 or batch_size % 2:
-        raise RuntimeError("Crop TensorRT calibration requires an even batch of at least four")
-    if valid_mask.shape != (batch_size, reference.shape[2], reference.shape[3]):
-        raise RuntimeError("Crop TensorRT calibration mask does not match the logits")
-    if decision_thresholds.shape != (batch_size, 2):
-        raise RuntimeError("Crop TensorRT calibration thresholds have an invalid shape")
-    unique_thresholds = torch.unique(decision_thresholds.float())
-    if unique_thresholds.numel() != 1:
-        raise RuntimeError("Crop TensorRT logit calibration requires one decision threshold")
-    probability_threshold = float(unique_thresholds.item())
-    if not 0.0 < probability_threshold < 1.0:
-        raise RuntimeError("Crop TensorRT calibration threshold must be within (0, 1)")
-
-    tile_indices = torch.arange(batch_size, device=valid_mask.device)
-    calibration_tiles = tile_indices.remainder(2) == 0
-    validation_tiles = ~calibration_tiles
-    calibration_mask = valid_mask & calibration_tiles.view(-1, 1, 1)
-    validation_mask = valid_mask & validation_tiles.view(-1, 1, 1)
-    if not bool(calibration_mask.any()) or not bool(validation_mask.any()):
-        raise RuntimeError("Crop TensorRT calibration split contains no valid pixels")
-
-    reference_margin = (reference[:, 1] - reference[:, 0]).float()
-    accelerated_margin = (accelerated[:, 1] - accelerated[:, 0]).float()
-    calibration_x = accelerated_margin[calibration_mask]
-    calibration_y = reference_margin[calibration_mask]
-    x_mean = calibration_x.mean()
-    y_mean = calibration_y.mean()
-    x_centered = calibration_x - x_mean
-    variance = x_centered.square().mean()
-    if not bool(torch.isfinite(variance)) or float(variance.item()) <= 1e-12:
-        raise RuntimeError("Crop TensorRT calibration logits have no usable variance")
-    scale_tensor = (x_centered * (calibration_y - y_mean)).mean() / variance
-    scale = float(scale_tensor.item())
-    if not 0.5 <= scale <= 2.0:
-        raise RuntimeError(f"Crop TensorRT logit calibration scale is unsafe: {scale}")
-    regression_bias = float((y_mean - scale_tensor * x_mean).item())
-
-    reference_logit_threshold = float(
-        torch.logit(torch.tensor(probability_threshold, dtype=torch.float32)).item()
-    )
-    labels = calibration_y >= reference_logit_threshold
-    if not bool(labels.any()) or bool(labels.all()):
-        raise RuntimeError("Crop TensorRT calibration requires both decision classes")
-    sorted_x, order = torch.sort(calibration_x)
-    sorted_positive = labels[order].to(dtype=torch.int64)
-    positive_below = torch.cat(
-        (
-            torch.zeros(1, dtype=torch.int64, device=sorted_x.device),
-            sorted_positive.cumsum(dim=0),
-        )
-    )
-    split_indices = torch.arange(
-        sorted_x.numel() + 1,
-        dtype=torch.int64,
-        device=sorted_x.device,
-    )
-    negative_below = split_indices - positive_below
-    total_positive = positive_below[-1]
-    total_negative = sorted_x.numel() - total_positive
-    split_errors = positive_below + total_negative - negative_below
-    best_split = int(split_errors.argmin().item())
-    if best_split == 0:
-        accelerated_threshold = float(sorted_x[0].item()) - 1e-6
-    elif best_split == sorted_x.numel():
-        accelerated_threshold = float(sorted_x[-1].item()) + 1e-6
-    else:
-        accelerated_threshold = float(
-            ((sorted_x[best_split - 1] + sorted_x[best_split]) / 2).item()
-        )
-    threshold_bias = reference_logit_threshold - scale * accelerated_threshold
-
-    # Prefer the probability-regression intercept when it already preserves the
-    # decision contract; otherwise move only as far toward the transferred
-    # threshold as needed. This keeps the calibration monotonic and two-parameter.
-    bias_candidates = torch.linspace(
-        regression_bias,
-        threshold_bias,
-        steps=65,
-        device=calibration_x.device,
-    )
-    reference_calibration_probability = calibration_y.sigmoid()
-    calibration_labels = reference_calibration_probability >= probability_threshold
-    selected: tuple[float, float, float] | None = None
-    for candidate in bias_candidates:
-        candidate_probability = (scale * calibration_x + candidate).sigmoid()
-        candidate_mismatch = float(
-            (
-                (candidate_probability >= probability_threshold) != calibration_labels
-            )
-            .float()
-            .mean()
-            .item()
-        )
-        candidate_error = float(
-            (candidate_probability - reference_calibration_probability)
-            .abs()
-            .mean()
-            .item()
-        )
-        if candidate_mismatch <= maximum_mismatch and (
-            selected is None or candidate_error < selected[1]
-        ):
-            selected = (float(candidate.item()), candidate_error, candidate_mismatch)
-    if selected is None:
-        minimum_mismatch = float(split_errors.min().item()) / float(sorted_x.numel())
-        raise RuntimeError(
-            "Crop TensorRT calibration cannot preserve the decision boundary: "
-            f"minimum calibration mismatch {minimum_mismatch:.8f}/"
-            f"{maximum_mismatch:.8f}"
-        )
-    bias, calibration_mean_error, calibration_mismatch = selected
-
-    reference_probability = reference_margin.sigmoid()
-    raw_probability = accelerated_margin.sigmoid()
-    calibrated_probability = (scale * accelerated_margin + bias).sigmoid()
-    reference_validation = reference_probability[validation_mask]
-    raw_validation = raw_probability[validation_mask]
-    calibrated_validation = calibrated_probability[validation_mask]
-    validation_labels = reference_validation >= probability_threshold
-    raw_mismatch = float(
-        ((raw_validation >= probability_threshold) != validation_labels)
-        .float()
-        .mean()
-        .item()
-    )
-    raw_mean_error = float((raw_validation - reference_validation).abs().mean().item())
-    mismatch = float(
-        ((calibrated_validation >= probability_threshold) != validation_labels)
-        .float()
-        .mean()
-        .item()
-    )
-    absolute_error = (calibrated_validation - reference_validation).abs()
-    mean_error = float(absolute_error.mean().item())
-    if mismatch > maximum_mismatch or mean_error > maximum_mean_error:
-        raise RuntimeError(
-            "Crop TensorRT calibrated parity failed on held-out tiles: "
-            f"decision mismatch {mismatch:.8f}/{maximum_mismatch:.8f}, "
-            f"mean probability error {mean_error:.8f}/{maximum_mean_error:.8f}; "
-            f"raw mismatch {raw_mismatch:.8f}, raw mean error {raw_mean_error:.8f}"
-        )
-
-    validation_pixels = int(validation_mask.count_nonzero().item())
-    return (
-        {
-            "class_mismatch_fraction": mismatch,
-            "mean_absolute_probability_error": mean_error,
-            "maximum_absolute_probability_error": float(absolute_error.max().item()),
-            "raw_class_mismatch_fraction": raw_mismatch,
-            "raw_mean_absolute_probability_error": raw_mean_error,
-            "calibration_class_mismatch_fraction": calibration_mismatch,
-            "calibration_mean_absolute_probability_error": calibration_mean_error,
-            "logit_calibration_scale": scale,
-            "logit_calibration_bias": bias,
-            "compiled_batch_tile_count": float(batch_size),
-            "calibration_tile_count": float(calibration_tiles.count_nonzero().item()),
-            "validation_tile_count": float(validation_tiles.count_nonzero().item()),
-            "validation_pixel_count": float(validation_pixels),
-            "validation_decision_count": float(2 * validation_pixels),
-            "fp32_accumulation": 1.0,
-            "native_cuda_sensitive_op_count": 9.0,
-        },
-        scale,
-        bias,
-    )
 
 
 class _TensorLogitsModel(nn.Module):
@@ -350,223 +145,13 @@ def _export_optimized_model(
         temporary.unlink(missing_ok=True)
 
 
-def _compile_tensorrt(
-    exported_program: Any,
-    *,
-    device: torch.device,
-    parity_inputs: tuple[Tensor, Tensor, Tensor, Tensor, Tensor] | None,
-) -> tuple[nn.Module, int, dict[str, float], str, bool, float, float]:
-    """Load or build one validated immutable crop TensorRT artifact on Jetson."""
-    if device.type != "cuda":
-        raise RuntimeError("TensorRT crop inference requires a CUDA device")
-    _functionalize_prithvi_export_for_tensorrt(exported_program)
-    try:
-        import torch_tensorrt
-    except ImportError as error:
-        raise RuntimeError(
-            "VITA_CROP_BACKEND=tensorrt requires the NVIDIA Torch-TensorRT package"
-        ) from error
-
-    cache_root = Path(
-        os.environ.get("VITA_TRT_CACHE_DIR", "/tmp/vita-torch-tensorrt")
-    ).resolve()
-    precision_name = os.environ.get("VITA_CROP_TRT_PRECISION", "fp16").strip().casefold()
-    precisions = {"fp32": torch.float32, "fp16": torch.float16}
-    if precision_name not in precisions:
-        raise ValueError("VITA_CROP_TRT_PRECISION must be fp32 or fp16")
-    disable_tf32 = _environment_flag("VITA_CROP_TRT_DISABLE_TF32", True)
-    if precision_name == "fp32" and not disable_tf32:
-        raise RuntimeError("Production FP32 crop TensorRT requires TF32 to be disabled")
-    if disable_tf32:
-        torch.set_float32_matmul_precision("highest")
-        torch.backends.cuda.matmul.allow_tf32 = False
-        torch.backends.cudnn.allow_tf32 = False
-    cache_precision = f"{precision_name}-fp32acc-no-tf32"
-    inputs = list(_example_inputs(device))
-
-    # Capture the PyTorch result before calling the compiler. Compilation is not
-    # allowed to become part of the reference path or mutate what parity means.
-    if parity_inputs is None:
-        raise RuntimeError("Crop TensorRT requires representative packaged-scene parity inputs")
-    parity_batch = [value.to(device) for value in parity_inputs]
-    model_parity_inputs = parity_batch[:3]
-    expected_shapes = [value.shape for value in _example_inputs(device)]
-    if [value.shape for value in model_parity_inputs] != expected_shapes:
-        raise RuntimeError(
-            "Crop TensorRT parity inputs do not match the fixed model batch contract"
-        )
-    batch_size = model_parity_inputs[0].shape[0]
-    if parity_batch[3].shape != (batch_size, 2) or parity_batch[4].shape != (
-        batch_size,
-        INPUT_HEIGHT,
-        INPUT_WIDTH,
-    ):
-        raise RuntimeError("Crop TensorRT parity metadata has an invalid shape")
-    valid_mask = parity_batch[4].bool()
-    if not bool(valid_mask.any()):
-        raise RuntimeError("Crop TensorRT parity batch contains no valid source pixels")
-    reference_model = exported_program.module().to(device)
-    with torch.inference_mode():
-        reference = reference_model(*model_parity_inputs)
-    if not isinstance(reference, Tensor):
-        raise RuntimeError("Exported crop model did not return tensor logits")
-
-    artifact_directory = cache_root / "crop-artifacts"
-    artifact_directory.mkdir(parents=True, exist_ok=True)
-    torch_version = torch.__version__.split("+", maxsplit=1)[0].replace(".", "_")
-    torch_tensorrt_version = str(torch_tensorrt.__version__).replace(".", "_").replace(
-        "+", "_"
-    )
-    # TensorRT 10.8 changes spatial ordering for this Prithvi graph when it
-    # converts the fused attention/normalization/resampling path. Keep those
-    # lightweight, numerically sensitive operations in native CUDA while TRT
-    # retains the model's dense and convolutional compute.
-    artifact_path = artifact_directory / (
-        f"crop.{SELECTED_CHECKPOINT_SHA256[:12]}.torch_{torch_version}."
-        f"torchtrt_{torch_tensorrt_version}.{cache_precision}."
-        f"batch_{OPTIMIZED_BATCH_SIZE}.hybrid-sensitive-v2.ep"
-    )
-
-    def engine_partition_count(module: nn.Module) -> int:
-        engine_nodes = sum(
-            "tensorrt" in str(node.target).casefold()
-            or "run_on_acc" in str(node.target).casefold()
-            for node in module.graph.nodes
-        )
-        engine_modules = sum(
-            "tensorrt" in type(child).__module__.casefold()
-            or "tensorrt" in type(child).__name__.casefold()
-            for _, child in module.named_modules()
-        )
-        count = max(engine_nodes, engine_modules)
-        if count < 1:
-            raise RuntimeError("Torch-TensorRT produced no TensorRT engine partitions")
-        return count
-
-    def validate(
-        compiled_module: nn.Module,
-    ) -> tuple[dict[str, float], float, float]:
-        """Calibrate on half the tiles and fail closed on the held-out half."""
-        with torch.inference_mode():
-            accelerated = compiled_module(*model_parity_inputs)
-        if (
-            not isinstance(accelerated, Tensor)
-            or accelerated.shape != reference.shape
-        ):
-            raise RuntimeError("Crop TensorRT output contract does not match PyTorch")
-        if not bool(torch.isfinite(accelerated).all()):
-            raise RuntimeError("Crop TensorRT produced non-finite logits")
-        return _fit_tensorrt_logit_calibration(
-            reference,
-            accelerated,
-            valid_mask,
-            parity_batch[3],
-            maximum_mismatch=maximum_mismatch,
-            maximum_mean_error=maximum_mean_error,
-        )
-
-    maximum_mismatch = float(
-        os.environ.get("VITA_CROP_TRT_MAX_CLASS_MISMATCH", "0.002")
-    )
-    maximum_mean_error = float(
-        os.environ.get("VITA_CROP_TRT_MAX_MEAN_PROBABILITY_ERROR", "0.01")
-    )
-    if not 0.0 <= maximum_mismatch <= 1.0 or maximum_mean_error < 0.0:
-        raise RuntimeError("Crop TensorRT parity tolerances are invalid")
-
-    # A saved AOT artifact contains immutable TensorRT engine bytes and loads
-    # without recompilation. Validate it on every process start before use.
-    if artifact_path.is_file():
-        try:
-            compiled = torch.export.load(artifact_path).module()
-            engine_count = engine_partition_count(compiled)
-            parity, calibration_scale, calibration_bias = validate(compiled)
-            parity["serialized_engine_reused"] = 1.0
-            del reference_model
-            return (
-                compiled,
-                engine_count,
-                parity,
-                precision_name,
-                not disable_tf32,
-                calibration_scale,
-                calibration_bias,
-            )
-        except Exception as error:
-            warnings.warn(
-                f"Discarding rejected immutable crop TensorRT artifact: {error}",
-                stacklevel=2,
-            )
-            artifact_path.unlink(missing_ok=True)
-
-    # Do not use Torch-TensorRT's refittable engine cache for this fixed-weight
-    # model. The earlier cache path reused/refit weight-bearing partitions and
-    # repeatedly produced the same incorrect output across FP16 and FP32 builds.
-    compiled = torch_tensorrt.dynamo.compile(
-        exported_program,
-        arg_inputs=inputs,
-        enabled_precisions={precisions[precision_name]},
-        disable_tf32=disable_tf32,
-        require_full_compilation=_environment_flag("VITA_TRT_REQUIRE_FULL", False),
-        torch_executed_ops=TENSORRT_NATIVE_CUDA_OPS,
-        min_block_size=1,
-        use_fast_partitioner=False,
-        pass_through_build_failures=True,
-        optimization_level=int(os.environ.get("VITA_TRT_OPTIMIZATION_LEVEL", "3")),
-        num_avg_timing_iters=int(
-            os.environ.get("VITA_TRT_NUM_AVG_TIMING_ITERS", "3")
-        ),
-        workspace_size=int(os.environ.get("VITA_TRT_WORKSPACE_BYTES", str(2 * 1024**3))),
-        timing_cache_path=str(cache_root / "timing-cache.bin"),
-        use_fp32_acc=True,
-        cache_built_engines=False,
-        reuse_cached_engines=False,
-        make_refittable=False,
-    )
-    engine_count = engine_partition_count(compiled)
-    parity, calibration_scale, calibration_bias = validate(compiled)
-
-    temporary = artifact_path.with_name(
-        f".{artifact_path.stem}.{os.getpid()}.tmp.ep"
-    )
-    try:
-        torch_tensorrt.save(compiled, str(temporary), inputs=inputs)
-        persisted = torch.export.load(temporary).module()
-        persisted_engine_count = engine_partition_count(persisted)
-        (
-            persisted_parity,
-            persisted_calibration_scale,
-            persisted_calibration_bias,
-        ) = validate(persisted)
-        os.replace(temporary, artifact_path)
-    finally:
-        temporary.unlink(missing_ok=True)
-    persisted_parity["serialized_engine_reused"] = 0.0
-    del compiled, reference_model, parity
-    compiled = persisted
-    engine_count = persisted_engine_count
-    parity = persisted_parity
-    calibration_scale = persisted_calibration_scale
-    calibration_bias = persisted_calibration_bias
-    return (
-        compiled,
-        engine_count,
-        parity,
-        precision_name,
-        not disable_tf32,
-        calibration_scale,
-        calibration_bias,
-    )
-
-
 def _functionalize_prithvi_export_for_tensorrt(exported_program: Any) -> int:
     """Replace the pinned Prithvi helper's safe, temporary in-place divisions.
 
     TerraTorch 1.1.1 builds four sinusoidal-coordinate vectors with ``div_``.
-    PyTorch can execute that exported graph, but the PyTorch 2.6 decomposition
-    pass used by Torch-TensorRT rejects mutation of its frozen temporary storage.
-    Each temporary has exactly one user, so replacing ``div_`` with ``div`` is
-    mathematically identical and removes the unsupported mutation.
+    PyTorch can execute that exported graph, but portable ONNX graphs must not
+    mutate frozen temporary storage. Each temporary has exactly one user, so
+    replacing ``div_`` with ``div`` is mathematically identical.
     """
     graph_module = exported_program.graph_module
     replacements = 0
@@ -611,8 +196,41 @@ def _model_state(checkpoint: dict[str, Any]) -> dict[str, Tensor]:
     return model_state
 
 
+def load_crop_exported_program(
+    model_directory: Path,
+    *,
+    device: torch.device,
+) -> Any:
+    """Load or create the source PyTorch export used by offline builders."""
+    architecture_path = model_directory / "architecture.yaml"
+    checkpoint_path = model_directory / SELECTED_CHECKPOINT_NAME
+    optimized_path = _optimized_model_path(model_directory, device)
+    if optimized_path.is_file():
+        return torch.export.load(optimized_path)
+    if not architecture_path.is_file():
+        raise FileNotFoundError(architecture_path)
+
+    from terratorch.registry import MODEL_FACTORY_REGISTRY
+
+    architecture = yaml.safe_load(architecture_path.read_text(encoding="utf-8"))
+    factory = MODEL_FACTORY_REGISTRY.build(architecture["model_factory"])
+    model = factory.build_model(
+        task=architecture["task"],
+        **architecture["model_args"],
+    )
+    checkpoint = torch.load(
+        checkpoint_path,
+        map_location="cpu",
+        weights_only=True,
+        mmap=True,
+    )
+    model.load_state_dict(_model_state(checkpoint), strict=True)
+    _export_optimized_model(_TensorLogitsModel(model), optimized_path, device)
+    return torch.export.load(optimized_path)
+
+
 class PayloadCropModel:
-    """Pinned single-image Prithvi model with calibrated binary outputs."""
+    """Pinned single-image Prithvi model with thresholded binary outputs."""
 
     def __init__(
         self,
@@ -626,11 +244,9 @@ class PayloadCropModel:
         tensorrt_parity: dict[str, float] | None = None,
         tensorrt_precision: str | None = None,
         tensorrt_tf32: bool | None = None,
-        tensorrt_logit_scale: float = 1.0,
-        tensorrt_logit_bias: float = 0.0,
     ) -> None:
-        # Torch-TensorRT returns an already placed graph containing initialized
-        # engine modules; applying nn.Module.to() again can invalidate runtime state.
+        # A direct TensorRT runner owns an initialized execution context and has
+        # no parameters for nn.Module.to() to move.
         self.model = model if backend == "tensorrt" else model.to(device)
         if not exported:
             self.model.eval()
@@ -640,8 +256,6 @@ class PayloadCropModel:
         self.tensorrt_parity = tensorrt_parity or {}
         self.tensorrt_precision = tensorrt_precision
         self.tensorrt_tf32 = tensorrt_tf32
-        self.tensorrt_logit_scale = tensorrt_logit_scale
-        self.tensorrt_logit_bias = tensorrt_logit_bias
         self.fixed_batch_size = fixed_batch_size
         self._means = torch.tensor(
             NORMALIZATION_MEANS,
@@ -660,8 +274,6 @@ class PayloadCropModel:
         model_directory: Path | None = None,
         *,
         device: str | torch.device = "cuda",
-        tensorrt_parity_inputs: tuple[Tensor, Tensor, Tensor, Tensor, Tensor]
-        | None = None,
     ) -> PayloadCropModel:
         """Build the architecture and load only the selected checkpoint."""
         model_directory = model_directory or default_model_directory()
@@ -669,7 +281,6 @@ class PayloadCropModel:
         if requested_device.type == "cuda" and not torch.cuda.is_available():
             raise RuntimeError("CUDA was requested but is unavailable")
 
-        architecture_path = model_directory / "architecture.yaml"
         checkpoint_path = model_directory / SELECTED_CHECKPOINT_NAME
         if not checkpoint_path.is_file():
             raise FileNotFoundError(checkpoint_path)
@@ -679,34 +290,6 @@ class PayloadCropModel:
                 "Selected checkpoint checksum mismatch: "
                 f"expected {SELECTED_CHECKPOINT_SHA256}, got {actual_digest}"
             )
-        optimized_path = _optimized_model_path(model_directory, requested_device)
-        exported_program = None
-        if optimized_path.is_file():
-            exported_program = torch.export.load(optimized_path)
-        if exported_program is None:
-            if not architecture_path.is_file():
-                raise FileNotFoundError(architecture_path)
-
-            # Keep TerraTorch out of commands that never reach crop classification.
-            from terratorch.registry import MODEL_FACTORY_REGISTRY
-
-            architecture = yaml.safe_load(architecture_path.read_text(encoding="utf-8"))
-            factory = MODEL_FACTORY_REGISTRY.build(architecture["model_factory"])
-            model = factory.build_model(
-                task=architecture["task"],
-                **architecture["model_args"],
-            )
-            checkpoint = torch.load(
-                checkpoint_path,
-                map_location="cpu",
-                weights_only=True,
-                mmap=True,
-            )
-            model.load_state_dict(_model_state(checkpoint), strict=True)
-            tensor_model = _TensorLogitsModel(model)
-            _export_optimized_model(tensor_model, optimized_path, requested_device)
-            exported_program = torch.export.load(optimized_path)
-
         backend = os.environ.get("VITA_CROP_BACKEND", "pytorch").strip().casefold()
         if backend not in {"pytorch", "tensorrt"}:
             raise ValueError("VITA_CROP_BACKEND must be pytorch or tensorrt")
@@ -715,45 +298,39 @@ class PayloadCropModel:
             torch.backends.cuda.matmul.allow_tf32 = False
             torch.backends.cudnn.allow_tf32 = False
         if backend == "tensorrt":
-            try:
-                (
-                    optimized,
-                    tensorrt_engine_count,
-                    tensorrt_parity,
-                    tensorrt_precision,
-                    tensorrt_tf32,
-                    tensorrt_logit_scale,
-                    tensorrt_logit_bias,
-                ) = _compile_tensorrt(
-                    exported_program,
-                    device=requested_device,
-                    parity_inputs=tensorrt_parity_inputs,
+            torch.set_float32_matmul_precision("highest")
+            torch.backends.cuda.matmul.allow_tf32 = False
+            torch.backends.cudnn.allow_tf32 = False
+            from prithvi_payload.tensorrt_runtime import (
+                NativeTensorRTPlan,
+                TensorRTArtifactError,
+                load_accepted_manifest,
+            )
+
+            manifest = load_accepted_manifest(required_models=("crop",))
+            crop_record = manifest["models"]["crop"]
+            if crop_record.get("source_sha256") != actual_digest:
+                raise TensorRTArtifactError(
+                    "Accepted crop TensorRT plan does not match the installed checkpoint"
                 )
-            except Exception as error:
-                if _environment_flag("VITA_TRT_STRICT", True):
-                    raise RuntimeError(
-                        "Crop model TensorRT compilation failed: "
-                        f"{type(error).__name__}: {error}"
-                    ) from error
-                warnings.warn(
-                    f"TensorRT compilation failed; using exported PyTorch graph: {error}",
-                    stacklevel=2,
-                )
-                backend = "pytorch"
-                tensorrt_engine_count = 0
-                tensorrt_parity = {}
-                tensorrt_precision = None
-                tensorrt_tf32 = None
-                tensorrt_logit_scale = 1.0
-                tensorrt_logit_bias = 0.0
-                optimized = exported_program.module()
+            optimized = NativeTensorRTPlan(
+                crop_record,
+                manifest_path=manifest["_manifest_path"],
+                device=requested_device,
+            )
+            tensorrt_engine_count = 1
+            tensorrt_parity = crop_record.get("parity", {})
+            tensorrt_precision = crop_record.get("precision")
+            tensorrt_tf32 = crop_record.get("tf32")
         else:
+            exported_program = load_crop_exported_program(
+                model_directory,
+                device=requested_device,
+            )
             tensorrt_engine_count = 0
             tensorrt_parity = {}
             tensorrt_precision = None
             tensorrt_tf32 = None
-            tensorrt_logit_scale = 1.0
-            tensorrt_logit_bias = 0.0
             optimized = exported_program.module()
         return cls(
             optimized,
@@ -765,8 +342,6 @@ class PayloadCropModel:
             tensorrt_parity=tensorrt_parity,
             tensorrt_precision=tensorrt_precision,
             tensorrt_tf32=tensorrt_tf32,
-            tensorrt_logit_scale=tensorrt_logit_scale,
-            tensorrt_logit_bias=tensorrt_logit_bias,
         )
 
     def _validate_inputs(
@@ -833,14 +408,7 @@ class PayloadCropModel:
         )
         with torch.inference_mode(), autocast:
             logits = self.model(normalized, temporal_coords, location_coords)
-            if self.backend == "tensorrt":
-                logit_margin = logits[:, 1] - logits[:, 0]
-                crop_probability = (
-                    self.tensorrt_logit_scale * logit_margin
-                    + self.tensorrt_logit_bias
-                ).sigmoid()[:output_batch_size]
-            else:
-                crop_probability = logits.softmax(dim=1)[:output_batch_size, 1]
+            crop_probability = logits.softmax(dim=1)[:output_batch_size, 1]
             crop_binary = (crop_probability >= CROP_CLASSIFICATION_THRESHOLD).to(dtype=torch.uint8)
             crop_confidence = torch.maximum(crop_probability, 1 - crop_probability)
         return InferenceOutput(

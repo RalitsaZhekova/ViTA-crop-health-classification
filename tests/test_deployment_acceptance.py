@@ -10,6 +10,7 @@ def _health() -> dict:
         "stack": {
             "cuda_available": True,
             "gpu": "Orin",
+            "tensorrt_runtime": "native-python",
             "crop_backend": "pytorch",
             "crop_device": "cuda",
             "crop_inference_dtype": "fp32",
@@ -24,6 +25,8 @@ def _health() -> dict:
             "cloud_batch_size": 4,
             "cloud_tensorrt_engine_count": 0,
             "cloud_tensorrt_profiles": [],
+            "cloud_tensorrt_parity": {},
+            "tensorrt_manifest_sha256": None,
             "cloud_warmup_profiles": [
                 {"batch_size": 1, "patch_size": 869},
                 {"batch_size": 1, "patch_size": 1000},
@@ -78,7 +81,7 @@ def test_jetson_acceptance_rejects_cloud_tensorrt_engines(
     health = _health()
     health["stack"]["cloud_tensorrt_engine_count"] = 1
     health["stack"]["cloud_tensorrt_profiles"] = [{"engine_count": 1}]
-    with pytest.raises(RuntimeError, match="engine partitions"):
+    with pytest.raises(RuntimeError, match="engines are active"):
         validate_health(health)
 
 
@@ -98,7 +101,7 @@ def test_jetson_acceptance_requires_explicit_empty_tensorrt_profiles(
     _production_flags(monkeypatch)
     health = _health()
     del health["stack"]["cloud_tensorrt_profiles"]
-    with pytest.raises(RuntimeError, match="profiles are still active"):
+    with pytest.raises(RuntimeError, match="engines are active"):
         validate_health(health)
 
 
@@ -109,7 +112,77 @@ def test_jetson_acceptance_rejects_crop_tensorrt(
     health = _health()
     health["stack"]["crop_backend"] = "tensorrt"
     health["stack"]["crop_tensorrt_engine_count"] = 1
-    with pytest.raises(RuntimeError, match="accepted PyTorch graph"):
+    with pytest.raises(RuntimeError, match="requested accepted backend"):
+        validate_health(health)
+
+
+def test_jetson_acceptance_accepts_checksum_bound_direct_tensorrt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _production_flags(monkeypatch)
+    monkeypatch.setenv("VITA_CROP_BACKEND", "tensorrt")
+    monkeypatch.setenv("VITA_CLOUD_BACKEND", "tensorrt")
+    monkeypatch.setenv("VITA_CROP_TRT_PRECISION", "fp32")
+    monkeypatch.setenv("VITA_CLOUD_INFERENCE_DTYPE", "fp32")
+    health = _health()
+    stack = health["stack"]
+    stack.update(
+        {
+            "crop_backend": "tensorrt",
+            "crop_tensorrt_engine_count": 1,
+            "crop_tensorrt_precision": "fp32",
+            "crop_tensorrt_tf32": False,
+            "crop_tensorrt_parity": {
+                "class_mismatch_fraction": 0.0005,
+                "mean_absolute_probability_error": 0.001,
+            },
+            "cloud_backend": "omnicloudmask_tensorrt_fp32",
+            "cloud_tensorrt_engine_count": 2,
+            "cloud_tensorrt_profiles": [
+                {
+                    "patch_size": 869,
+                    "minimum_batch_size": 1,
+                    "maximum_batch_size": 4,
+                },
+                {
+                    "patch_size": 1000,
+                    "minimum_batch_size": 1,
+                    "maximum_batch_size": 1,
+                },
+            ],
+            "cloud_tensorrt_parity": {
+                "class_mismatch_fraction": 0.0002,
+                "scenes": [{"input": f"scene-{index}.tif"} for index in range(4)],
+            },
+            "tensorrt_manifest_sha256": "a" * 64,
+        }
+    )
+
+    accepted = validate_health(health)
+
+    assert accepted["crop_backend"] == "tensorrt"
+    assert accepted["cloud_tensorrt_engine_count"] == 2
+    assert accepted["cloud_profile_count"] == 2
+
+
+def test_jetson_acceptance_rejects_direct_tensorrt_parity_regression(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _production_flags(monkeypatch)
+    monkeypatch.setenv("VITA_CROP_BACKEND", "tensorrt")
+    monkeypatch.setenv("VITA_CLOUD_BACKEND", "tensorrt")
+    health = _health()
+    health["stack"]["crop_backend"] = "tensorrt"
+    health["stack"]["crop_tensorrt_engine_count"] = 1
+    health["stack"]["crop_tensorrt_precision"] = "fp32"
+    health["stack"]["crop_tensorrt_tf32"] = False
+    health["stack"]["cloud_backend"] = "omnicloudmask_tensorrt_fp16"
+    health["stack"]["crop_tensorrt_parity"] = {
+        "class_mismatch_fraction": 0.003,
+        "mean_absolute_probability_error": 0.001,
+    }
+
+    with pytest.raises(RuntimeError, match="decision parity"):
         validate_health(health)
 
 

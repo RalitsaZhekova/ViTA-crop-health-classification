@@ -140,33 +140,51 @@ class OmniCloudMaskBackend:
             )
 
         try:
-            models = collect_models(
-                custom_models=None,
-                inference_device=self.device,
-                inference_dtype=self._torch_dtype,
-                source="hugging_face",
-                destination_model_dir=self.weights_folder,
-                model_version=OMNICLOUDMASK_MODEL_VERSION,
-                compile_models=False,
-                patch_size=self.patch_size,
-                batch_size=self.batch_size,
-            )
             if requested_backend == "tensorrt":
+                from prithvi_payload.tensorrt_runtime import load_accepted_manifest
+
                 from cloud_detection.tensorrt_backend import CloudTensorRTRouter
 
+                manifest = load_accepted_manifest(required_models=("cloud",))
+                cloud_record = manifest["models"]["cloud"]
+                if cloud_record.get("source_sha256") != actual_ensemble_sha256:
+                    raise BackendError(
+                        "Accepted cloud TensorRT plans do not match the installed weights"
+                    )
+                if cloud_record.get("precision") != inference_dtype:
+                    raise BackendError(
+                        "Accepted cloud TensorRT precision does not match "
+                        "VITA_CLOUD_INFERENCE_DTYPE"
+                    )
                 self._tensorrt_router = CloudTensorRTRouter(
-                    models,
+                    cloud_record.get("plans", []),
+                    manifest_path=manifest["_manifest_path"],
                     device=self.device,
                     dtype=self._torch_dtype,
                 )
                 self.models = [self._tensorrt_router]
+                self.tensorrt_manifest_sha256 = manifest["manifest_sha256"]
+                self.tensorrt_parity = cloud_record.get("parity", {})
             else:
+                models = collect_models(
+                    custom_models=None,
+                    inference_device=self.device,
+                    inference_dtype=self._torch_dtype,
+                    source="hugging_face",
+                    destination_model_dir=self.weights_folder,
+                    model_version=OMNICLOUDMASK_MODEL_VERSION,
+                    compile_models=False,
+                    patch_size=self.patch_size,
+                    batch_size=self.batch_size,
+                )
                 self._tensorrt_router = None
                 self.models = models
+                self.tensorrt_manifest_sha256 = None
+                self.tensorrt_parity = {}
         except Exception as exc:
             raise BackendError(
-                "Could not load the verified OmniCloudMask V4 ensemble. Run "
-                "payload/scripts/download_cloud_weights.py while online and retry."
+                "Could not load the verified OmniCloudMask V4 execution backend: "
+                f"{type(exc).__name__}: {exc}"
             ) from exc
 
     def _prepare_input(self, tile: np.ndarray) -> np.ndarray | None:

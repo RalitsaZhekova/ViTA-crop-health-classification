@@ -92,7 +92,7 @@ test "$model_count" -eq 3 || {
 sha256sum --check --strict deploy/payload/model-assets.sha256
 
 docker run --rm --runtime nvidia --entrypoint python "$BASE_IMAGE" -c \
-  'import numpy, tensorrt, torch, torch_tensorrt; assert torch.cuda.is_available(); assert numpy.__version__ == "1.26.4", numpy.__version__; assert torch.__version__.startswith("2.6.0a0+ecf3bae40a"), torch.__version__; assert torch.version.cuda == "12.8", torch.version.cuda; assert tensorrt.__version__.startswith("10.8."), tensorrt.__version__; assert torch_tensorrt.__version__.startswith("2.6.0a0"), torch_tensorrt.__version__; print({"numpy": numpy.__version__, "torch": torch.__version__, "cuda": torch.version.cuda, "gpu": torch.cuda.get_device_name(0), "tensorrt": tensorrt.__version__, "torch_tensorrt": torch_tensorrt.__version__})'
+  'import numpy, tensorrt, torch; assert torch.cuda.is_available(); assert numpy.__version__ == "1.26.4", numpy.__version__; assert torch.__version__.startswith("2.6.0a0+ecf3bae40a"), torch.__version__; assert torch.version.cuda == "12.8", torch.version.cuda; assert tensorrt.__version__.startswith("10.8."), tensorrt.__version__; print({"numpy": numpy.__version__, "torch": torch.__version__, "cuda": torch.version.cuda, "gpu": torch.cuda.get_device_name(0), "tensorrt": tensorrt.__version__})'
 
 echo "Checking the temporary-container package sources used by the Docker build."
 docker run --rm \

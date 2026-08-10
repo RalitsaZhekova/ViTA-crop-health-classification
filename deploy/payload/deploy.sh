@@ -16,16 +16,27 @@ fi
 export VITA_PAYLOAD_UID="${VITA_PAYLOAD_UID:-$(id -u)}"
 export VITA_PAYLOAD_GID="${VITA_PAYLOAD_GID:-$(id -g)}"
 
-# These are release acceptance settings, not tuning knobs. The pinned
-# Torch-TensorRT/TensorRT stack failed the fixed Prithvi and real-scene cloud
-# parity gates, so production runs both reviewed source graphs on native CUDA.
-if [ "${VITA_CROP_BACKEND:-pytorch}" != "pytorch" ]; then
-    echo "ERROR: deploy/payload.env must set VITA_CROP_BACKEND=pytorch" >&2
+# Keep the two model backends in one qualified mode. Mixed deployments make the
+# health and scientific acceptance record ambiguous.
+crop_backend="${VITA_CROP_BACKEND:-pytorch}"
+cloud_backend="${VITA_CLOUD_BACKEND:-pytorch}"
+if [ "$crop_backend" != "$cloud_backend" ]; then
+    echo "ERROR: crop and cloud backends must both be pytorch or both be tensorrt" >&2
     exit 1
 fi
-if [ "${VITA_CLOUD_BACKEND:-pytorch}" != "pytorch" ]; then
-    echo "ERROR: deploy/payload.env must set VITA_CLOUD_BACKEND=pytorch" >&2
-    exit 1
+case "$crop_backend" in
+    pytorch|tensorrt) ;;
+    *) echo "ERROR: VITA_CROP_BACKEND must be pytorch or tensorrt" >&2; exit 1 ;;
+esac
+if [ "$crop_backend" = "tensorrt" ]; then
+    if [ "${VITA_CROP_TRT_PRECISION:-fp32}" != "fp32" ]; then
+        echo "ERROR: direct crop TensorRT qualification requires fp32" >&2
+        exit 1
+    fi
+    if [ "${VITA_CLOUD_INFERENCE_DTYPE:-fp32}" != "${VITA_CLOUD_TRT_PRECISION:-fp32}" ]; then
+        echo "ERROR: cloud inference dtype must match VITA_CLOUD_TRT_PRECISION" >&2
+        exit 1
+    fi
 fi
 if [ "${VITA_TRT_CUDAGRAPHS:-0}" != "0" ]; then
     echo "ERROR: deploy/payload.env must set VITA_TRT_CUDAGRAPHS=0" >&2
@@ -110,10 +121,10 @@ fi
 if [ "${VITA_SKIP_BUILD:-0}" != "1" ]; then
     docker compose "${compose_args[@]}" build
 fi
-echo "Validating the native CUDA production stack inside the final image."
+echo "Validating CUDA, ONNX export, and direct TensorRT inside the final image."
 docker compose "${compose_args[@]}" run --rm --no-deps \
     --entrypoint python payload -c \
-    'import torch; assert torch.cuda.is_available(); assert torch.__version__.startswith("2.6.0a0+ecf3bae40a"), torch.__version__; assert torch.version.cuda == "12.8", torch.version.cuda; print({"gpu": torch.cuda.get_device_name(0), "torch": torch.__version__, "cuda": torch.version.cuda, "cloud": "native-cuda-fp16", "crop": "native-cuda-fp32"})'
+    'import onnx, onnxscript, tensorrt, torch; assert torch.cuda.is_available(); assert torch.__version__.startswith("2.6.0a0+ecf3bae40a"), torch.__version__; assert torch.version.cuda == "12.8", torch.version.cuda; assert onnx.__version__ == "1.17.0", onnx.__version__; assert onnxscript.__version__ == "0.1.0", onnxscript.__version__; print({"gpu": torch.cuda.get_device_name(0), "torch": torch.__version__, "cuda": torch.version.cuda, "tensorrt": tensorrt.__version__, "onnx": onnx.__version__, "onnxscript": onnxscript.__version__})'
 echo "Validating the two VITA-owned writable bind mounts."
 docker compose "${compose_args[@]}" run --rm --no-deps \
     --entrypoint python payload -c \
@@ -121,6 +132,11 @@ docker compose "${compose_args[@]}" run --rm --no-deps \
 echo "Validating the two Sentinel and two Balkan payload inputs inside the final image."
 docker compose "${compose_args[@]}" run --rm --no-deps \
     --entrypoint python payload -m prithvi_payload.deployment_check
+if [ "$crop_backend" = "tensorrt" ]; then
+    echo "Building and accepting direct TensorRT plans offline before service startup."
+    docker compose "${compose_args[@]}" run --rm --no-deps \
+        --entrypoint python payload -m prithvi_payload.tensorrt_builder
+fi
 docker compose "${compose_args[@]}" up -d
 
 container_id="$(docker compose "${compose_args[@]}" ps -q payload)"
