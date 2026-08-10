@@ -9,7 +9,8 @@ param(
     [string]$Sensor,
 
     [Parameter(Mandatory = $true)]
-    [string]$Input,
+    [Alias('Input')]
+    [string]$PayloadInput,
 
     [Parameter(Mandatory = $true)]
     [string]$RegionId,
@@ -65,10 +66,10 @@ foreach ($command in @('ssh', 'scp')) {
 }
 
 Assert-SafeId 'RegionId' $RegionId
-Assert-SafeRelativePath 'Input' $Input $false
+Assert-SafeRelativePath 'Input' $PayloadInput $false
 if ($Image) { Assert-SafeRelativePath 'Image' $Image $true }
 if ($CropCalibration) { Assert-SafeRelativePath 'CropCalibration' $CropCalibration $false }
-if ($Sensor -eq 'sentinel-2' -and -not $Image -and $Input -notmatch '\.(tif|tiff)$') {
+if ($Sensor -eq 'sentinel-2' -and -not $Image -and $PayloadInput -notmatch '\.(tif|tiff)$') {
     throw 'Image is required when the Sentinel Input is a folder.'
 }
 if ($Sensor -eq 'balkan-1' -and $Image) {
@@ -137,7 +138,7 @@ try {
 
     $request = [ordered]@{
         sensor = $Sensor
-        input = ($Input -replace '\\', '/')
+        input = ($PayloadInput -replace '\\', '/')
         region_id = $RegionId
         job_id = $JobId
     }
@@ -190,13 +191,7 @@ if ($LASTEXITCODE -ne 0) { throw "Ground ingest failed: $ingestOutput" }
 $ingest = $ingestOutput | ConvertFrom-Json
 
 if (-not $SkipDashboard) {
-    Push-Location $repositoryRoot
-    try {
-        & docker compose -f deploy\compose.ground.yaml up -d
-        if ($LASTEXITCODE -ne 0) { throw 'Ground dashboard container failed to start.' }
-    } finally {
-        Pop-Location
-    }
+    & (Join-Path $PSScriptRoot 'Start-VitaDashboard.ps1')
 }
 
 [ordered]@{
