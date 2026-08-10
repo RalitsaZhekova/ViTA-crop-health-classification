@@ -321,6 +321,11 @@ checksum-sealed FP16 plans that passed all four real-scene
 comparisons against the FP16 PyTorch source; it never compiles during startup or
 requests.
 
+Cloud acceptance evaluates every complete scene before making a decision. The four
+scenes together must remain at or below 0.1% semantic class mismatch, and no individual
+scene may exceed 0.2%. This separates the release-wide science budget from a bounded
+per-scene guard instead of incorrectly imposing the aggregate allowance on each scene.
+
 ### Prithvi fixed batching through direct TensorRT
 
 Crop tiles run in batches of 16 on Orin. The final short batch is padded to the same

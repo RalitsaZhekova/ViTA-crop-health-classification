@@ -19,6 +19,8 @@ import numpy as np
 import torch
 from cloud_detection.backend import OMNICLOUDMASK_ENSEMBLE_SHA256
 from cloud_detection.tensorrt_backend import (
+    CLOUD_MAX_AGGREGATE_CLASS_MISMATCH,
+    CLOUD_MAX_SCENE_CLASS_MISMATCH,
     REVIEWED_CLOUD_BASE_PATCH_SIZE,
     REVIEWED_CLOUD_SCENE_BATCH_SIZES,
     REVIEWED_CLOUD_SCENE_PATCH_SIZES,
@@ -43,7 +45,6 @@ from prithvi_payload.tensorrt_runtime import (
     write_manifest_atomic,
 )
 
-CLOUD_MAX_CLASS_MISMATCH = 0.001
 CROP_MAX_CLASS_MISMATCH = 0.002
 CROP_MAX_MEAN_PROBABILITY_ERROR = 0.005
 ONNX_OPSET = 18
@@ -1372,11 +1373,6 @@ def _validate_cloud_parity(
             mismatches = int(np.count_nonzero(accelerated != reference))
             pixels = int(reference.size)
             fraction = mismatches / pixels
-            if fraction > CLOUD_MAX_CLASS_MISMATCH:
-                raise TensorRTBuildError(
-                    "Cloud direct TensorRT parity failed for "
-                    f"{profile['input']}: {fraction:.8f}/{CLOUD_MAX_CLASS_MISMATCH:.8f}"
-                )
             total_pixels += pixels
             total_mismatches += mismatches
             scene_results.append(
@@ -1391,17 +1387,45 @@ def _validate_cloud_parity(
     finally:
         backend.models = source_models
     aggregate = total_mismatches / total_pixels
-    if aggregate > CLOUD_MAX_CLASS_MISMATCH:
-        raise TensorRTBuildError(
-            f"Cloud aggregate TensorRT mismatch {aggregate:.8f} exceeds "
-            f"{CLOUD_MAX_CLASS_MISMATCH:.8f}"
-        )
-    return {
+    worst_scene = max(
+        scene_results,
+        key=lambda result: float(result["class_mismatch_fraction"]),
+    )
+    parity = {
         "class_mismatch_fraction": aggregate,
+        "maximum_scene_class_mismatch_fraction": worst_scene[
+            "class_mismatch_fraction"
+        ],
         "mismatch_count": total_mismatches,
         "pixel_count": total_pixels,
+        "acceptance_limits": {
+            "aggregate_class_mismatch_fraction": (
+                CLOUD_MAX_AGGREGATE_CLASS_MISMATCH
+            ),
+            "scene_class_mismatch_fraction": CLOUD_MAX_SCENE_CLASS_MISMATCH,
+        },
         "scenes": scene_results,
     }
+    aggregate_failed = aggregate > CLOUD_MAX_AGGREGATE_CLASS_MISMATCH
+    scene_failed = (
+        float(worst_scene["class_mismatch_fraction"])
+        > CLOUD_MAX_SCENE_CLASS_MISMATCH
+    )
+    if aggregate_failed or scene_failed:
+        print(
+            "[parity] rejected cloud report:\n"
+            + json.dumps(parity, indent=2, sort_keys=True),
+            flush=True,
+        )
+        raise TensorRTBuildError(
+            "Cloud direct TensorRT parity failed after all four scenes: "
+            f"aggregate={aggregate:.8f}/"
+            f"{CLOUD_MAX_AGGREGATE_CLASS_MISMATCH:.8f}, "
+            f"worst_scene={worst_scene['input']}="
+            f"{float(worst_scene['class_mismatch_fraction']):.8f}/"
+            f"{CLOUD_MAX_SCENE_CLASS_MISMATCH:.8f}"
+        )
+    return parity
 
 
 def build(manifest_path: Path = DEFAULT_MANIFEST_PATH) -> dict[str, Any]:

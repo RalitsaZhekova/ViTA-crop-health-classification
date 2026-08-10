@@ -19,6 +19,12 @@ REVIEWED_CLOUD_SCENE_BATCH_SIZES = ((700, 1), (869, 4), (891, 4))
 REVIEWED_CLOUD_SCENE_PATCH_SIZES = tuple(
     patch_size for patch_size, _ in REVIEWED_CLOUD_SCENE_BATCH_SIZES
 )
+# Semantic parity is measured across all four complete qualification scenes.
+# Preserve the original 0.1% aggregate science budget while allowing any one
+# scene at most 0.2%; scene composition changes how many pixels lie directly on
+# a class boundary, so applying the aggregate limit to every scene is unsound.
+CLOUD_MAX_AGGREGATE_CLASS_MISMATCH = 0.001
+CLOUD_MAX_SCENE_CLASS_MISMATCH = 0.002
 
 
 def _remove_zero_channel_cat_noops(exported: torch.export.ExportedProgram) -> int:

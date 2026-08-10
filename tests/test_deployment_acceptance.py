@@ -162,7 +162,13 @@ def test_jetson_acceptance_accepts_checksum_bound_direct_tensorrt(
             ],
             "cloud_tensorrt_parity": {
                 "class_mismatch_fraction": 0.0002,
-                "scenes": [{"input": f"scene-{index}.tif"} for index in range(4)],
+                "scenes": [
+                    {
+                        "input": f"scene-{index}.tif",
+                        "class_mismatch_fraction": 0.0003,
+                    }
+                    for index in range(4)
+                ],
             },
             "tensorrt_manifest_sha256": "a" * 64,
             "cloud_warmup_profiles": [
@@ -180,6 +186,62 @@ def test_jetson_acceptance_accepts_checksum_bound_direct_tensorrt(
     assert accepted["crop_backend"] == "tensorrt"
     assert accepted["cloud_tensorrt_engine_count"] == 3
     assert accepted["cloud_profile_count"] == 3
+
+
+def test_jetson_acceptance_rejects_cloud_scene_parity_regression(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _production_flags(monkeypatch)
+    monkeypatch.setenv("VITA_CROP_BACKEND", "tensorrt")
+    monkeypatch.setenv("VITA_CLOUD_BACKEND", "tensorrt")
+    monkeypatch.setenv("VITA_CROP_TRT_PRECISION", "mixed-fp16")
+    monkeypatch.setenv("VITA_CLOUD_INFERENCE_DTYPE", "fp16")
+    health = _health()
+    stack = health["stack"]
+    stack.update(
+        {
+            "crop_backend": "tensorrt",
+            "crop_inference_dtype": "mixed-fp16",
+            "crop_tensorrt_engine_count": 1,
+            "crop_tensorrt_precision": "mixed-fp16",
+            "crop_tensorrt_tf32": False,
+            "crop_tensorrt_parity": {
+                "class_mismatch_fraction": 0.0005,
+                "mean_absolute_probability_error": 0.001,
+            },
+            "cloud_backend": "omnicloudmask_tensorrt_fp16",
+            "cloud_tensorrt_engine_count": 3,
+            "cloud_tensorrt_profiles": [
+                {
+                    "patch_size": patch_size,
+                    "minimum_batch_size": 1,
+                    "maximum_batch_size": maximum_batch_size,
+                }
+                for patch_size, maximum_batch_size in ((700, 1), (869, 4), (891, 4))
+            ],
+            "cloud_tensorrt_parity": {
+                "class_mismatch_fraction": 0.0009,
+                "scenes": [
+                    {
+                        "input": f"scene-{index}.tif",
+                        "class_mismatch_fraction": 0.0021 if index == 1 else 0.0003,
+                    }
+                    for index in range(4)
+                ],
+            },
+            "tensorrt_manifest_sha256": "a" * 64,
+            "cloud_warmup_profiles": [
+                {"batch_size": 1, "patch_size": 700},
+                {"batch_size": 1, "patch_size": 869},
+                {"batch_size": 1, "patch_size": 891},
+                {"batch_size": 4, "patch_size": 869},
+                {"batch_size": 4, "patch_size": 891},
+            ],
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="per-scene class parity"):
+        validate_health(health)
 
 
 def test_jetson_acceptance_rejects_direct_tensorrt_parity_regression(

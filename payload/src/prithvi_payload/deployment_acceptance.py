@@ -9,6 +9,8 @@ from typing import Any
 from urllib.request import urlopen
 
 from cloud_detection.tensorrt_backend import (
+    CLOUD_MAX_AGGREGATE_CLASS_MISMATCH,
+    CLOUD_MAX_SCENE_CLASS_MISMATCH,
     REVIEWED_CLOUD_BASE_PATCH_SIZE,
     REVIEWED_CLOUD_SCENE_BATCH_SIZES,
     REVIEWED_CLOUD_SCENE_PATCH_SIZES,
@@ -117,11 +119,20 @@ def validate_health(health: dict[str, Any]) -> dict[str, Any]:
         cloud_parity = stack.get("cloud_tensorrt_parity")
         if not isinstance(cloud_parity, dict) or float(
             cloud_parity.get("class_mismatch_fraction", 1.0)
-        ) > 0.001:
+        ) > CLOUD_MAX_AGGREGATE_CLASS_MISMATCH:
             raise RuntimeError("Direct cloud TensorRT exceeds the class parity gate")
         scenes = cloud_parity.get("scenes")
         if not isinstance(scenes, list) or len(scenes) != 4:
             raise RuntimeError("Direct cloud TensorRT was not accepted on four scenes")
+        if any(
+            not isinstance(scene, dict)
+            or float(scene.get("class_mismatch_fraction", 1.0))
+            > CLOUD_MAX_SCENE_CLASS_MISMATCH
+            for scene in scenes
+        ):
+            raise RuntimeError(
+                "Direct cloud TensorRT exceeds the per-scene class parity gate"
+            )
         manifest_digest = stack.get("tensorrt_manifest_sha256")
         if not isinstance(manifest_digest, str) or len(manifest_digest) != 64:
             raise RuntimeError("Direct TensorRT accepted manifest is missing")

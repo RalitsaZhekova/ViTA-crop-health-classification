@@ -5,6 +5,8 @@ import threading
 import pytest
 import torch
 from cloud_detection.tensorrt_backend import (
+    CLOUD_MAX_AGGREGATE_CLASS_MISMATCH,
+    CLOUD_MAX_SCENE_CLASS_MISMATCH,
     REVIEWED_CLOUD_SCENE_BATCH_SIZES,
     CloudTensorRTRouter,
     _CloudEnsemble,
@@ -140,6 +142,8 @@ def test_cloud_tensorrt_router_rejects_batch_outside_manifest_contract() -> None
 
 def test_reviewed_cloud_batches_avoid_sentinel_padding() -> None:
     assert dict(REVIEWED_CLOUD_SCENE_BATCH_SIZES) == {700: 1, 869: 4, 891: 4}
+    assert CLOUD_MAX_AGGREGATE_CLASS_MISMATCH == 0.001
+    assert CLOUD_MAX_SCENE_CLASS_MISMATCH == 0.002
 
 
 def test_cloud_tensorrt_warmup_profiles_follow_physical_engines() -> None:

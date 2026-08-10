@@ -38,7 +38,7 @@ The acceleration policy is:
 
 | Stage | MVP execution | Reason |
 |---|---|---|
-| OmniCloudMask ensemble | Direct FP16 TensorRT plans: fixed batch 1 at 700 px and batch 4 with exact logical-batch padding at 869/891 px | Offline acceptance derives every fixed-scene patch size and applies the unchanged 0.1% class-mismatch gate before publishing any plan |
+| OmniCloudMask ensemble | Direct FP16 TensorRT plans: fixed batch 1 at 700 px and batch 4 with exact logical-batch padding at 869/891 px | Offline acceptance derives every fixed-scene patch size, evaluates all four complete scenes, preserves a 0.1% aggregate class-mismatch budget, and caps every scene at 0.2% before publishing any plan |
 | Prithvi crop segmentation | Direct weakly typed mixed-FP16 TensorRT plan, FP32 I/O, TF32 disabled, fixed batch 16 | Offline acceptance compares balanced real-scene tiles with the established CUDA-autocast FP16 source using unchanged 0.2% decision and 0.5% mean-probability gates; logits and thresholds are not calibrated or altered |
 | Balkan 10 m preparation | Embedded overview read, one multiband average GDAL warp, checksum-keyed persistent grid | Avoids decoding four full-resolution bands separately while preserving the existing 10 m UTM, band-order, nodata, and reflectance contracts |
 | Health indices and packaging | Exact vectorized NumPy statistics in RAM, concurrent RGB/overlay/grid/codec work | Routine runs avoid non-downlinked science rasters; lossless PNG level 1 and WebP method 0 favor the two-second latency contract |
@@ -371,9 +371,11 @@ Use the stage timings in the response and payload `result.json`, not only the to
 Earlier Torch-TensorRT experiments produced about 2.2% crop decision disagreement and
 0.299141% cloud class disagreement, so those engines remain rejected and none of their
 calibration or partition workarounds is used. The direct path exports ONNX itself,
-builds complete TensorRT plans with `trtexec`, preserves the source logits and
-thresholds, and applies the same unchanged parity gates before publication. This is a
-new qualification path, not evidence that the historical engines became accurate; the
+builds complete TensorRT plans with `trtexec`, and preserves the source logits and
+thresholds. Cloud qualification retains the original 0.1% aggregate mismatch budget
+across all 8.59 million fixed-scene pixels and independently caps each complete scene
+at 0.2%; it always reports all four scenes before rejecting a candidate. This is a new
+qualification path, not evidence that the historical engines became accurate; the
 target Orin build must still pass before the service can report direct TensorRT ready.
 
 Historical optimization measurements on the RTX 3060 development machine showed that
@@ -463,7 +465,8 @@ to `pytorch`; native CUDA is enforced separately by deployment acceptance.
 cloud compiler route. Set those exact values before rebuilding. If logs contain
 `TensorRT Conversion Context`, cloud engine compilation, or cloud compiler parity,
 the running image/environment is not this production revision; stop it and verify the
-checked-out commit plus these three backend settings. Do not relax parity tolerances.
+checked-out commit plus these three backend settings. Do not bypass the aggregate or
+per-scene parity tolerances.
 
 `PERFORMANCE_SLO_FAILED` includes every repetition and the minimum, median, and maximum
 for each scene. Use the returned stage breakdown and `tegrastats` to diagnose the
