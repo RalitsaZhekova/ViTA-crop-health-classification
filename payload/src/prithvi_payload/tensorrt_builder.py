@@ -25,6 +25,7 @@ from cloud_detection.tensorrt_backend import (
     REVIEWED_CLOUD_BASE_PATCH_SIZE,
     REVIEWED_CLOUD_SCENE_BATCH_SIZES,
     REVIEWED_CLOUD_SCENE_PATCH_SIZES,
+    REVIEWED_CLOUD_SCENE_PRECISIONS,
     CloudTensorRTRouter,
     _CloudEnsemble,
     _remove_zero_channel_cat_noops,
@@ -77,6 +78,25 @@ _EXPECTED_CLOUD_CANONICALIZATION = {
 
 class TensorRTBuildError(RuntimeError):
     """Raised when any prebuild, engine, or parity gate fails."""
+
+
+class _CloudPrecisionReference(nn.Module):
+    """Run the source ensemble at one reviewed profile precision.
+
+    OmniCloudMask creates patch tensors at the operational inference dtype.
+    Profile-local FP32 TensorRT therefore receives the same FP16-quantized input
+    as production and promotes it only at the model boundary. The reference
+    does exactly the same thing while retaining checkpoint weights loaded at the
+    profile precision.
+    """
+
+    def __init__(self, models: list[nn.Module], *, dtype: torch.dtype) -> None:
+        super().__init__()
+        self.ensemble = _CloudEnsemble(models)
+        self.dtype = dtype
+
+    def forward(self, image: Tensor) -> Tensor:
+        return self.ensemble(image.to(dtype=self.dtype))
 
 
 @contextlib.contextmanager
@@ -1043,6 +1063,42 @@ def _export_cloud_onnx(
     }
 
 
+def _export_cloud_profile_group(
+    runtime: Any,
+    profiles: list[tuple[int, int, str]],
+    *,
+    precision: str,
+    onnx_root: Path,
+) -> list[dict[str, Any]]:
+    """Export one precision-homogeneous set from freshly loaded source weights."""
+
+    dtype = _precision_dtype(precision, name="cloud profile precision")
+    if any(profile_precision != precision for _, _, profile_precision in profiles):
+        raise TensorRTBuildError("Cloud export profile precision grouping is invalid")
+    cloud_source = _CloudEnsemble(runtime.cloud.backend.models).to(
+        device="cuda",
+        dtype=dtype,
+    )
+    cloud_source.eval()
+    graphs: list[dict[str, Any]] = []
+    for patch_size, batch_size, _ in profiles:
+        graph = _export_cloud_onnx(
+            cloud_source,
+            onnx_root
+            / (
+                f"cloud.{OMNICLOUDMASK_ENSEMBLE_SHA256[:12]}."
+                f"b{batch_size}.{patch_size}.{precision}.onnx"
+            ),
+            batch_size=batch_size,
+            patch_size=patch_size,
+            dtype=dtype,
+        )
+        graph["precision"] = precision
+        graphs.append(graph)
+    del cloud_source
+    return graphs
+
+
 def _parse_onnx_with_tensorrt(path: Path) -> None:
     import tensorrt as trt
 
@@ -1244,8 +1300,8 @@ def _load_reusable_cloud_records(
     manifest_path: Path,
     *,
     target: dict[str, Any],
-    precision: str,
-    profiles: list[tuple[int, int]],
+    source_precision: str,
+    profiles: list[tuple[int, int, str]],
 ) -> dict[int, dict[str, Any]]:
     """Reuse checksum-bound accepted plans whose complete contract is unchanged."""
 
@@ -1259,13 +1315,15 @@ def _load_reusable_cloud_records(
         accepted.get("target") != target
         or not isinstance(cloud, dict)
         or cloud.get("source_sha256") != OMNICLOUDMASK_ENSEMBLE_SHA256
-        or cloud.get("precision") != precision
+        or cloud.get("precision") != source_precision
     ):
         print("[tensorrt] accepted cloud plans use a different contract", flush=True)
         return {}
 
-    expected = dict(profiles)
-    dtype = "float16" if precision == "fp16" else "float32"
+    expected = {
+        patch_size: (batch_size, precision)
+        for patch_size, batch_size, precision in profiles
+    }
     reusable: dict[int, dict[str, Any]] = {}
     records = cloud.get("plans")
     if not isinstance(records, list):
@@ -1274,9 +1332,11 @@ def _load_reusable_cloud_records(
         if not isinstance(record, dict):
             continue
         patch_size = record.get("patch_size")
-        batch_size = expected.get(patch_size)
-        if batch_size is None:
+        contract = expected.get(patch_size)
+        if contract is None:
             continue
+        batch_size, precision = contract
+        dtype = "float16" if precision == "fp16" else "float32"
         inputs = record.get("inputs")
         expected_shape = [batch_size, 3, patch_size, patch_size]
         if (
@@ -1370,8 +1430,7 @@ def _load_reusable_cloud_candidates(
     manifest_path: Path,
     *,
     target: dict[str, Any],
-    precision: str,
-    profiles: list[tuple[int, int]],
+    profiles: list[tuple[int, int, str]],
 ) -> dict[int, dict[str, Any]]:
     """Recover inert candidates for a new scientific acceptance pass.
 
@@ -1385,7 +1444,7 @@ def _load_reusable_cloud_candidates(
     plans_root = manifest_path.parent / "plans"
     target_digest = _target_digest(target)
     recovered: dict[int, dict[str, Any]] = {}
-    for patch_size, batch_size in profiles:
+    for patch_size, batch_size, precision in profiles:
         onnx_path = onnx_root / (
             f"cloud.{OMNICLOUDMASK_ENSEMBLE_SHA256[:12]}."
             f"b{batch_size}.{patch_size}.{precision}.onnx"
@@ -1641,25 +1700,54 @@ def _discover_cloud_scene_patch_sizes(runtime: Any) -> dict[str, int]:
 
 
 def _validate_cloud_parity(
-    runtime: Any,
     records: list[dict[str, Any]],
     *,
     manifest_path: Path,
-    dtype: torch.dtype,
+    inference_precision: str,
     scene_patch_sizes: dict[str, int],
 ) -> dict[str, Any]:
-    backend = runtime.cloud.backend
-    source_models = backend.models
+    inference_dtype = _precision_dtype(
+        inference_precision,
+        name="VITA_CLOUD_INFERENCE_DTYPE",
+    )
     router = CloudTensorRTRouter(
         records,
         manifest_path=manifest_path,
         device=torch.device("cuda"),
-        dtype=dtype,
+        dtype=inference_dtype,
     )
+    records_by_patch = {
+        int(record["patch_size"]): record
+        for record in records
+        if isinstance(record, dict) and isinstance(record.get("patch_size"), int)
+    }
+    if set(records_by_patch) != set(scene_patch_sizes.values()):
+        raise TensorRTBuildError(
+            "Cloud parity plans do not cover every reviewed scene patch size"
+        )
     scene_results: list[dict[str, Any]] = []
     total_pixels = 0
     total_mismatches = 0
-    try:
+    profile_precisions = sorted(
+        {str(record["precision"]) for record in records_by_patch.values()}
+    )
+    for profile_precision in profile_precisions:
+        reference_dtype = _precision_dtype(
+            profile_precision,
+            name="cloud profile precision",
+        )
+        runtime = _load_source_runtime(profile_precision)
+        backend = runtime.cloud.backend
+        # Preserve the production patch tensor contract. The profile-local
+        # source wrapper and TensorRT router both perform the same promotion.
+        backend.inference_dtype = inference_precision
+        backend._torch_dtype = inference_dtype
+        source = _CloudPrecisionReference(
+            backend.models,
+            dtype=reference_dtype,
+        ).to(device="cuda", dtype=reference_dtype)
+        source.eval()
+        backend.models = [source]
         for profile in runtime._scene_cloud_warmups:
             scene_input = profile["input"]
             patch_size = scene_patch_sizes.get(scene_input)
@@ -1667,11 +1755,14 @@ def _validate_cloud_parity(
                 raise TensorRTBuildError(
                     f"Cloud parity scene has no accepted patch size: {scene_input}"
                 )
+            record = records_by_patch[patch_size]
+            if record.get("precision") != profile_precision:
+                continue
             image = _load_cloud_scene(
                 profile,
                 input_config=runtime.cloud.config["input"],
             )
-            backend.models = source_models
+            backend.models = [source]
             reference_model_output = backend.predict_semantic(image)
             backend.models = [router]
             accelerated_model_output = backend.predict_semantic(image)
@@ -1699,13 +1790,23 @@ def _validate_cloud_parity(
                         if profile.get("sensor") == "sentinel-2"
                         else "complete_analysis_grid"
                     ),
+                    "plan_precision": profile_precision,
+                    "reference": (
+                        f"pytorch_cuda_{profile_precision}_weights_"
+                        f"with_{inference_precision}_input"
+                    ),
                     "class_mismatch_fraction": fraction,
                     "mismatch_count": mismatches,
                     "pixel_count": pixels,
                 }
             )
-    finally:
-        backend.models = source_models
+        backend.models = []
+        del source, runtime
+        _release_cuda_memory()
+    if len(scene_results) != 4:
+        raise TensorRTBuildError(
+            f"Cloud parity evaluated {len(scene_results)} scenes instead of four"
+        )
     aggregate = total_mismatches / total_pixels
     worst_scene = max(
         scene_results,
@@ -1759,7 +1860,27 @@ def build(manifest_path: Path = DEFAULT_MANIFEST_PATH) -> dict[str, Any]:
         os.environ.get("VITA_CROP_TRT_PRECISION", "mixed-fp16")
     )
     cloud_precision = os.environ.get("VITA_CLOUD_TRT_PRECISION", "fp16").strip().casefold()
-    cloud_dtype = _precision_dtype(cloud_precision, name="VITA_CLOUD_TRT_PRECISION")
+    _precision_dtype(cloud_precision, name="VITA_CLOUD_TRT_PRECISION")
+    sentinel_cloud_precision = os.environ.get(
+        "VITA_CLOUD_SENTINEL_TRT_PRECISION",
+        "fp32",
+    ).strip().casefold()
+    _precision_dtype(
+        sentinel_cloud_precision,
+        name="VITA_CLOUD_SENTINEL_TRT_PRECISION",
+    )
+    reviewed_precisions = dict(REVIEWED_CLOUD_SCENE_PRECISIONS)
+    if (
+        any(
+            reviewed_precisions[patch_size] != cloud_precision
+            for patch_size in (869, 891)
+        )
+        or reviewed_precisions[1000] != sentinel_cloud_precision
+    ):
+        raise TensorRTBuildError(
+            "Cloud TensorRT precision settings do not match the reviewed "
+            "FP16-Balkan/FP32-Sentinel contract"
+        )
 
     print("[preflight] direct TensorRT dependencies and trtexec passed", flush=True)
     runtime = _load_source_runtime(cloud_precision)
@@ -1793,13 +1914,17 @@ def build(manifest_path: Path = DEFAULT_MANIFEST_PATH) -> dict[str, Any]:
             "VITA_CLOUD_BATCH_SIZE does not match the reviewed Balkan batch contract"
         )
     cloud_profiles = [
-        (patch_size, reviewed_batches[patch_size])
+        (
+            patch_size,
+            reviewed_batches[patch_size],
+            reviewed_precisions[patch_size],
+        )
         for patch_size in sorted(set(scene_patch_sizes.values()))
     ]
     reusable_cloud_records = _load_reusable_cloud_records(
         manifest_path,
         target=target,
-        precision=cloud_precision,
+        source_precision=cloud_precision,
         profiles=cloud_profiles,
     )
     missing_cloud_profiles = [
@@ -1811,7 +1936,6 @@ def build(manifest_path: Path = DEFAULT_MANIFEST_PATH) -> dict[str, Any]:
         _load_reusable_cloud_candidates(
             manifest_path,
             target=target,
-            precision=cloud_precision,
             profiles=missing_cloud_profiles,
         )
     )
@@ -1820,33 +1944,49 @@ def build(manifest_path: Path = DEFAULT_MANIFEST_PATH) -> dict[str, Any]:
         for profile in cloud_profiles
         if profile[0] not in reusable_cloud_records
     ]
-    cloud_graphs = []
-    if missing_cloud_profiles:
-        cloud_source = _CloudEnsemble(runtime.cloud.backend.models).to(
-            device="cuda",
-            dtype=cloud_dtype,
-        )
-        cloud_source.eval()
-        cloud_graphs = [
-            _export_cloud_onnx(
-                cloud_source,
-                onnx_root
-                / (
-                    f"cloud.{OMNICLOUDMASK_ENSEMBLE_SHA256[:12]}."
-                    f"b{batch_size}.{patch_size}.{cloud_precision}.onnx"
-                ),
-                batch_size=batch_size,
-                patch_size=patch_size,
-                dtype=cloud_dtype,
+    cloud_graphs: list[dict[str, Any]] = []
+    source_precision_profiles = [
+        profile
+        for profile in missing_cloud_profiles
+        if profile[2] == cloud_precision
+    ]
+    if source_precision_profiles:
+        cloud_graphs.extend(
+            _export_cloud_profile_group(
+                runtime,
+                source_precision_profiles,
+                precision=cloud_precision,
+                onnx_root=onnx_root,
             )
-            for patch_size, batch_size in missing_cloud_profiles
-        ]
-        del cloud_source
+        )
 
-    # trtexec is a separate process. Do not make its tactic selection compete
-    # with two complete source ensembles left resident by ONNX export.
+    # Every other precision is loaded directly from the verified checkpoints;
+    # casting an already-FP16 source back to FP32 would not restore its weights.
     del runtime
     _release_cuda_memory()
+    for profile_precision in sorted(
+        {profile[2] for profile in missing_cloud_profiles}
+        - {cloud_precision}
+    ):
+        export_runtime = _load_source_runtime(profile_precision)
+        precision_profiles = [
+            profile
+            for profile in missing_cloud_profiles
+            if profile[2] == profile_precision
+        ]
+        cloud_graphs.extend(
+            _export_cloud_profile_group(
+                export_runtime,
+                precision_profiles,
+                precision=profile_precision,
+                onnx_root=onnx_root,
+            )
+        )
+        del export_runtime
+        _release_cuda_memory()
+
+    # trtexec is a separate process. Do not make its tactic selection compete
+    # with complete source ensembles left resident by ONNX export.
 
     print("[parse] validating every ONNX graph with TensorRT before builds", flush=True)
     graphs_to_parse = [*([crop_graph] if crop_graph is not None else []), *cloud_graphs]
@@ -1892,7 +2032,7 @@ def build(manifest_path: Path = DEFAULT_MANIFEST_PATH) -> dict[str, Any]:
         _build_plan(
             graph,
             name=f"cloud-{graph['patch_size']}",
-            precision=cloud_precision,
+            precision=graph["precision"],
             manifest_path=manifest_path,
             executable=executable,
             target=target,
@@ -1906,7 +2046,7 @@ def build(manifest_path: Path = DEFAULT_MANIFEST_PATH) -> dict[str, Any]:
                 **_plan_record(
                     built,
                     manifest_path=manifest_path,
-                    precision=cloud_precision,
+                    precision=built["precision"],
                 ),
                 "patch_size": built["patch_size"],
                 "logical_min_batch_size": 1,
@@ -1915,15 +2055,11 @@ def build(manifest_path: Path = DEFAULT_MANIFEST_PATH) -> dict[str, Any]:
         )
     cloud_records.sort(key=lambda record: int(record["patch_size"]))
 
-    # Reload the untouched source for the complete-scene cloud comparison only
-    # after every required shape-specific plan exists.
-    runtime = _load_source_runtime(cloud_precision)
     print("[parity] validating cloud plans on all four complete scenes", flush=True)
     cloud_parity = _validate_cloud_parity(
-        runtime,
         cloud_records,
         manifest_path=manifest_path,
-        dtype=cloud_dtype,
+        inference_precision=cloud_precision,
         scene_patch_sizes=scene_patch_sizes,
     )
 
@@ -1942,6 +2078,10 @@ def build(manifest_path: Path = DEFAULT_MANIFEST_PATH) -> dict[str, Any]:
             "cloud": {
                 "source_sha256": OMNICLOUDMASK_ENSEMBLE_SHA256,
                 "precision": cloud_precision,
+                "profile_precisions": {
+                    str(patch_size): precision
+                    for patch_size, _, precision in cloud_profiles
+                },
                 "scene_patch_sizes": scene_patch_sizes,
                 "plans": cloud_records,
                 "parity": cloud_parity,
@@ -1950,7 +2090,6 @@ def build(manifest_path: Path = DEFAULT_MANIFEST_PATH) -> dict[str, Any]:
     }
     sealed = write_manifest_atomic(manifest_path, manifest)
     _prune_unaccepted_build_artifacts(manifest_path, sealed)
-    del runtime
     _release_cuda_memory()
     print(
         json.dumps(

@@ -40,8 +40,9 @@ the one-shot CLI must reload models in every process.
 
 The Jetson production path builds direct TensorRT 10.8 plans offline on the target
 Orin and loads them through TensorRT's native Python runtime. Crop retains FP32 I/O
-with qualified mixed-FP16 tactics, cloud uses strongly typed FP16, and the 1000 px
-Sentinel plan uses physical batch one while the 869/891 px Balkan plans use batch four.
+with qualified mixed-FP16 tactics. Cloud uses strongly typed FP16 for the 869/891 px
+Balkan plans and FP32 for the numerically sensitive 1000 px Sentinel plan; Sentinel
+uses physical batch one while the Balkan plans use batch four.
 The checksum-sealed plans remain unavailable until balanced crop parity and
 all-four-scene cloud parity pass against the operational PyTorch CUDA references.
 Deployment then requires every repeated scene run to remain below two seconds and

@@ -109,10 +109,10 @@ execution state.
    shared-grid caches. The former singular variable remains supported for local use.
 4. It loads the two OmniCloudMask ensemble checkpoints once.
 5. It loads the selected Prithvi crop model once on native CUDA.
-6. It warms every accepted FP16 cloud TensorRT shape and the fixed batch-16
-   mixed-FP16 crop TensorRT path directly on CUDA. The 1000 px Sentinel plan is
-   physically batch 1; the 869/891 px Balkan plans are batch 4. No production
-   model compiler runs here.
+6. It warms every accepted cloud TensorRT shape and the fixed batch-16 mixed-FP16
+   crop TensorRT path directly on CUDA. The FP32 1000 px Sentinel plan is physically
+   batch 1; the FP16 869/891 px Balkan plans are batch 4. No production model
+   compiler runs here.
 7. Only then does `/healthz` report `status: ready`. Readiness includes a tiny
    synchronized CUDA operation on the model worker, so a stale context after a
    laptop sleep, driver reset, or GPU switch is detected before a job starts.
@@ -307,7 +307,7 @@ lock returns HTTP 409 for concurrent work instead of letting two GPU pipelines c
 This eliminated severe first-request and multi-process timing variance observed during
 local validation.
 
-### Direct FP16 cloud TensorRT, semantic-only inference, and batching
+### Profile-precision cloud TensorRT, semantic-only inference, and batching
 
 The reviewed two-model mean-logit ensemble is exported and compiled offline into three
 fixed-shape native TensorRT plans. The builder derives the 869, 891, and 1000 pixel
@@ -317,9 +317,10 @@ patch; this avoids executing three synthetic padded copies. The 869/891 px Balka
 profiles remain fixed batch 4, padding only their final logical batch. The unused
 700 px source-shape profile is deliberately not built because no model call uses it.
 `predict_semantic()` returns only class IDs to the CPU. The service loads only
-checksum-sealed FP16 plans that passed all four real-scene
-comparisons against the FP16 PyTorch source; it never compiles during startup or
-requests.
+checksum-sealed plans that passed all four real-scene comparisons against matching
+PyTorch source precision. The multi-patch Balkan profiles remain FP16; the single
+1000 px Sentinel profile uses FP32 because its FP16 candidate exceeded the unchanged
+per-scene gate. It never compiles during startup or requests.
 
 Cloud acceptance evaluates both complete Balkan grids and the exact 700 px cores
 delivered from both 1000 px Sentinel model tiles. The four outputs together must
@@ -465,10 +466,10 @@ The next local command recreates the necessary runtime layout.
 - The factor-4 Balkan overview path is an MVP speed/accuracy trade, not bitwise
   equivalence to full-resolution averaging; measured parity and limitations are
   recorded in the Jetson guide.
-- Every TensorRT precision/profile candidate is compared with its operational PyTorch
-  reference on the same scenes before publication: FP16 for cloud and CUDA-autocast
-  FP16 for crop. Candidate plans cannot replace the checksum-sealed manifest until all
-  scientific gates pass.
+- Every TensorRT precision/profile candidate is compared with its matching PyTorch
+  reference on the same scenes before publication: FP16 for Balkan cloud, FP32 for
+  Sentinel cloud, and CUDA-autocast FP16 for crop. Candidate plans cannot replace the
+  checksum-sealed manifest until all scientific gates pass.
 - INT8/quantization remains disabled until a representative calibration dataset and
   mission tolerance exist. The optional ModelOpt warning does not affect FP16.
 - The two-second target applies to a ready payload and the approved four-scene image-size

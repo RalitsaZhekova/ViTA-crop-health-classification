@@ -150,16 +150,19 @@ def test_jetson_acceptance_accepts_checksum_bound_direct_tensorrt(
                     "patch_size": 1000,
                     "minimum_batch_size": 1,
                     "maximum_batch_size": 1,
+                    "precision": "fp32",
                 },
                 {
                     "patch_size": 869,
                     "minimum_batch_size": 1,
                     "maximum_batch_size": 4,
+                    "precision": "fp16",
                 },
                 {
                     "patch_size": 891,
                     "minimum_batch_size": 1,
                     "maximum_batch_size": 4,
+                    "precision": "fp16",
                 },
             ],
             "cloud_tensorrt_parity": {
@@ -188,6 +191,10 @@ def test_jetson_acceptance_accepts_checksum_bound_direct_tensorrt(
     assert accepted["crop_backend"] == "tensorrt"
     assert accepted["cloud_tensorrt_engine_count"] == 3
     assert accepted["cloud_profile_count"] == 3
+
+    stack["cloud_tensorrt_profiles"][0]["precision"] = "fp16"
+    with pytest.raises(RuntimeError, match="profiles do not match"):
+        validate_health(health)
 
 
 def test_jetson_acceptance_rejects_cloud_scene_parity_regression(
@@ -218,6 +225,7 @@ def test_jetson_acceptance_rejects_cloud_scene_parity_regression(
                     "patch_size": patch_size,
                     "minimum_batch_size": 1,
                     "maximum_batch_size": maximum_batch_size,
+                    "precision": "fp32" if patch_size == 1000 else "fp16",
                 }
                 for patch_size, maximum_batch_size in ((869, 4), (891, 4), (1000, 1))
             ],

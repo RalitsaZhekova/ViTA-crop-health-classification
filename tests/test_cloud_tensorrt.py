@@ -8,6 +8,7 @@ from cloud_detection.tensorrt_backend import (
     CLOUD_MAX_AGGREGATE_CLASS_MISMATCH,
     CLOUD_MAX_SCENE_CLASS_MISMATCH,
     REVIEWED_CLOUD_SCENE_BATCH_SIZES,
+    REVIEWED_CLOUD_SCENE_PRECISIONS,
     CloudTensorRTRouter,
     _CloudEnsemble,
     _remove_zero_channel_cat_noops,
@@ -39,6 +40,16 @@ class _FixedBatchScale(nn.Module):
     def forward(self, image: torch.Tensor) -> torch.Tensor:
         assert image.shape[0] == self.batch_size
         return image * self.value
+
+
+class _CaptureDtype(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.seen: torch.dtype | None = None
+
+    def forward(self, image: torch.Tensor) -> torch.Tensor:
+        self.seen = image.dtype
+        return image
 
 
 class _ZeroChannelSkip(nn.Module):
@@ -140,8 +151,28 @@ def test_cloud_tensorrt_router_rejects_batch_outside_manifest_contract() -> None
         router(torch.ones((5, 3, 8, 8)))
 
 
+def test_cloud_tensorrt_router_promotes_only_the_selected_profile() -> None:
+    plan = _CaptureDtype()
+    router = _empty_router()
+    router._plans = {(8, 8): plan}
+    router._batch_contracts = {(8, 8): (1, 1, 1)}
+    router._input_dtypes = {(8, 8): torch.float32}
+    router._used_profiles = set()
+    router._lock = threading.Lock()
+
+    output = router(torch.ones((1, 3, 8, 8), dtype=torch.float16))
+
+    assert plan.seen == torch.float32
+    assert output.dtype == torch.float32
+
+
 def test_reviewed_cloud_batches_match_operational_payload_tiles() -> None:
     assert dict(REVIEWED_CLOUD_SCENE_BATCH_SIZES) == {869: 4, 891: 4, 1000: 1}
+    assert dict(REVIEWED_CLOUD_SCENE_PRECISIONS) == {
+        869: "fp16",
+        891: "fp16",
+        1000: "fp32",
+    }
     assert CLOUD_MAX_AGGREGATE_CLASS_MISMATCH == 0.001
     assert CLOUD_MAX_SCENE_CLASS_MISMATCH == 0.002
 

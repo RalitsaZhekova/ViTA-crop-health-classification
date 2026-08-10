@@ -14,6 +14,7 @@ from cloud_detection.tensorrt_backend import (
     REVIEWED_CLOUD_BASE_PATCH_SIZE,
     REVIEWED_CLOUD_SCENE_BATCH_SIZES,
     REVIEWED_CLOUD_SCENE_PATCH_SIZES,
+    REVIEWED_CLOUD_SCENE_PRECISIONS,
 )
 
 from prithvi_payload.runtime_config import environment_flag
@@ -106,12 +107,14 @@ def validate_health(health: dict[str, Any]) -> dict[str, Any]:
                 profile.get("patch_size"),
                 profile.get("minimum_batch_size"),
                 profile.get("maximum_batch_size"),
+                profile.get("precision"),
             )
             for profile in profiles
             if isinstance(profile, dict)
         }
+        reviewed_precisions = dict(REVIEWED_CLOUD_SCENE_PRECISIONS)
         expected_profile_contract = {
-            (patch_size, 1, batch_size)
+            (patch_size, 1, batch_size, reviewed_precisions[patch_size])
             for patch_size, batch_size in REVIEWED_CLOUD_SCENE_BATCH_SIZES
         }
         if profile_contract != expected_profile_contract:

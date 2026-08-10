@@ -13,6 +13,7 @@ from prithvi_payload.inference import OPTIMIZED_BATCH_SIZE
 from prithvi_payload.tensorrt_builder import (
     _canonicalize_cloud_onnx,
     _canonicalize_crop_onnx,
+    _CloudPrecisionReference,
     _discover_cloud_scene_patch_sizes,
     _load_reusable_cloud_candidates,
     _load_reusable_cloud_records,
@@ -40,6 +41,31 @@ def _manifest() -> dict:
         "target": {"gpu": "test"},
         "models": {"crop": {}, "cloud": {}},
     }
+
+
+class _ReferenceDtype(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.seen: torch.dtype | None = None
+
+    def forward(self, image: torch.Tensor) -> torch.Tensor:
+        self.seen = image.dtype
+        return image
+
+
+def test_cloud_precision_reference_promotes_operational_input() -> None:
+    first = _ReferenceDtype()
+    second = _ReferenceDtype()
+    reference = _CloudPrecisionReference(
+        [first, second],
+        dtype=torch.float32,
+    )
+
+    output = reference(torch.ones((1, 3, 8, 8), dtype=torch.float16))
+
+    assert first.seen == torch.float32
+    assert second.seen == torch.float32
+    assert output.dtype == torch.float32
 
 
 def test_direct_tensorrt_resolves_cuda_alias_to_active_index(
@@ -146,8 +172,8 @@ def test_direct_tensorrt_reuses_only_checksum_bound_matching_cloud_profiles(
     reusable = _load_reusable_cloud_records(
         manifest_path,
         target=target,
-        precision="fp16",
-        profiles=[(869, 4), (891, 4), (1000, 1)],
+        source_precision="fp16",
+        profiles=[(869, 4, "fp16"), (891, 4, "fp16"), (1000, 1, "fp32")],
     )
 
     assert reusable == {869: record}
@@ -267,8 +293,7 @@ def test_direct_tensorrt_revalidates_matching_inert_cloud_candidate(
     recovered = _load_reusable_cloud_candidates(
         manifest_path,
         target=target,
-        precision="fp16",
-        profiles=[(1000, 1)],
+        profiles=[(1000, 1, "fp16")],
     )
 
     assert recovered[1000]["plan_sha256"] == file_sha256(plan_path)

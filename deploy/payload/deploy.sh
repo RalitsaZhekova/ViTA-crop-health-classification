@@ -37,6 +37,10 @@ if [ "$crop_backend" = "tensorrt" ]; then
         echo "ERROR: cloud inference dtype must match VITA_CLOUD_TRT_PRECISION" >&2
         exit 1
     fi
+    if [ "${VITA_CLOUD_SENTINEL_TRT_PRECISION:-fp32}" != "fp32" ]; then
+        echo "ERROR: the reviewed Sentinel TensorRT profile must use fp32" >&2
+        exit 1
+    fi
 fi
 if [ "${VITA_TRT_CUDAGRAPHS:-0}" != "0" ]; then
     echo "ERROR: deploy/payload.env must set VITA_TRT_CUDAGRAPHS=0" >&2

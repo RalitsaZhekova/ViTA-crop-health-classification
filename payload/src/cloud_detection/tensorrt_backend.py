@@ -19,6 +19,11 @@ REVIEWED_CLOUD_SCENE_BATCH_SIZES = ((869, 4), (891, 4), (1000, 1))
 REVIEWED_CLOUD_SCENE_PATCH_SIZES = tuple(
     patch_size for patch_size, _ in REVIEWED_CLOUD_SCENE_BATCH_SIZES
 )
+# The larger, multi-patch Balkan profiles retain the qualified FP16 speedup.
+# The Brazil Sentinel qualification scene crosses too many class boundaries in
+# strongly typed FP16, so its single 1000 px operational tile uses FP32. This is
+# a profile-local precision promotion, not a relaxed semantic acceptance gate.
+REVIEWED_CLOUD_SCENE_PRECISIONS = ((869, "fp16"), (891, "fp16"), (1000, "fp32"))
 # Semantic parity is measured across all four complete qualification scenes.
 # Preserve the original 0.1% aggregate science budget while allowing any one
 # scene at most 0.2%; scene composition changes how many pixels lie directly on
@@ -125,18 +130,19 @@ class CloudTensorRTRouter(nn.Module):
             raise RuntimeError("TensorRT cloud inference requires a CUDA device")
         self.device = device
         self.dtype = dtype
-        expected_precision = "fp16" if dtype == torch.float16 else "fp32"
         self._plans: dict[tuple[int, int], NativeTensorRTPlan] = {}
         self._records: dict[tuple[int, int], dict[str, Any]] = {}
         self._batch_contracts: dict[tuple[int, int], tuple[int, int, int]] = {}
+        self._input_dtypes: dict[tuple[int, int], torch.dtype] = {}
         self._used_profiles: set[tuple[int, int, int]] = set()
         self._lock = threading.Lock()
         for record in records:
             if not isinstance(record, dict):
                 raise TensorRTArtifactError("Cloud TensorRT profile record is invalid")
-            if record.get("precision") != expected_precision:
+            precision = record.get("precision")
+            if precision not in {"fp16", "fp32"}:
                 raise TensorRTArtifactError(
-                    "Cloud TensorRT plan precision does not match inference_dtype"
+                    "Cloud TensorRT plan precision must be fp16 or fp32"
                 )
             patch_size = record.get("patch_size")
             if not isinstance(patch_size, int) or patch_size < 32:
@@ -151,6 +157,11 @@ class CloudTensorRTRouter(nn.Module):
                 manifest_path=manifest_path,
                 device=device,
             )
+            expected_input_dtype = "float16" if precision == "fp16" else "float32"
+            if plan.input_specs[0].get("dtype") != expected_input_dtype:
+                raise TensorRTArtifactError(
+                    f"Cloud TensorRT {patch_size}px plan I/O does not match its precision"
+                )
             physical_batch_size = int(plan.input_specs[0]["shape"][0])
             minimum_batch_size = record.get("logical_min_batch_size")
             maximum_batch_size = record.get("logical_max_batch_size")
@@ -170,6 +181,9 @@ class CloudTensorRTRouter(nn.Module):
                 minimum_batch_size,
                 maximum_batch_size,
                 physical_batch_size,
+            )
+            self._input_dtypes[key] = (
+                torch.float16 if precision == "fp16" else torch.float32
             )
         if not self._plans:
             raise TensorRTArtifactError("No accepted cloud TensorRT plans were supplied")
@@ -236,6 +250,11 @@ class CloudTensorRTRouter(nn.Module):
             )
         with self._lock:
             self._used_profiles.add((batch_size, height, width))
+        input_dtype = getattr(self, "_input_dtypes", {}).get(
+            (height, width), image.dtype
+        )
+        if image.dtype != input_dtype:
+            image = image.to(dtype=input_dtype)
         if batch_size < physical_batch_size:
             padding = physical_batch_size - batch_size
             image = torch.cat(
