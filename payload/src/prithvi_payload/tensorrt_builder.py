@@ -244,6 +244,55 @@ def _save_onnx_program(program: Any, path: Path) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _normalize_onnxscript_integer_attributes(program: Any) -> int:
+    """Coerce ONNX INT attributes away from Python bool before protobuf save.
+
+    PyTorch 2.6's exporter can represent flags such as ReduceMean ``keepdims``
+    as ``Attr(INT, True)``. ONNX Script 0.1 accepts that IR value, but the pure
+    Python protobuf implementation in the pinned Jetson image correctly rejects
+    bool when serializing the int64 ``AttributeProto.i`` field. The ONNX value
+    is exactly 1/0, so normalizing only INT-typed bools is lossless.
+    """
+
+    model = getattr(program, "model", None)
+    root = getattr(model, "graph", None)
+    if root is None:
+        raise TensorRTBuildError("PyTorch ONNXProgram has no mutable IR graph")
+
+    normalized = 0
+
+    def visit(graph: Any) -> None:
+        nonlocal normalized
+        for node in graph:
+            attributes = getattr(node, "attributes", None)
+            if not isinstance(attributes, dict):
+                continue
+            for attribute in attributes.values():
+                type_name = getattr(getattr(attribute, "type", None), "name", None)
+                value = getattr(attribute, "value", None)
+                if type_name == "INT" and isinstance(value, bool):
+                    attribute.value = int(value)
+                    normalized += 1
+                elif type_name == "GRAPH":
+                    visit(value)
+                elif type_name == "GRAPHS":
+                    for child in value:
+                        visit(child)
+
+    visit(root)
+    return normalized
+
+
+def _exception_summary(error: BaseException) -> str:
+    parts: list[str] = []
+    current: BaseException | None = error
+    while current is not None:
+        message = str(current).splitlines()[0].strip()
+        parts.append(f"{type(current).__name__}: {message}"[:500])
+        current = current.__cause__
+    return " <- ".join(parts)
+
+
 def _export_program_to_onnx(
     exported: Any,
     path: Path,
@@ -265,9 +314,17 @@ def _export_program_to_onnx(
         )
         if program is None or not hasattr(program, "save"):
             raise TensorRTBuildError("PyTorch did not return an ONNXProgram")
+        normalized = _normalize_onnxscript_integer_attributes(program)
+        if normalized:
+            print(
+                f"[onnx] normalized {normalized} integer flag attributes",
+                flush=True,
+            )
         _save_onnx_program(program, path)
     except Exception as error:
-        raise TensorRTBuildError(f"PyTorch ONNX export failed for {path}: {error}") from error
+        raise TensorRTBuildError(
+            f"PyTorch ONNX export failed for {path}: {_exception_summary(error)}"
+        ) from error
     return _validate_onnx(
         path,
         expected_inputs=input_names,

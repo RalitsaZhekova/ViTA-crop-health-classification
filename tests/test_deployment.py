@@ -167,6 +167,7 @@ def test_direct_tensorrt_is_offline_and_does_not_import_torch_tensorrt() -> None
     assert "_parse_onnx_with_tensorrt" in builder
     assert "zero-sized initializer" in builder
     assert "zero-sized Constant" in builder
+    assert "_normalize_onnxscript_integer_attributes(program)" in builder
     build_body = builder.split("def build(", maxsplit=1)[1]
     assert build_body.index("_release_cuda_memory()") < build_body.index(
         "built_crop = _build_plan"
