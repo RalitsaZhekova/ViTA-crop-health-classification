@@ -200,6 +200,7 @@ def test_payload_env_matches_the_production_crop_acceleration_contract() -> None
             environment[name] = value
 
     assert environment["VITA_CROP_BACKEND"] == "tensorrt"
+    assert environment["VITA_REPLACE_TRT_ARTIFACTS"] == "0"
     assert environment["VITA_CROP_BATCH_SIZE"] == "16"
     assert environment["VITA_CROP_TRT_PRECISION"] == "mixed-fp16"
     assert environment["VITA_CLOUD_BACKEND"] == "tensorrt"
@@ -223,9 +224,28 @@ def test_deploy_builds_plans_before_starting_the_service() -> None:
     stop = 'docker compose "${compose_args[@]}" stop payload'
     assert stop in deploy
     assert deploy.index(stop) < deploy.index(builder)
+    replacement = "replace_direct_vita_tensorrt_artifacts"
+    assert replacement in deploy
+    assert deploy.index(stop) < deploy.rindex(replacement) < deploy.index(builder)
+    remove_container = 'docker compose "${compose_args[@]}" rm --force --stop payload'
+    assert remove_container in deploy
+    assert deploy.index(stop) < deploy.index(remove_container) < deploy.index(builder)
     assert deploy.index(builder) < deploy.index('docker compose "${compose_args[@]}" up -d')
     assert 'fail_startup "payload acceleration acceptance failed"' in deploy
     assert 'fail_startup "payload two-second performance acceptance failed"' in deploy
+
+
+def test_existing_payload_image_uses_the_small_code_overlay() -> None:
+    root = Path(__file__).resolve().parents[1]
+    deploy = (root / "deploy/payload/deploy.sh").read_text(encoding="utf-8")
+    overlay = root / "deploy/Dockerfile.payload-overlay"
+
+    assert overlay.is_file()
+    assert "FROM ${VITA_PAYLOAD_OVERLAY_BASE_IMAGE}" in overlay.read_text(
+        encoding="utf-8"
+    )
+    assert "docker image inspect" in deploy
+    assert "--file deploy/Dockerfile.payload-overlay" in deploy
 
 
 def test_ground_demo_reports_payload_stage_timings() -> None:

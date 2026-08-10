@@ -1,0 +1,23 @@
+# Space-constrained code update for an already validated local payload image.
+# The existing image remains the parent, so its NVIDIA, CUDA, Python, and model
+# dependency layers are shared rather than rebuilt or duplicated.
+ARG VITA_PAYLOAD_OVERLAY_BASE_IMAGE=vita-payload:1.0.0
+FROM ${VITA_PAYLOAD_OVERLAY_BASE_IMAGE}
+
+USER root
+WORKDIR /opt/vita
+
+COPY pyproject.toml ./
+COPY payload ./payload
+COPY shared ./shared
+COPY integration ./integration
+COPY ground ./ground
+
+RUN python -m pip install --no-cache-dir --no-deps . \
+    && python -m pip check \
+    && python -c "import prithvi_payload, tensorrt, torch; assert torch.cuda.is_available() is False or torch.version.cuda == '12.8'; assert tensorrt.__version__.startswith('10.8.'); print('Validated ViTA code overlay')"
+
+ARG VITA_PAYLOAD_UID=2002
+ARG VITA_PAYLOAD_GID=2002
+USER ${VITA_PAYLOAD_UID}:${VITA_PAYLOAD_GID}
+

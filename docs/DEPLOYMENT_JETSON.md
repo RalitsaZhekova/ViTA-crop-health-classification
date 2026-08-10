@@ -160,6 +160,16 @@ cp deploy/payload.env.example deploy/payload.env  # skip if already configured
 ./deploy/payload/deploy.sh
 ```
 
+When the validated payload image already exists locally, deployment builds only a
+small code overlay whose parent is that exact image. The large NVIDIA, CUDA, Python,
+and dependency layers remain shared. A fresh machine without the image still performs
+the complete Dockerfile build. For a disk-constrained engine migration, set
+`VITA_REPLACE_TRT_ARTIFACTS=1`; after stopping the current VITA service, deployment
+removes that service container and only `runtime/engines/tensorrt/direct` before
+producing the replacement plans, so the old FP32 and new FP16 engine sets never
+coexist. Set the flag back to `0` after a successful migration so later unchanged
+deployments reuse the accepted plans.
+
 The script requires both model backends to be either `pytorch` or `tensorrt` and rejects the retired TensorRT CUDA-graph switch. In direct TensorRT mode it runs preflight, builds the image, validates CUDA/ONNX/TensorRT and all four sensor contracts, runs the offline builder, and starts Compose only after the builder publishes an accepted manifest. Service startup only deserializes the accepted plans; it never compiles. Unchanged ONNX, target, precision, and build arguments reuse checksum-verified plans, so a later parity retry does not repeat tactic construction. The script then runs fail-closed acceleration checks and the configured timed repetitions of all four scenes.
 
 The last complete performance qualification, including every stage timing, is written

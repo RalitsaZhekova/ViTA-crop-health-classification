@@ -109,6 +109,20 @@ remove_stale_vita_acceptance_runs() {
     done < <(find "$runs_root" -mindepth 1 -maxdepth 1 -type d -name 'accept-*' -print0)
 }
 
+replace_direct_vita_tensorrt_artifacts() {
+    direct_root="$(realpath -m "$PROJECT_ROOT/runtime/engines/tensorrt/direct")"
+    expected_parent="$(realpath -m "$PROJECT_ROOT/runtime/engines/tensorrt")"
+    if [ "$direct_root" != "$expected_parent/direct" ]; then
+        echo "ERROR: direct TensorRT artifacts escaped the VITA engine root" >&2
+        exit 1
+    fi
+    if [ -d "$direct_root" ]; then
+        rm -rf -- "$direct_root"
+        echo "Removed the previous VITA direct TensorRT artifact set: $direct_root"
+    fi
+    mkdir -p "$direct_root"
+}
+
 ./deploy/payload/preflight.sh
 mkdir -p runtime/payload/runs runtime/engines/torch-export runtime/engines/tensorrt
 remove_rejected_vita_tensorrt_caches
@@ -119,7 +133,20 @@ if [ -f deploy/payload.env ]; then
     compose_args=(--env-file deploy/payload.env "${compose_args[@]}")
 fi
 if [ "${VITA_SKIP_BUILD:-0}" != "1" ]; then
-    docker compose "${compose_args[@]}" build
+    payload_image="${VITA_PAYLOAD_IMAGE:-vita-payload:1.0.0}"
+    if docker image inspect "$payload_image" >/dev/null 2>&1; then
+        echo "Building a small code overlay on the existing payload image; large dependency layers remain shared."
+        docker build \
+            --file deploy/Dockerfile.payload-overlay \
+            --build-arg "VITA_PAYLOAD_OVERLAY_BASE_IMAGE=$payload_image" \
+            --build-arg "VITA_PAYLOAD_UID=$VITA_PAYLOAD_UID" \
+            --build-arg "VITA_PAYLOAD_GID=$VITA_PAYLOAD_GID" \
+            --tag "$payload_image" \
+            .
+    else
+        echo "No existing payload image was found; performing the complete image build."
+        docker compose "${compose_args[@]}" build
+    fi
 fi
 echo "Validating CUDA, ONNX export, and direct TensorRT inside the final image."
 docker compose "${compose_args[@]}" run --rm --no-deps \
@@ -137,6 +164,13 @@ if [ "$crop_backend" = "tensorrt" ]; then
     if [ -n "$running_payload_id" ]; then
         echo "Stopping the existing VITA payload service before exclusive TensorRT tactic search."
         docker compose "${compose_args[@]}" stop payload
+    fi
+    if [ "${VITA_REPLACE_TRT_ARTIFACTS:-0}" = "1" ]; then
+        # The old container cannot run after its accepted plans are removed.
+        # Remove only this Compose service before replacing the bind-mounted
+        # engine set; images, data, models, and other projects remain untouched.
+        docker compose "${compose_args[@]}" rm --force --stop payload
+        replace_direct_vita_tensorrt_artifacts
     fi
     echo "Building and accepting direct TensorRT plans offline before service startup."
     docker compose "${compose_args[@]}" run --rm --no-deps \
