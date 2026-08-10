@@ -28,9 +28,13 @@ def _health() -> dict:
             "cloud_tensorrt_parity": {},
             "tensorrt_manifest_sha256": None,
             "cloud_warmup_profiles": [
+                {"batch_size": 1, "patch_size": 700},
                 {"batch_size": 1, "patch_size": 869},
+                {"batch_size": 1, "patch_size": 891},
                 {"batch_size": 1, "patch_size": 1000},
+                {"batch_size": 4, "patch_size": 700},
                 {"batch_size": 4, "patch_size": 869},
+                {"batch_size": 4, "patch_size": 891},
             ],
             "cloud_scene_warmup_profiles": [
                 {
@@ -137,10 +141,20 @@ def test_jetson_acceptance_accepts_checksum_bound_direct_tensorrt(
                 "mean_absolute_probability_error": 0.001,
             },
             "cloud_backend": "omnicloudmask_tensorrt_fp32",
-            "cloud_tensorrt_engine_count": 2,
+            "cloud_tensorrt_engine_count": 4,
             "cloud_tensorrt_profiles": [
                 {
+                    "patch_size": 700,
+                    "minimum_batch_size": 1,
+                    "maximum_batch_size": 4,
+                },
+                {
                     "patch_size": 869,
+                    "minimum_batch_size": 1,
+                    "maximum_batch_size": 4,
+                },
+                {
+                    "patch_size": 891,
                     "minimum_batch_size": 1,
                     "maximum_batch_size": 4,
                 },
@@ -161,8 +175,8 @@ def test_jetson_acceptance_accepts_checksum_bound_direct_tensorrt(
     accepted = validate_health(health)
 
     assert accepted["crop_backend"] == "tensorrt"
-    assert accepted["cloud_tensorrt_engine_count"] == 2
-    assert accepted["cloud_profile_count"] == 2
+    assert accepted["cloud_tensorrt_engine_count"] == 4
+    assert accepted["cloud_profile_count"] == 4
 
 
 def test_jetson_acceptance_rejects_direct_tensorrt_parity_regression(

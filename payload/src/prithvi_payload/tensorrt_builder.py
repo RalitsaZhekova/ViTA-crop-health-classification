@@ -19,6 +19,8 @@ import numpy as np
 import torch
 from cloud_detection.backend import OMNICLOUDMASK_ENSEMBLE_SHA256
 from cloud_detection.tensorrt_backend import (
+    REVIEWED_CLOUD_BASE_PATCH_SIZE,
+    REVIEWED_CLOUD_SCENE_PATCH_SIZES,
     CloudTensorRTRouter,
     _CloudEnsemble,
     _remove_zero_channel_cat_noops,
@@ -1242,12 +1244,64 @@ def _load_cloud_scene(
     return image.astype(np.float32, copy=False)
 
 
+def _discover_cloud_scene_patch_sizes(runtime: Any) -> dict[str, int]:
+    """Apply OmniCloudMask's pinned no-data rule to every accepted scene."""
+
+    from omnicloudmask.cloud_mask import check_patch_size
+
+    backend = runtime.cloud.backend
+    if int(backend.patch_size) != REVIEWED_CLOUD_BASE_PATCH_SIZE:
+        raise TensorRTBuildError(
+            "Cloud base patch size does not match the reviewed TensorRT contract"
+        )
+    scene_patch_sizes: dict[str, int] = {}
+    for profile in runtime._scene_cloud_warmups:
+        scene_input = profile.get("input")
+        if not isinstance(scene_input, str) or not scene_input:
+            raise TensorRTBuildError("Cloud scene profile has no stable input identity")
+        if scene_input in scene_patch_sizes:
+            raise TensorRTBuildError(f"Duplicate cloud scene profile: {scene_input}")
+        image = _load_cloud_scene(
+            profile,
+            input_config=runtime.cloud.config["input"],
+        )
+        prepared = backend._prepare_input(image)
+        if prepared is None:
+            raise TensorRTBuildError(
+                f"Cloud acceptance scene contains no model-valid pixels: {scene_input}"
+            )
+        requested = min(int(backend.patch_size), *prepared.shape[1:])
+        overlap = min(int(backend.patch_overlap), max(0, requested // 2))
+        _, adjusted = check_patch_size(
+            prepared,
+            0.0,
+            requested,
+            overlap,
+        )
+        scene_patch_sizes[scene_input] = int(adjusted)
+        del image, prepared
+
+    observed = set(scene_patch_sizes.values())
+    expected = set(REVIEWED_CLOUD_SCENE_PATCH_SIZES)
+    if observed != expected or len(scene_patch_sizes) != 4:
+        raise TensorRTBuildError(
+            "Cloud scene patch sizes do not match the reviewed four-scene contract: "
+            f"observed={scene_patch_sizes}, expected_sizes={sorted(expected)}"
+        )
+    print(
+        f"[cloud] reviewed fixed-scene patch sizes: {scene_patch_sizes}",
+        flush=True,
+    )
+    return scene_patch_sizes
+
+
 def _validate_cloud_parity(
     runtime: Any,
     records: list[dict[str, Any]],
     *,
     manifest_path: Path,
     dtype: torch.dtype,
+    scene_patch_sizes: dict[str, int],
 ) -> dict[str, Any]:
     backend = runtime.cloud.backend
     source_models = backend.models
@@ -1262,6 +1316,12 @@ def _validate_cloud_parity(
     total_mismatches = 0
     try:
         for profile in runtime._scene_cloud_warmups:
+            scene_input = profile["input"]
+            patch_size = scene_patch_sizes.get(scene_input)
+            if patch_size is None:
+                raise TensorRTBuildError(
+                    f"Cloud parity scene has no accepted patch size: {scene_input}"
+                )
             image = _load_cloud_scene(
                 profile,
                 input_config=runtime.cloud.config["input"],
@@ -1282,7 +1342,8 @@ def _validate_cloud_parity(
             total_mismatches += mismatches
             scene_results.append(
                 {
-                    "input": profile["input"],
+                    "input": scene_input,
+                    "patch_size": patch_size,
                     "class_mismatch_fraction": fraction,
                     "mismatch_count": mismatches,
                     "pixel_count": pixels,
@@ -1322,6 +1383,7 @@ def build(manifest_path: Path = DEFAULT_MANIFEST_PATH) -> dict[str, Any]:
 
     print("[preflight] direct TensorRT dependencies and trtexec passed", flush=True)
     runtime = _load_source_runtime(cloud_precision)
+    scene_patch_sizes = _discover_cloud_scene_patch_sizes(runtime)
 
     onnx_root = manifest_path.parent / "onnx"
     onnx_root.mkdir(parents=True, exist_ok=True)
@@ -1335,25 +1397,28 @@ def build(manifest_path: Path = DEFAULT_MANIFEST_PATH) -> dict[str, Any]:
         dtype=cloud_dtype,
     )
     cloud_source.eval()
+    cloud_batch_size = int(os.environ.get("VITA_CLOUD_BATCH_SIZE", "4"))
+    if cloud_batch_size < 1:
+        raise TensorRTBuildError("VITA_CLOUD_BATCH_SIZE must be positive")
+    cloud_profiles = [
+        (patch_size, cloud_batch_size)
+        for patch_size in sorted(set(scene_patch_sizes.values()))
+    ]
+    if REVIEWED_CLOUD_BASE_PATCH_SIZE not in scene_patch_sizes.values():
+        cloud_profiles.append((REVIEWED_CLOUD_BASE_PATCH_SIZE, 1))
     cloud_graphs = [
-        _export_cloud_onnx(
-            cloud_source,
-            onnx_root / f"cloud.{OMNICLOUDMASK_ENSEMBLE_SHA256[:12]}.b4.869.{cloud_precision}.onnx",
-            batch_size=int(os.environ.get("VITA_CLOUD_BATCH_SIZE", "4")),
-            patch_size=869,
-            dtype=cloud_dtype,
-        ),
         _export_cloud_onnx(
             cloud_source,
             onnx_root
             / (
                 f"cloud.{OMNICLOUDMASK_ENSEMBLE_SHA256[:12]}."
-                f"b1.1000.{cloud_precision}.onnx"
+                f"b{batch_size}.{patch_size}.{cloud_precision}.onnx"
             ),
-            batch_size=1,
-            patch_size=1000,
+            batch_size=batch_size,
+            patch_size=patch_size,
             dtype=cloud_dtype,
-        ),
+        )
+        for patch_size, batch_size in cloud_profiles
     ]
 
     # trtexec is a separate process. Do not make its tactic selection compete
@@ -1426,6 +1491,7 @@ def build(manifest_path: Path = DEFAULT_MANIFEST_PATH) -> dict[str, Any]:
         cloud_records,
         manifest_path=manifest_path,
         dtype=cloud_dtype,
+        scene_patch_sizes=scene_patch_sizes,
     )
 
     manifest = {
@@ -1443,6 +1509,7 @@ def build(manifest_path: Path = DEFAULT_MANIFEST_PATH) -> dict[str, Any]:
             "cloud": {
                 "source_sha256": OMNICLOUDMASK_ENSEMBLE_SHA256,
                 "precision": cloud_precision,
+                "scene_patch_sizes": scene_patch_sizes,
                 "plans": cloud_records,
                 "parity": cloud_parity,
             },

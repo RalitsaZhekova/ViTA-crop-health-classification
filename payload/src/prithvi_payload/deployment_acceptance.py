@@ -8,6 +8,11 @@ import os
 from typing import Any
 from urllib.request import urlopen
 
+from cloud_detection.tensorrt_backend import (
+    REVIEWED_CLOUD_BASE_PATCH_SIZE,
+    REVIEWED_CLOUD_SCENE_PATCH_SIZES,
+)
+
 from prithvi_payload.runtime_config import environment_flag
 
 
@@ -84,9 +89,12 @@ def validate_health(health: dict[str, Any]) -> dict[str, Any]:
             raise RuntimeError("Direct crop TensorRT exceeds the decision parity gate")
         if float(crop_parity.get("mean_absolute_probability_error", 1.0)) > 0.005:
             raise RuntimeError("Direct crop TensorRT exceeds the probability parity gate")
-        if stack.get("cloud_tensorrt_engine_count") != 2:
-            raise RuntimeError("Direct cloud TensorRT must load exactly two engines")
-        if not isinstance(profiles, list) or len(profiles) != 2:
+        expected_profile_count = len(REVIEWED_CLOUD_SCENE_PATCH_SIZES) + 1
+        if stack.get("cloud_tensorrt_engine_count") != expected_profile_count:
+            raise RuntimeError(
+                f"Direct cloud TensorRT must load exactly {expected_profile_count} engines"
+            )
+        if not isinstance(profiles, list) or len(profiles) != expected_profile_count:
             raise RuntimeError("Direct cloud TensorRT profile record is incomplete")
         profile_contract = {
             (
@@ -97,7 +105,11 @@ def validate_health(health: dict[str, Any]) -> dict[str, Any]:
             for profile in profiles
             if isinstance(profile, dict)
         }
-        if profile_contract != {(869, 1, stack["cloud_batch_size"]), (1000, 1, 1)}:
+        expected_profile_contract = {
+            (patch_size, 1, stack["cloud_batch_size"])
+            for patch_size in REVIEWED_CLOUD_SCENE_PATCH_SIZES
+        } | {(REVIEWED_CLOUD_BASE_PATCH_SIZE, 1, 1)}
+        if profile_contract != expected_profile_contract:
             raise RuntimeError("Direct cloud TensorRT profiles do not match payload shapes")
         cloud_parity = stack.get("cloud_tensorrt_parity")
         if not isinstance(cloud_parity, dict) or float(
@@ -112,7 +124,11 @@ def validate_health(health: dict[str, Any]) -> dict[str, Any]:
             raise RuntimeError("Direct TensorRT accepted manifest is missing")
 
     warmup_profiles = stack.get("cloud_warmup_profiles")
-    expected_cloud_warmups = {(1, 1000), (1, 869), (stack["cloud_batch_size"], 869)}
+    expected_cloud_warmups = {(1, REVIEWED_CLOUD_BASE_PATCH_SIZE)} | {
+        (batch_size, patch_size)
+        for patch_size in REVIEWED_CLOUD_SCENE_PATCH_SIZES
+        for batch_size in (1, stack["cloud_batch_size"])
+    }
     if not isinstance(warmup_profiles, list) or any(
         not isinstance(profile, dict) for profile in warmup_profiles
     ):

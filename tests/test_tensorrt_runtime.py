@@ -11,6 +11,7 @@ from prithvi_payload import tensorrt_runtime
 from prithvi_payload.tensorrt_builder import (
     _canonicalize_cloud_onnx,
     _canonicalize_crop_onnx,
+    _discover_cloud_scene_patch_sizes,
     _normalize_onnxscript_integer_attributes,
 )
 from prithvi_payload.tensorrt_runtime import (
@@ -41,6 +42,51 @@ def test_direct_tensorrt_resolves_cuda_alias_to_active_index(
 
     with pytest.raises(TensorRTArtifactError, match="active CUDA device"):
         _resolve_cuda_device(torch.device("cuda:1"))
+
+
+def test_direct_tensorrt_discovers_every_reviewed_scene_patch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import numpy as np
+    import omnicloudmask.cloud_mask
+
+    sizes = {
+        "sentinel-a": 700,
+        "sentinel-b": 700,
+        "balkan-3370": 891,
+        "balkan-3408": 869,
+    }
+    profiles = [
+        {"input": scene_input, "marker": marker}
+        for marker, scene_input in enumerate(sizes, start=1)
+    ]
+    backend = SimpleNamespace(
+        patch_size=1000,
+        patch_overlap=300,
+        _prepare_input=lambda image: image,
+    )
+    runtime = SimpleNamespace(
+        cloud=SimpleNamespace(backend=backend, config={"input": {}}),
+        _scene_cloud_warmups=profiles,
+    )
+    monkeypatch.setattr(
+        "prithvi_payload.tensorrt_builder._load_cloud_scene",
+        lambda profile, input_config: np.full(
+            (3, 4, 4),
+            profile["marker"],
+            dtype=np.float32,
+        ),
+    )
+    monkeypatch.setattr(
+        omnicloudmask.cloud_mask,
+        "check_patch_size",
+        lambda image, no_data_value, patch_size, patch_overlap: (
+            patch_overlap,
+            sizes[profiles[int(image[0, 0, 0]) - 1]["input"]],
+        ),
+    )
+
+    assert _discover_cloud_scene_patch_sizes(runtime) == sizes
 
 
 def test_direct_tensorrt_manifest_is_atomic_and_integrity_bound(

@@ -200,6 +200,7 @@ def test_payload_env_matches_the_production_crop_acceleration_contract() -> None
     assert environment["VITA_CLOUD_BACKEND"] == "tensorrt"
     assert environment["VITA_CLOUD_INFERENCE_DTYPE"] == "fp32"
     assert environment["VITA_CLOUD_TRT_PRECISION"] == "fp32"
+    assert environment["VITA_CLOUD_WARMUP_PATCH_SIZES"] == "700,869,891"
 
 
 def test_deploy_builds_plans_before_starting_the_service() -> None:

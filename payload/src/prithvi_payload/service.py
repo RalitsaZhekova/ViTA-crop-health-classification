@@ -449,17 +449,32 @@ class PayloadRuntime:
 
     def _warmup(self) -> float:
         started = time.perf_counter()
-        raw_patch_sizes = os.environ.get("VITA_CLOUD_WARMUP_PATCH_SIZES", "869")
-        try:
-            patch_sizes = tuple(
-                int(value.strip())
-                for value in raw_patch_sizes.split(",")
-                if value.strip()
+        if getattr(self.cloud.backend, "execution_backend", "pytorch") == "tensorrt":
+            accepted_sizes = {
+                int(profile["patch_size"])
+                for profile in self.cloud.backend.tensorrt_profiles
+            }
+            base_patch_size = int(self.cloud.backend.patch_size)
+            if base_patch_size not in accepted_sizes:
+                raise RuntimeError(
+                    "Accepted cloud TensorRT plans omit the base warmup patch size"
+                )
+            patch_sizes = tuple(sorted(accepted_sizes - {base_patch_size}))
+        else:
+            raw_patch_sizes = os.environ.get(
+                "VITA_CLOUD_WARMUP_PATCH_SIZES",
+                "700,869,891",
             )
-        except ValueError as error:
-            raise RuntimeError(
-                "VITA_CLOUD_WARMUP_PATCH_SIZES must be comma-separated integers"
-            ) from error
+            try:
+                patch_sizes = tuple(
+                    int(value.strip())
+                    for value in raw_patch_sizes.split(",")
+                    if value.strip()
+                )
+            except ValueError as error:
+                raise RuntimeError(
+                    "VITA_CLOUD_WARMUP_PATCH_SIZES must be comma-separated integers"
+                ) from error
         warmup = getattr(self.cloud.backend, "warmup", None)
         if not callable(warmup):
             raise RuntimeError("The configured cloud backend does not support warmup")

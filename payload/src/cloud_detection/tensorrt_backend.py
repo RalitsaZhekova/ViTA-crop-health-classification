@@ -10,6 +10,9 @@ import torch
 from prithvi_payload.tensorrt_runtime import NativeTensorRTPlan, TensorRTArtifactError
 from torch import Tensor, nn
 
+REVIEWED_CLOUD_BASE_PATCH_SIZE = 1000
+REVIEWED_CLOUD_SCENE_PATCH_SIZES = (700, 869, 891)
+
 
 def _remove_zero_channel_cat_noops(exported: torch.export.ExportedProgram) -> int:
     """Remove static zero-channel inputs from exported ``aten.cat`` nodes.

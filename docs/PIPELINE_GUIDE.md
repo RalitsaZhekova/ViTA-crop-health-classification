@@ -292,9 +292,8 @@ accepted requests. `/healthz` exposes startup costs separately.
 
 ### Explicit warmup and correct warmup shapes
 
-Cloud warmup includes batch 1 at 1,000 pixels for Sentinel, batches 1 and 4 at 869
-pixels for Balkan, and every additional static shape encountered by the exact four
-scene paths. Crop warmup uses fixed batch 16 at 224×224. The crop model runs before
+Cloud warmup includes batch 1 at 1,000 pixels plus batches 1 and 4 at the reviewed
+700, 869, and 891 pixel scene sizes. Crop warmup uses fixed batch 16 at 224×224. The crop model runs before
 the final exact cloud warmups because it can displace convolution/workspace state.
 Warmup predictions are discarded; no scientific output is cached as a substitute for
 inference.
@@ -306,29 +305,24 @@ lock returns HTTP 409 for concurrent work instead of letting two GPU pipelines c
 This eliminated severe first-request and multi-process timing variance observed during
 local validation.
 
-### Native FP16 cloud CUDA, semantic-only inference, and batching
+### Direct FP32 cloud TensorRT, semantic-only inference, and batching
 
-The reviewed two-model mean-logit ensemble remains resident in PyTorch, runs in FP16
-on CUDA, and is warmed for batch 1 at 1,000 pixels plus batches 1 and 4 at 869 pixels.
-`predict_semantic()` returns only class IDs to the CPU. Production does not export or
-compile cloud engines during startup or timed requests.
+The reviewed two-model mean-logit ensemble is exported and compiled offline into four
+fixed-shape native TensorRT plans. The builder derives the 700, 869, and 891 pixel
+scene profiles with OmniCloudMask's own no-data rule and retains the 1,000 pixel base
+profile. Fixed batch-4 scene plans pad logical batches 1-3 by repeating the final
+sample and discard the padded outputs. `predict_semantic()` returns only class IDs to
+the CPU. The service loads only checksum-sealed plans that passed all four real-scene
+comparisons against the source model; it never compiles during startup or requests.
 
-The optional TensorRT experiment compiled after a narrow zero-channel graph rewrite,
-but the real-scene check then changed 0.299141% of cloud classes against the source
-model, above the unchanged 0.1% gate. Raising the tolerance would hide an accuracy
-failure, so fail-closed deployment rejects the TensorRT cloud backend, any active cloud
-engine/profile, and TensorRT CUDA graph mode. The experimental compiler code remains
-isolated for future requalification; production never enters it.
-
-### Prithvi fixed batching on native CUDA
+### Prithvi fixed batching through direct TensorRT
 
 Crop tiles run in batches of 16 on Orin. The final short batch is padded to the same
 static shape and only real outputs are retained. The exact exported FP32 Prithvi graph
-runs on CUDA through PyTorch. TensorRT 10.8 conversion is not a production backend for
-this model on the pinned stack: full, precision-controlled, calibrated, and attempted
-hybrid builds all changed about 2.2% of thresholded decisions on the packaged-scene
-batch. No calibration or relaxed tolerance is applied to conceal that mismatch. The
-cloud model likewise remains on native CUDA, using the reviewed FP16 source ensemble.
+runs through one native TensorRT plan with TF32 disabled. The offline builder compares
+balanced real-scene tiles against the unchanged PyTorch model and publishes the plan
+only when both the 0.2% decision-mismatch and 0.5% mean-probability gates pass. No
+calibration or relaxed tolerance is applied.
 
 ### One Balkan grid instead of repeated preprocessing
 

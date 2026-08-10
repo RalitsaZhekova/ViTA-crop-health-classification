@@ -38,7 +38,7 @@ The acceleration policy is:
 
 | Stage | MVP execution | Reason |
 |---|---|---|
-| OmniCloudMask ensemble | Direct, strongly typed FP32 TensorRT plans for dynamic batch 1-4 at 869 px and batch 1 at 1000 px | Offline acceptance compares all four complete scenes with the unchanged 0.1% class-mismatch gate; a plan is unavailable to the service until that passes |
+| OmniCloudMask ensemble | Direct FP32 TensorRT plans: fixed batch 4 with exact logical-batch padding at 700, 869, and 891 px, plus batch 1 at 1000 px | Offline acceptance derives all four scene patch sizes and applies the unchanged 0.1% class-mismatch gate before publishing any plan |
 | Prithvi crop segmentation | Direct, strongly typed FP32 TensorRT plan, TF32 disabled, fixed batch 16 | Offline acceptance compares balanced real-scene tiles with unchanged 0.2% decision and 0.5% mean-probability gates; logits and thresholds are not calibrated or altered |
 | Balkan 10 m preparation | Embedded overview read, one multiband average GDAL warp, checksum-keyed persistent grid | Avoids decoding four full-resolution bands separately while preserving the existing 10 m UTM, band-order, nodata, and reflectance contracts |
 | Health indices and packaging | Exact vectorized NumPy statistics in RAM, concurrent RGB/overlay/grid/codec work | Routine runs avoid non-downlinked science rasters; lossless PNG level 1 and WebP method 0 favor the two-second latency contract |
@@ -179,21 +179,20 @@ A production-ready health response must show:
 - `cuda_available: true`;
 - the expected PyTorch/CUDA stack (the base still reports its installed optional
   TensorRT packages for release evidence);
-- `crop_backend: "pytorch"`, `crop_device: "cuda"`, `crop_inference_dtype: "fp32"`,
+- `crop_backend: "tensorrt"`, `crop_device: "cuda"`, `crop_inference_dtype: "fp32"`,
   `crop_tf32: false`, and `crop_batch_size: 16`;
-- zero crop TensorRT engine partitions and no crop logit calibration record; the pinned
-  TensorRT 10.8 conversion is rejected because it changed more than 2.2% of thresholded
-  crop decisions on the packaged-scene parity batch;
+- one checksum-bound direct crop TensorRT engine with its accepted parity record;
 - `tensorrt_cudagraphs: false`;
-- `cloud_backend: "omnicloudmask_cuda_fp16"` and `cloud_batch_size: 4`;
-- zero cloud TensorRT engine partitions and an empty cloud TensorRT profile list;
-- cloud warmup profiles for batch 1 at 1,000 px and batches 1 and 4 at 869 px;
+- `cloud_backend: "omnicloudmask_tensorrt_fp32"` and `cloud_batch_size: 4`;
+- four checksum-bound direct cloud TensorRT engines at 700, 869, 891, and 1000 px;
+- cloud warmup profiles for batch 1 at 1,000 px and batches 1 and 4 at 700, 869, and 891 px;
 - four distinct `cloud_scene_warmup_profiles`, each with `kind: "fixed_input_profile"` and `prediction_retained: false`;
 - two `balkan_analysis_caches` entries (a first build may report `cache_hit: false`; later startups report true);
 - each Balkan cache reports `preprocessing_mode: "embedded_overview_then_average"` and `overview_factor: 4`.
 
-The 1,000 px warmup is the fixed Sentinel path. For the proof-of-concept Balkan grid,
-OmniCloudMask's reviewed no-data rule reduces its model patch to 869 px. The service
+The two fixed Sentinel scenes use 700 px model patches. OmniCloudMask's reviewed
+no-data rule reduces the prepared 3408 and 3370 Balkan grids to 869 and 891 px;
+1,000 px remains the backend's base warmup profile. The service
 also reads each fixed input and runs a discarded cloud prediction so CUDA/cuDNN sees
 every exact Sentinel and Balkan mosaic shape before readiness. Model construction,
 warmup, and inference are pinned

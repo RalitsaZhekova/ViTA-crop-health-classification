@@ -38,12 +38,11 @@ The original `vita-mvp`, `vita-payload-server`, REST API, SSH orchestration, and
 commands remain supported. Use the persistent service above for latency measurements;
 the one-shot CLI must reload models in every process.
 
-The Jetson production path keeps both reviewed models on native CUDA: OmniCloudMask
-runs its source FP16 ensemble and Prithvi runs its exact exported FP32 graph. TensorRT
-10.8 is not used for either production model because both conversions failed their
-fixed parity gates on the target Orin. Deployment runs all four packaged demo scenes
-three times and fails unless every warm `payload_seconds` result is below two seconds;
-it never substitutes a cached prediction for inference.
+The Jetson production path builds direct TensorRT 10.8 plans offline on the target
+Orin and loads them through TensorRT's native Python runtime. The checksum-sealed plans
+remain unavailable to the service until FP32 crop parity and all-four-scene cloud
+parity pass against the unchanged PyTorch sources. Deployment never substitutes a
+cached prediction for inference.
 
 ## Documentation
 
