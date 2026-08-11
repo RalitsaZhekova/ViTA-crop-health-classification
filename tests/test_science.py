@@ -4,7 +4,12 @@ from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 from cloud_detection.postprocessing import postprocess
-from prithvi_payload.balkan_crop_calibration import apply_calibration
+from prithvi_payload.balkan_crop_calibration import (
+    BALKAN_CROP_CLASSIFICATION_THRESHOLD,
+    BALKAN_HEALTH_ANALYSIS_CROP_THRESHOLD,
+    apply_calibration,
+)
+from prithvi_shared import CROP_CLASSIFICATION_THRESHOLD, HEALTH_ANALYSIS_CROP_THRESHOLD
 from prithvi_shared.condition import (
     ConditionConfig,
     calculate_condition_score_layers,
@@ -12,6 +17,13 @@ from prithvi_shared.condition import (
     calculate_spatial_condition_layers,
 )
 from prithvi_shared.health import build_analysis_mask, calculate_health_layers
+
+
+def test_runtime_thresholds_match_selected_model_validation() -> None:
+    assert CROP_CLASSIFICATION_THRESHOLD == 0.49
+    assert HEALTH_ANALYSIS_CROP_THRESHOLD == 0.645
+    assert BALKAN_CROP_CLASSIFICATION_THRESHOLD == CROP_CLASSIFICATION_THRESHOLD
+    assert BALKAN_HEALTH_ANALYSIS_CROP_THRESHOLD == HEALTH_ANALYSIS_CROP_THRESHOLD
 
 
 def test_analysis_mask_requires_clear_confident_crop() -> None:

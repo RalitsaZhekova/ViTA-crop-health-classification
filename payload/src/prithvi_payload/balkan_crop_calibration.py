@@ -12,6 +12,10 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from prithvi_shared.calibration import (
+    CROP_CLASSIFICATION_THRESHOLD,
+    HEALTH_ANALYSIS_CROP_THRESHOLD,
+)
 
 CALIBRATION_SCHEMA_VERSION = "1.0"
 ADAPTER_MODE = "BALKAN_1_SENTINEL_MONOTONIC_V1"
@@ -21,8 +25,10 @@ DEFAULT_ANALYSIS_RESOLUTION_METRES = 10.0
 MIN_VALIDATION_PIXELS = 10_000
 MIN_BAND_CORRELATION = 0.75
 MIN_MEAN_BAND_CORRELATION = 0.80
-BALKAN_CROP_CLASSIFICATION_THRESHOLD = 0.30
-BALKAN_HEALTH_ANALYSIS_CROP_THRESHOLD = 0.30
+# Balkan reflectance is calibrated into the selected model's Sentinel-equivalent
+# input domain, so it uses the same model-validation probability thresholds.
+BALKAN_CROP_CLASSIFICATION_THRESHOLD = CROP_CLASSIFICATION_THRESHOLD
+BALKAN_HEALTH_ANALYSIS_CROP_THRESHOLD = HEALTH_ANALYSIS_CROP_THRESHOLD
 
 
 class CalibrationError(ValueError):
