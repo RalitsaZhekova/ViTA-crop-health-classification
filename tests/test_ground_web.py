@@ -47,6 +47,21 @@ def test_web_application_exposes_client_dashboard_and_safe_run_api(tmp_path: Pat
     assert "Run crop analysis" in page.text
     assert 'id="theme-toggle"' in page.text
     assert 'src="/static/theme-init.js"' in page.text
+    assert '<link rel="icon" type="image/png" href="/static/ViTA_satellite_icon.png?v=2">' in page.text
+    assert 'class="brand-logo brand-logo-light" src="/static/ViTA_logo_green.png"' in page.text
+    assert 'class="brand-logo brand-logo-dark" src="/static/ViTA_logo_white.png"' in page.text
+
+    green_logo = client.get("/static/ViTA_logo_green.png")
+    assert green_logo.status_code == 200
+    assert green_logo.headers["content-type"] == "image/png"
+
+    logo = client.get("/static/ViTA_logo_white.png")
+    assert logo.status_code == 200
+    assert logo.headers["content-type"] == "image/png"
+
+    icon = client.get("/static/ViTA_satellite_icon.png")
+    assert icon.status_code == 200
+    assert icon.headers["content-type"] == "image/png"
 
     response = client.post(
         "/api/v1/pipeline-runs",

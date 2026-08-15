@@ -171,49 +171,25 @@ button:disabled {
   display: inline-flex;
   width: max-content;
   align-items: center;
-  gap: 11px;
   color: var(--ink);
   text-decoration: none;
 }
 
-.brand-mark {
-  display: grid;
-  width: 41px;
-  height: 41px;
-  place-items: center;
-  border-radius: 12px;
-  color: #fff;
-  background: linear-gradient(145deg, var(--green-500), var(--green-900));
-  box-shadow: 0 8px 18px rgba(21, 91, 63, 0.2);
-}
-
-.brand-mark svg {
-  width: 29px;
-  fill: none;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 2;
-}
-
-.brand strong,
-.brand small {
+.brand-logo {
   display: block;
+  width: 116px;
+  height: auto;
+  max-height: 55px;
+  object-fit: contain;
 }
 
-.brand strong {
-  font-size: 20px;
-  letter-spacing: 0.04em;
-  line-height: 1;
+.brand-logo-dark,
+html[data-theme="dark"] .brand-logo-light {
+  display: none;
 }
 
-.brand small {
-  margin-top: 4px;
-  color: var(--muted);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+html[data-theme="dark"] .brand-logo-dark {
+  display: block;
 }
 
 .header-context {
@@ -1763,20 +1739,15 @@ html[data-theme="dark"] .condition-pill.no-score {
     padding: 0 16px;
   }
 
-  .brand small,
   .header-context label,
   .header-actions #refresh-scenes,
   .header-actions .primary-button svg {
     display: none;
   }
 
-  .brand-mark {
-    width: 36px;
-    height: 36px;
-  }
-
-  .brand strong {
-    font-size: 17px;
+  .brand-logo {
+    width: 94px;
+    max-height: 45px;
   }
 
   .header-context select {
@@ -1887,10 +1858,6 @@ html[data-theme="dark"] .condition-pill.no-score {
 @media (max-width: 480px) {
   .app-header {
     grid-template-columns: auto minmax(0, 1fr) auto;
-  }
-
-  .brand > span:last-child {
-    display: none;
   }
 
   .overview-copy > p {
