@@ -6,6 +6,7 @@ import argparse
 import os
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import urlsplit
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request, Response
@@ -13,8 +14,9 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .catalog import SceneCatalog
+from .pipeline_runs import PipelineLaunch, PipelineLaunchError, PipelineRunManager
 
-API_VERSION = "1.0.0"
+API_VERSION = "1.1.0"
 
 
 def _links(scene_id: str, region_id: str) -> dict[str, str]:
@@ -58,6 +60,8 @@ def _asset_response(
 
 def create_app(
     store_root: str | Path | None = None,
+    *,
+    pipeline_manager: PipelineRunManager | None = None,
 ) -> FastAPI:
     """Create an API bound to one verified scene catalog."""
     resolved_store = Path(
@@ -78,6 +82,9 @@ def create_app(
     )
     app.state.catalog = catalog
     app.state.store_root = resolved_store
+    app.state.pipeline_runs = pipeline_manager or PipelineRunManager(
+        Path(__file__).resolve().parents[3]
+    )
     web_root = Path(__file__).with_name("web")
     app.mount("/static", StaticFiles(directory=web_root), name="static")
 
@@ -202,6 +209,47 @@ def create_app(
         if not items:
             raise _not_found("Region", region_id)
         return {"region_id": region_id, "count": len(items), "items": items}
+
+    @app.get("/api/v1/pipeline-runs/capability", tags=["analysis"])
+    def pipeline_capability(response: Response) -> dict[str, Any]:
+        response.headers["Cache-Control"] = "no-store"
+        return app.state.pipeline_runs.capability()
+
+    @app.get("/api/v1/pipeline-runs/current", tags=["analysis"])
+    def current_pipeline_run(response: Response) -> dict[str, Any]:
+        response.headers["Cache-Control"] = "no-store"
+        return {"run": app.state.pipeline_runs.current()}
+
+    @app.post("/api/v1/pipeline-runs", tags=["analysis"], status_code=202)
+    async def start_pipeline_run(request: Request, response: Response) -> dict[str, Any]:
+        response.headers["Cache-Control"] = "no-store"
+        origin = request.headers.get("origin")
+        host = request.headers.get("host")
+        if origin and host and urlsplit(origin).netloc.lower() != host.lower():
+            raise HTTPException(
+                status_code=403,
+                detail="Cross-origin analysis launches are blocked.",
+            )
+        if "application/json" not in request.headers.get("content-type", "").lower():
+            raise HTTPException(status_code=415, detail="Analysis launches require JSON.")
+        try:
+            payload = await request.json()
+        except ValueError as error:
+            raise HTTPException(
+                status_code=400,
+                detail="Analysis request is not valid JSON.",
+            ) from error
+        try:
+            launch = PipelineLaunch.from_payload(payload)
+        except PipelineLaunchError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        try:
+            run = app.state.pipeline_runs.start(launch)
+        except PipelineLaunchError as error:
+            capability = app.state.pipeline_runs.capability()
+            status_code = 409 if capability.get("available") else 503
+            raise HTTPException(status_code=status_code, detail=str(error)) from error
+        return {"run": run}
 
     return app
 
