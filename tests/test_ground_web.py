@@ -47,7 +47,11 @@ def test_web_application_exposes_client_dashboard_and_safe_run_api(tmp_path: Pat
     assert "Run crop analysis" in page.text
     assert 'id="theme-toggle"' in page.text
     assert 'src="/static/theme-init.js"' in page.text
-    assert '<link rel="icon" type="image/png" href="/static/ViTA_satellite_icon.png?v=2">' in page.text
+    assert 'src="/static/app.js?v=seasonal-baseline-1"' in page.text
+    assert (
+        '<link rel="icon" type="image/png" '
+        'href="/static/ViTA_satellite_icon.png?v=2">'
+    ) in page.text
     assert 'class="brand-logo brand-logo-light" src="/static/ViTA_logo_green.png"' in page.text
     assert 'class="brand-logo brand-logo-dark" src="/static/ViTA_logo_white.png"' in page.text
 
@@ -62,6 +66,11 @@ def test_web_application_exposes_client_dashboard_and_safe_run_api(tmp_path: Pat
     icon = client.get("/static/ViTA_satellite_icon.png")
     assert icon.status_code == 200
     assert icon.headers["content-type"] == "image/png"
+
+    app_script = client.get("/static/app.js?v=seasonal-baseline-1")
+    assert app_script.status_code == 200
+    assert "isBaselineVigorScore" in app_script.text
+    assert "another season is needed" in app_script.text
 
     response = client.post(
         "/api/v1/pipeline-runs",

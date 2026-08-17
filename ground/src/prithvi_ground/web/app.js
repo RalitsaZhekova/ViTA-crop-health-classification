@@ -62,6 +62,19 @@ function isNumber(value) {
   return typeof value === "number" && Number.isFinite(value);
 }
 
+function isBaselineVigorScore(value) {
+  return isNumber(value) && value > 0;
+}
+
+function seasonForDate(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.valueOf())) return null;
+  const northernSeason = Math.floor(((date.getUTCMonth() + 1) % 12) / 3);
+  const bounds = state.manifest?.geospatial?.bounds_wgs84;
+  const latitude = validBounds(bounds) ? (bounds[1] + bounds[3]) / 2 : 0;
+  const season = latitude < 0 ? (northernSeason + 2) % 4 : northernSeason;
+  return ["winter", "spring", "summer", "fall"][season];
+}
+
 function clamp(value, minimum, maximum) {
   return Math.max(minimum, Math.min(maximum, value));
 }
@@ -448,7 +461,7 @@ function renderVectorHeatmap(manifest) {
     .filter((stop) => isNumber(stop.score) && Array.isArray(stop.rgb))
     .map((stop) => [stop.score, `#${stop.rgb.map((value) => value.toString(16).padStart(2, "0")).join("")}`]);
   grid.cells.forEach((cell) => {
-    if (!isNumber(cell.condition_score)) return;
+    if (!isBaselineVigorScore(cell.condition_score)) return;
     const rectangle = document.createElementNS(SVG_NS, "rect");
     rectangle.setAttribute("x", cell.column);
     rectangle.setAttribute("y", cell.row);
@@ -557,25 +570,25 @@ function aggregateSelectedArea(manifest, selectedBounds) {
     const pixelWeight = cellPixelCount * overlap;
     const measuredPixels = (cell.quality?.analysis_pixels || 0) * overlap;
     totalPixels += pixelWeight;
-    analysisPixels += measuredPixels;
     totalWeight += pixelWeight;
     if (isNumber(cell.quality?.unusable_percentage)) {
       unusableSum += cell.quality.unusable_percentage * pixelWeight;
     }
-    if (isNumber(cell.condition_score) && measuredPixels > 0) {
+    if (isBaselineVigorScore(cell.condition_score) && measuredPixels > 0) {
+      analysisPixels += measuredPixels;
       scoreSum += cell.condition_score * measuredPixels;
       scoreWeight += measuredPixels;
-    }
-    if (isNumber(cell.alert_percentage) && measuredPixels > 0) {
-      alertSum += cell.alert_percentage * measuredPixels;
-      alertWeight += measuredPixels;
-    }
-    Object.keys(metricSums).forEach((metric) => {
-      if (isNumber(cell.metrics?.[metric]) && measuredPixels > 0) {
-        metricSums[metric] += cell.metrics[metric] * measuredPixels;
-        metricWeights[metric] += measuredPixels;
+      if (isNumber(cell.alert_percentage)) {
+        alertSum += cell.alert_percentage * measuredPixels;
+        alertWeight += measuredPixels;
       }
-    });
+      Object.keys(metricSums).forEach((metric) => {
+        if (isNumber(cell.metrics?.[metric])) {
+          metricSums[metric] += cell.metrics[metric] * measuredPixels;
+          metricWeights[metric] += measuredPixels;
+        }
+      });
+    }
   });
 
   const score = scoreWeight > 0 ? scoreSum / scoreWeight : null;
@@ -900,7 +913,9 @@ function historyMessage(message) {
 }
 
 function renderHistoryInsights(points) {
-  const scored = points.filter((point) => isNumber(point.score) && !Number.isNaN(point.date.valueOf()));
+  const scored = points.filter(
+    (point) => isBaselineVigorScore(point.score) && !Number.isNaN(point.date.valueOf())
+  );
   if (!scored.length) {
     setText("history-latest", "—");
     setText("history-latest-label", "No scored observations");
@@ -917,24 +932,42 @@ function renderHistoryInsights(points) {
     "history-latest-label",
     `${latest.label} · ${dateLabel(latest.date, { short: true, time: true })}`
   );
-  if (scored.length >= 2) {
-    const first = scored[0];
+  const latestSeason = seasonForDate(latest.date);
+  const comparable = scored.filter((point) => seasonForDate(point.date) === latestSeason);
+  if (comparable.length >= 2) {
+    const first = comparable[0];
     const change = latest.score - first.score;
     setText("history-change", `${change >= 0 ? "+" : ""}${change.toFixed(1)} pts`);
-    setText("history-change-label", `Since ${dateLabel(first.date, { short: true })}`);
+    setText(
+      "history-change-label",
+      `Since comparable ${dateLabel(first.date, { short: true })}`
+    );
   } else {
     setText("history-change", "—");
-    setText("history-change-label", "Requires two observations");
+    setText("history-change-label", "Requires two observations in this season");
   }
 
-  if (scored.length < 3) {
+  if (comparable.length < 3) {
     setText("baseline-status", "Building");
-    const remaining = 3 - scored.length;
-    setText("baseline-message", `${remaining} more comparable observation${remaining === 1 ? "" : "s"} will establish an initial trend range.`);
+    const remaining = 3 - comparable.length;
+    setText(
+      "baseline-message",
+      `${remaining} more ${latestSeason || "seasonally"} comparable observation${remaining === 1 ? "" : "s"} will establish an initial range.`
+    );
     return;
   }
 
-  const previous = scored.slice(0, -1).map((point) => point.score);
+  const seasons = new Set(scored.map((point) => seasonForDate(point.date)).filter(Boolean));
+  if (seasons.size < 2) {
+    setText("baseline-status", "Preliminary");
+    setText(
+      "baseline-message",
+      "The current season has a trend range; another season is needed to establish seasonal coverage."
+    );
+    return;
+  }
+
+  const previous = comparable.slice(0, -1).map((point) => point.score);
   const average = previous.reduce((total, value) => total + value, 0) / previous.length;
   const deviation = Math.sqrt(
     previous.reduce((total, value) => total + ((value - average) ** 2), 0) / previous.length
@@ -942,20 +975,25 @@ function renderHistoryInsights(points) {
   const lowerBoundary = average - Math.max(8, deviation * 2);
   if (latest.score < lowerBoundary) {
     setText("baseline-status", "Review signal");
-    setText("baseline-message", "The latest score is below this region’s recent range. Confirm conditions on the ground.");
-  } else if (scored.length < 6) {
-    setText("baseline-status", "Preliminary");
-    setText("baseline-message", "A recent range is forming. Seasonal alerts need comparable dates across more than one season.");
+    setText(
+      "baseline-message",
+      `The latest score is below this region’s comparable ${latestSeason} range. Confirm conditions on the ground.`
+    );
   } else {
     setText("baseline-status", "Within recent range");
-    setText("baseline-message", "No unusual drop is visible against the recent observations. Seasonal coverage will strengthen this signal.");
+    setText(
+      "baseline-message",
+      `No unusual drop is visible against the comparable ${latestSeason} observations.`
+    );
   }
 }
 
 function drawHistory(points) {
   const container = elements["history-chart"];
   container.replaceChildren();
-  const scored = points.filter((point) => isNumber(point.score) && !Number.isNaN(point.date.valueOf()));
+  const scored = points.filter(
+    (point) => isBaselineVigorScore(point.score) && !Number.isNaN(point.date.valueOf())
+  );
   if (!scored.length) {
     container.append(historyMessage("No comparable scored observations are available yet."));
     return;
@@ -1082,10 +1120,13 @@ function renderHistoryStrip(history, pointByScene) {
     const date = document.createElement("span");
     date.textContent = dateLabel(scene.acquired_at, { short: true, time: true });
     const label = document.createElement("small");
-    label.textContent = point?.label || scene.condition?.label || "No score";
+    const rawScore = point ? point.score : scene.condition?.score;
+    label.textContent = rawScore === 0
+      ? "Excluded zero-vigor score"
+      : point?.label || scene.condition?.label || "No score";
     copy.append(date, label);
     const score = document.createElement("strong");
-    const value = point ? point.score : scene.condition?.score;
+    const value = rawScore;
     score.textContent = isNumber(value) ? Math.round(value) : "—";
     score.style.color = conditionColor(value);
     button.append(image, copy, score);

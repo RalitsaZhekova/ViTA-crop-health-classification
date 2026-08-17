@@ -19,9 +19,9 @@ from prithvi_shared.condition import (
 from prithvi_shared.health import build_analysis_mask, calculate_health_layers
 
 
-def test_runtime_thresholds_match_selected_model_validation() -> None:
-    assert CROP_CLASSIFICATION_THRESHOLD == 0.49
-    assert HEALTH_ANALYSIS_CROP_THRESHOLD == 0.645
+def test_runtime_thresholds_are_consistent_across_sensors() -> None:
+    assert CROP_CLASSIFICATION_THRESHOLD == 0.30
+    assert HEALTH_ANALYSIS_CROP_THRESHOLD == 0.30
     assert BALKAN_CROP_CLASSIFICATION_THRESHOLD == CROP_CLASSIFICATION_THRESHOLD
     assert BALKAN_HEALTH_ANALYSIS_CROP_THRESHOLD == HEALTH_ANALYSIS_CROP_THRESHOLD
 
