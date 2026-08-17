@@ -351,14 +351,25 @@ def inspect_scene(
         else:
             crop_indices = calibrated_indices
             crop_source_roles = list(crop_calibration["source_band_order"])
+            experimental_proxy = crop_calibration.get("experimental_raw_proxy")
+            if isinstance(experimental_proxy, dict):
+                validation_status = "EXPERIMENTAL_RAW_PROXY"
+                warnings.append(
+                    "Balkan-1 input uses an unqualified experimental raw radiometric/"
+                    "geolocation proxy"
+                )
+            else:
+                validation_status = "VALIDATED_SENTINEL_EQUIVALENCE"
             spectral_adapter = {
                 "mode": crop_calibration["adapter_mode"],
-                "validation_status": "VALIDATED_SENTINEL_EQUIVALENCE",
+                "validation_status": validation_status,
+                "source_provenance": crop_calibration.get("_source_provenance"),
                 "calibration_path": str(requested_calibration_path.resolve()),
                 "analysis_resolution_metres": crop_calibration["analysis_resolution_metres"],
                 "source_scale_to_model_units": crop_calibration["source_scale_to_model_units"],
                 "validation": crop_calibration["validation"],
                 "reference": crop_calibration["reference"],
+                "experimental_raw_proxy": experimental_proxy,
             }
     resolved_scene_id = _validate_scene_id(scene_id or raster_path.stem)
     return {
@@ -367,7 +378,7 @@ def inspect_scene(
         "source_path": str(raster_path.resolve()),
         "source_bytes": raster_path.stat().st_size,
         "source_sha256": (
-            crop_calibration.get("source", {}).get("sha256")
+            crop_calibration.get("_verified_source_sha256")
             if crop_calibration is not None
             else None
         ),

@@ -37,6 +37,10 @@ MINIMUM_GRID_CELL_PIXELS = 32
 RGB_WEBP_QUALITY = 82
 RGB_WEBP_METHOD = int(os.environ.get("VITA_WEBP_METHOD", "3"))
 PNG_COMPRESSION_LEVEL = int(os.environ.get("VITA_PNG_COMPRESSION_LEVEL", "4"))
+EXPERIMENTAL_RAW_RGB_SATURATION = 0.68
+EXPERIMENTAL_RAW_RGB_PERCENTILES = (1.0, 99.0)
+EXPERIMENTAL_RAW_OVERLAY_ALPHA = 150
+EXPERIMENTAL_RAW_OVERLAY_SATURATION = 0.72
 if not 0 <= RGB_WEBP_METHOD <= 6:
     raise RuntimeError("VITA_WEBP_METHOD must be in the range 0..6")
 if not 0 <= PNG_COMPRESSION_LEVEL <= 9:
@@ -95,7 +99,24 @@ def _stretch_rgb(
     *,
     channelwise: bool = False,
     channel_limits: list[list[float]] | None = None,
+    percentiles: tuple[float, float] = (2.0, 98.0),
+    saturation: float = 1.0,
 ) -> np.ndarray:
+    if len(percentiles) != 2 or not 0.0 <= percentiles[0] < percentiles[1] <= 100.0:
+        raise ValueError("RGB percentiles must be an increasing pair within 0..100")
+    if not 0.0 <= saturation <= 1.0:
+        raise ValueError("RGB saturation must be within 0..1")
+
+    def adjust_saturation(scaled: np.ndarray) -> np.ndarray:
+        if saturation == 1.0:
+            return scaled
+        luminance = np.sum(
+            scaled * np.asarray((0.2126, 0.7152, 0.0722), dtype=np.float32),
+            axis=-1,
+            keepdims=True,
+        )
+        return np.clip(luminance + saturation * (scaled - luminance), 0.0, 1.0)
+
     rgb = np.moveaxis(values, 0, -1).astype(np.float32, copy=False)
     if channelwise:
         output = np.zeros(rgb.shape, dtype=np.uint8)
@@ -109,22 +130,26 @@ def _stretch_rgb(
                     raise ValueError("RGB channel limits must contain three low/high pairs")
                 low, high = (float(value) for value in channel_limits[channel])
             else:
-                low, high = np.percentile(samples, (2, 98))
+                low, high = np.percentile(samples, percentiles)
             if high <= low:
                 high = low + 1.0
             scaled = np.clip((rgb[..., channel] - low) / (high - low), 0.0, 1.0)
             output[..., channel] = np.round(255.0 * scaled).astype(np.uint8)
+        if saturation != 1.0:
+            adjusted = adjust_saturation(output.astype(np.float32) / 255.0)
+            output = np.round(255.0 * adjusted).astype(np.uint8)
         output[~valid] = 0
         return output
     valid = np.all(np.isfinite(rgb), axis=-1) & np.any(rgb != 0, axis=-1)
     samples = rgb[valid]
     if not samples.size:
         return np.zeros(rgb.shape, dtype=np.uint8)
-    low, high = np.percentile(samples, (2, 98))
+    low, high = np.percentile(samples, percentiles)
     if high <= low:
         high = low + 1.0
     scaled = np.clip((rgb - low) / (high - low), 0.0, 1.0)
     output = np.zeros(rgb.shape, dtype=np.uint8)
+    scaled = adjust_saturation(scaled)
     output[valid] = np.round(255.0 * scaled[valid]).astype(np.uint8)
     return output
 
@@ -208,6 +233,9 @@ def prepare_rgb_preview(
         and isinstance(spectral_adapter, dict)
         and spectral_adapter.get("mode") == ADAPTER_MODE
     )
+    experimental_raw_display = calibrated_balkan and isinstance(
+        spectral_adapter.get("experimental_raw_proxy"), dict
+    )
     read_started = time.perf_counter()
     with rasterio.open(source_path) as source:
         width, height = _preview_dimensions(
@@ -238,19 +266,24 @@ def prepare_rgb_preview(
         rgb,
         channelwise=sensor == "balkan-1" and not calibrated_balkan,
         channel_limits=channel_limits,
+        percentiles=(EXPERIMENTAL_RAW_RGB_PERCENTILES if experimental_raw_display else (2.0, 98.0)),
+        saturation=(EXPERIMENTAL_RAW_RGB_SATURATION if experimental_raw_display else 1.0),
     )
     return {
         "pixels": preview,
         "width": width,
         "height": height,
         "calibrated_balkan_display": calibrated_balkan,
+        "experimental_raw_display": experimental_raw_display,
         "read_seconds": read_seconds,
         "stretch_seconds": time.perf_counter() - stretch_started,
         "seconds": time.perf_counter() - started,
     }
 
 
-def _condition_colors(values: np.ndarray) -> np.ndarray:
+def _condition_colors(values: np.ndarray, *, saturation: float = 1.0) -> np.ndarray:
+    if not 0.0 <= saturation <= 1.0:
+        raise ValueError("Condition-overlay saturation must be within 0..1")
     raw = np.asarray(values, dtype=np.float32)
     clipped = np.where(np.isfinite(raw), np.clip(raw, 0.0, 100.0), 0.0)
     colors = np.zeros((*clipped.shape, 3), dtype=np.float32)
@@ -263,20 +296,32 @@ def _condition_colors(values: np.ndarray) -> np.ndarray:
         low = np.asarray(low_color, dtype=np.float32)
         high = np.asarray(high_color, dtype=np.float32)
         colors[selected] = low + fraction[selected, np.newaxis] * (high - low)
+    if saturation != 1.0:
+        luminance = np.sum(
+            colors * np.asarray((0.2126, 0.7152, 0.0722), dtype=np.float32),
+            axis=-1,
+            keepdims=True,
+        )
+        colors = np.clip(luminance + saturation * (colors - luminance), 0.0, 255.0)
     return np.round(colors).astype(np.uint8)
 
 
 def _build_overlay(
     condition: np.ndarray,
     valid_crop: np.ndarray,
+    *,
+    alpha: int = 205,
+    saturation: float = 1.0,
 ) -> np.ndarray:
     shape = condition.shape
     if valid_crop.shape != shape:
         raise ValueError("Preview arrays must have identical shapes")
     overlay = np.zeros((*shape, 4), dtype=np.uint8)
     measured = (valid_crop == 1) & np.isfinite(condition)
-    overlay[measured, :3] = _condition_colors(condition[measured])
-    overlay[measured, 3] = 205
+    if isinstance(alpha, bool) or not 0 <= alpha <= 255:
+        raise ValueError("Condition-overlay alpha must be within 0..255")
+    overlay[measured, :3] = _condition_colors(condition[measured], saturation=saturation)
+    overlay[measured, 3] = alpha
     return overlay
 
 
@@ -373,9 +418,13 @@ def _build_interaction_grid(
         "semantic_mask",
         "invalid_mask",
     )
-    full_grid_bytes = source.width * source.height * (
-        np.dtype(np.float32).itemsize * (1 + len(metric_names))
-        + np.dtype(np.uint8).itemsize * len(byte_names)
+    full_grid_bytes = (
+        source.width
+        * source.height
+        * (
+            np.dtype(np.float32).itemsize * (1 + len(metric_names))
+            + np.dtype(np.uint8).itemsize * len(byte_names)
+        )
     )
     in_memory_limit = int(
         os.environ.get("VITA_DOWNLINK_GRID_IN_MEMORY_MAX_BYTES", str(512 * 1024**2))
@@ -386,13 +435,10 @@ def _build_interaction_grid(
     )
     if use_in_memory_grid:
         if products is None:
-            full_condition = (
-                rasters["condition_score"].read(1, masked=True).filled(np.nan)
-            )
+            full_condition = rasters["condition_score"].read(1, masked=True).filled(np.nan)
             full_bytes = {name: rasters[name].read(1) for name in byte_names}
             full_metrics = {
-                name: rasters[name].read(1, masked=True).filled(np.nan)
-                for name in metric_names
+                name: rasters[name].read(1, masked=True).filled(np.nan) for name in metric_names
             }
         else:
             required = {"condition_score", *byte_names, *metric_names}
@@ -403,12 +449,9 @@ def _build_interaction_grid(
             if any(np.asarray(products[name]).shape != expected_shape for name in required):
                 raise ValueError("In-memory downlink products do not match the source grid")
             full_condition = np.asarray(products["condition_score"], dtype=np.float32)
-            full_bytes = {
-                name: np.asarray(products[name], dtype=np.uint8) for name in byte_names
-            }
+            full_bytes = {name: np.asarray(products[name], dtype=np.uint8) for name in byte_names}
             full_metrics = {
-                name: np.asarray(products[name], dtype=np.float32)
-                for name in metric_names
+                name: np.asarray(products[name], dtype=np.float32) for name in metric_names
             }
 
     def build_cell(
@@ -423,10 +466,7 @@ def _build_interaction_grid(
         total = round(window.width) * round(window.height)
         valid = np.isfinite(condition) & (condition >= 0.0) & (condition <= 100.0)
         analysis_pixels = int(np.count_nonzero(valid))
-        metrics = {
-            name: _finite_summary(metric_values[name])["median"]
-            for name in metric_names
-        }
+        metrics = {name: _finite_summary(metric_values[name])["median"] for name in metric_names}
         condition_summary = _finite_summary(condition)
         semantic = byte_values["semantic_mask"]
         return {
@@ -443,15 +483,9 @@ def _build_interaction_grid(
                 "unusable_percentage": _percentage(
                     int(np.count_nonzero(byte_values["unusable_mask"] == 1)), total
                 ),
-                "thick_cloud_percentage": _percentage(
-                    int(np.count_nonzero(semantic == 1)), total
-                ),
-                "thin_cloud_percentage": _percentage(
-                    int(np.count_nonzero(semantic == 2)), total
-                ),
-                "cloud_shadow_percentage": _percentage(
-                    int(np.count_nonzero(semantic == 3)), total
-                ),
+                "thick_cloud_percentage": _percentage(int(np.count_nonzero(semantic == 1)), total),
+                "thin_cloud_percentage": _percentage(int(np.count_nonzero(semantic == 2)), total),
+                "cloud_shadow_percentage": _percentage(int(np.count_nonzero(semantic == 3)), total),
                 "invalid_percentage": _percentage(
                     int(np.count_nonzero(byte_values["invalid_mask"] == 1)), total
                 ),
@@ -485,6 +519,7 @@ def _build_interaction_grid(
             )
 
     if use_in_memory_grid:
+
         def build_memory_cell(job: tuple[int, int, Window, list[float]]) -> dict[str, Any]:
             row, column, window, bounds_wgs84 = job
             row_slice, column_slice = window.toslices()
@@ -494,14 +529,8 @@ def _build_interaction_grid(
                 window,
                 bounds_wgs84,
                 full_condition[row_slice, column_slice],
-                {
-                    name: values[row_slice, column_slice]
-                    for name, values in full_bytes.items()
-                },
-                {
-                    name: values[row_slice, column_slice]
-                    for name, values in full_metrics.items()
-                },
+                {name: values[row_slice, column_slice] for name, values in full_bytes.items()},
+                {name: values[row_slice, column_slice] for name, values in full_metrics.items()},
             )
 
         grid_threads = max(
@@ -518,17 +547,11 @@ def _build_interaction_grid(
             row_start, row_stop = row_edges[row : row + 2]
             row_window = Window(0, row_start, source.width, row_stop - row_start)
             condition_row = (
-                rasters["condition_score"]
-                .read(1, window=row_window, masked=True)
-                .filled(np.nan)
+                rasters["condition_score"].read(1, window=row_window, masked=True).filled(np.nan)
             )
-            byte_rows = {
-                name: rasters[name].read(1, window=row_window) for name in byte_names
-            }
+            byte_rows = {name: rasters[name].read(1, window=row_window) for name in byte_names}
             metric_rows = {
-                name: rasters[name]
-                .read(1, window=row_window, masked=True)
-                .filled(np.nan)
+                name: rasters[name].read(1, window=row_window, masked=True).filled(np.nan)
                 for name in metric_names
             }
             for column in range(columns):
@@ -547,14 +570,8 @@ def _build_interaction_grid(
                         window,
                         _cell_bounds_wgs84(source, window),
                         condition_row[:, column_slice],
-                        {
-                            name: values[:, column_slice]
-                            for name, values in byte_rows.items()
-                        },
-                        {
-                            name: values[:, column_slice]
-                            for name, values in metric_rows.items()
-                        },
+                        {name: values[:, column_slice] for name, values in byte_rows.items()},
+                        {name: values[:, column_slice] for name, values in metric_rows.items()},
                     )
                 )
     return {
@@ -666,9 +683,7 @@ def build_downlink_bundle(
     analysis = intake.get("analysis")
     use_shared_analysis = payload.get("sensor") == "balkan-1" and isinstance(analysis, dict)
     source_path = (
-        _resolve_asset(
-            analysis.get("source_path"), result_root, name="Balkan analysis scene"
-        )
+        _resolve_asset(analysis.get("source_path"), result_root, name="Balkan analysis scene")
         if use_shared_analysis
         else original_source_path
     )
@@ -680,9 +695,7 @@ def build_downlink_bundle(
         ("invalid_mask", "invalid mask"),
     ):
         if products is None or name not in products:
-            raster_paths[name] = _resolve_asset(
-                cloud_assets.get(name), result_root, name=label
-            )
+            raster_paths[name] = _resolve_asset(cloud_assets.get(name), result_root, name=label)
     condition_assets = (
         "condition_score",
         "valid_crop_mask",
@@ -750,11 +763,16 @@ def build_downlink_bundle(
             and isinstance(spectral_adapter, dict)
             and spectral_adapter.get("mode") == ADAPTER_MODE
         )
+        experimental_raw_display = calibrated_balkan_display and isinstance(
+            spectral_adapter.get("experimental_raw_proxy"), dict
+        )
+        overlay_alpha = EXPERIMENTAL_RAW_OVERLAY_ALPHA if experimental_raw_display else 205
+        overlay_saturation = (
+            EXPERIMENTAL_RAW_OVERLAY_SATURATION if experimental_raw_display else 1.0
+        )
         channel_limits = None
         if use_shared_analysis:
-            raw_limits = analysis.get("display", {}).get(
-                "native_source_channel_limits"
-            )
+            raw_limits = analysis.get("display", {}).get("native_source_channel_limits")
             if isinstance(raw_limits, list):
                 channel_limits = [
                     [float(value) / float(reflectance_scale) for value in limits]
@@ -765,9 +783,7 @@ def build_downlink_bundle(
             prepared = prepare_rgb_preview(
                 source_path,
                 mapping=mapping,
-                spectral_adapter=(
-                    spectral_adapter if isinstance(spectral_adapter, dict) else None
-                ),
+                spectral_adapter=(spectral_adapter if isinstance(spectral_adapter, dict) else None),
                 original_source_path=original_source_path,
                 sensor=str(payload.get("sensor")),
                 reflectance_scale=float(reflectance_scale),
@@ -800,7 +816,12 @@ def build_downlink_bundle(
                 ).astype(np.uint8)
             condition_seconds = time.perf_counter() - condition_preview_started
             overlay_started = time.perf_counter()
-            prepared = _build_overlay(condition, valid_crop)
+            prepared = _build_overlay(
+                condition,
+                valid_crop,
+                alpha=overlay_alpha,
+                saturation=overlay_saturation,
+            )
             return prepared, condition_seconds, time.perf_counter() - overlay_started
 
         if products is not None:
@@ -818,6 +839,8 @@ def build_downlink_bundle(
                         or int(prepared_rgb.get("height", 0)) != preview_height
                         or bool(prepared_rgb.get("calibrated_balkan_display"))
                         != calibrated_balkan_display
+                        or bool(prepared_rgb.get("experimental_raw_display"))
+                        != experimental_raw_display
                     ):
                         raise ValueError("Prepared RGB preview does not match the bundle")
                     rgb_preparation_future = None
@@ -871,7 +894,12 @@ def build_downlink_bundle(
             )
             condition_preview_seconds = time.perf_counter() - condition_preview_started
             overlay_started = time.perf_counter()
-            overlay = _build_overlay(condition, valid_crop)
+            overlay = _build_overlay(
+                condition,
+                valid_crop,
+                alpha=overlay_alpha,
+                saturation=overlay_saturation,
+            )
             overlay_seconds = time.perf_counter() - overlay_started
             image_preparation_seconds = time.perf_counter() - image_preparation_started
             with ThreadPoolExecutor(
@@ -965,7 +993,14 @@ def build_downlink_bundle(
         "interaction_grid": grid,
         "legend": {
             "condition_gradient": [
-                {"score": score, "rgb": list(color)} for score, color in CONDITION_COLOR_STOPS
+                {
+                    "score": score,
+                    "rgb": _condition_colors(
+                        np.asarray([score], dtype=np.float32),
+                        saturation=overlay_saturation,
+                    )[0].tolist(),
+                }
+                for score, _ in CONDITION_COLOR_STOPS
             ],
             "overlay_semantics": {
                 "colored": "valid clear crop pixels with a condition score",
@@ -981,13 +1016,21 @@ def build_downlink_bundle(
             "rgb_display": {
                 "input_values_modified": calibrated_balkan_display,
                 "mode": (
-                    "validated Balkan-1 to Sentinel calibration and combined RGB "
+                    "experimental raw-proxy Sentinel calibration, combined RGB "
+                    "1-99% stretch, and reduced-saturation preview"
+                    if experimental_raw_display
+                    else "validated Balkan-1 to Sentinel calibration and combined RGB "
                     "2-98% display stretch"
                     if calibrated_balkan_display
                     else "per-channel 2-98% display stretch"
                     if payload.get("sensor") == "balkan-1"
                     else "combined RGB 2-98% display stretch"
                 ),
+                "scope": "web preview only",
+            },
+            "condition_overlay_display": {
+                "alpha": overlay_alpha,
+                "saturation": overlay_saturation,
                 "scope": "web preview only",
             },
         },

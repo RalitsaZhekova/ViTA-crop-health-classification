@@ -4,6 +4,7 @@ import numpy as np
 import rasterio
 from prithvi_payload.downlink import (
     _build_interaction_grid,
+    _build_overlay,
     _calibrated_balkan_rgb,
     _stretch_rgb,
 )
@@ -78,6 +79,32 @@ def test_combined_rgb_stretch_keeps_invalid_pixels_black() -> None:
 
     np.testing.assert_array_equal(result[0, 1], 0)
     np.testing.assert_array_equal(result[1, 0], 0)
+
+
+def test_reduced_saturation_display_preserves_brightness_but_mutes_chroma() -> None:
+    values = np.asarray(
+        [
+            [[0.9, 0.7], [0.5, 0.3]],
+            [[0.4, 0.3], [0.2, 0.1]],
+            [[0.1, 0.08], [0.05, 0.02]],
+        ],
+        dtype=np.float32,
+    )
+    saturated = _stretch_rgb(values, percentiles=(0.0, 100.0))
+    muted = _stretch_rgb(values, percentiles=(0.0, 100.0), saturation=0.68)
+
+    assert np.ptp(muted[0, 0]) < np.ptp(saturated[0, 0])
+    assert np.any(muted != saturated)
+
+
+def test_experimental_condition_overlay_can_be_muted() -> None:
+    condition = np.asarray([[0.0, 100.0]], dtype=np.float32)
+    valid = np.ones_like(condition, dtype=np.uint8)
+    saturated = _build_overlay(condition, valid)
+    muted = _build_overlay(condition, valid, alpha=150, saturation=0.72)
+
+    np.testing.assert_array_equal(muted[..., 3], 150)
+    assert np.ptp(muted[0, 0, :3]) < np.ptp(saturated[0, 0, :3])
 
 
 def test_parallel_interaction_grid_matches_serial(tmp_path, monkeypatch) -> None:

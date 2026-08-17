@@ -25,6 +25,7 @@ DEFAULT_ANALYSIS_RESOLUTION_METRES = 10.0
 MIN_VALIDATION_PIXELS = 10_000
 MIN_BAND_CORRELATION = 0.75
 MIN_MEAN_BAND_CORRELATION = 0.80
+GEOMETRY_ONLY_ALIGNMENT_ALGORITHM = "balkan-pan-local-shift-field-v1"
 # Balkan reflectance is calibrated into the selected model's Sentinel-equivalent
 # input domain, so it uses the same model-validation probability thresholds.
 BALKAN_CROP_CLASSIFICATION_THRESHOLD = CROP_CLASSIFICATION_THRESHOLD
@@ -83,6 +84,75 @@ def _finite_numbers(values: Any, *, name: str) -> np.ndarray:
     return array
 
 
+def _valid_sha256(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in string.hexdigits for character in value)
+    )
+
+
+def _verified_alignment_derivation(
+    source: Path,
+    *,
+    calibration_source_bytes: int,
+    calibration_source_sha256: str,
+) -> dict[str, Any] | None:
+    """Verify a geometry-only aligned derivative of the calibrated source.
+
+    The monotonic spectral curves remain bound to their original scene. They
+    may cross this boundary only when the alignment report proves that the
+    current file is a checksum-bound, radiometry-preserving derivative of that
+    exact source and every band registration passed.
+    """
+    report_path = source.with_suffix(".alignment.json")
+    if not report_path.is_file():
+        return None
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(report, dict) or report.get("algorithm") != GEOMETRY_ONLY_ALIGNMENT_ALGORITHM:
+        return None
+    parent = report.get("source")
+    output = report.get("output")
+    registrations = report.get("registrations")
+    if not isinstance(parent, dict) or not isinstance(output, dict):
+        return None
+    if (
+        parent.get("bytes") != calibration_source_bytes
+        or str(parent.get("sha256", "")).lower() != calibration_source_sha256.lower()
+        or output.get("bytes") != source.stat().st_size
+        or output.get("band_order")
+        != ["BLUE", "GREEN", "RED", "NIR_BROAD", "PANCHROMATIC"]
+        or output.get("pipeline_ready") is not True
+        or output.get("radiometry_modified") is not False
+    ):
+        return None
+    output_sha256 = output.get("sha256")
+    if not _valid_sha256(output_sha256):
+        return None
+    if verified_file_sha256(source) != str(output_sha256).lower():
+        return None
+    if (
+        not isinstance(registrations, dict)
+        or set(registrations)
+        != {"BLUE", "GREEN", "RED", "NIR_BROAD", "PANCHROMATIC"}
+        or any(
+            not isinstance(result, dict) or result.get("aligned") is not True
+            for result in registrations.values()
+        )
+    ):
+        return None
+    return {
+        "mode": "VERIFIED_GEOMETRY_ONLY_ALIGNMENT_DERIVATION",
+        "alignment_report": report_path.name,
+        "alignment_algorithm": report["algorithm"],
+        "parent_source_sha256": calibration_source_sha256.lower(),
+        "verified_source_sha256": str(output_sha256).lower(),
+    }
+
+
 def load_calibration(
     path: str | Path,
     *,
@@ -124,17 +194,38 @@ def load_calibration(
     provenance = value.get("source")
     if not isinstance(provenance, dict):
         raise CalibrationError("Crop calibration source provenance is missing")
-    if provenance.get("bytes") != source.stat().st_size:
-        raise CalibrationError("Crop calibration does not match the source file size")
     expected_sha = provenance.get("sha256")
-    if (
-        not isinstance(expected_sha, str)
-        or len(expected_sha) != 64
-        or any(character not in string.hexdigits for character in expected_sha)
-    ):
+    if not _valid_sha256(expected_sha):
         raise CalibrationError("Crop calibration source SHA-256 is invalid")
-    if verify_sha256 and verified_file_sha256(source) != expected_sha.lower():
-        raise CalibrationError("Crop calibration does not match the source SHA-256")
+    expected_bytes = provenance.get("bytes")
+    if (
+        not isinstance(expected_bytes, int)
+        or isinstance(expected_bytes, bool)
+        or expected_bytes < 0
+    ):
+        raise CalibrationError("Crop calibration source byte count is invalid")
+    source_provenance: dict[str, Any]
+    source_matches_size = expected_bytes == source.stat().st_size
+    source_matches_sha = (
+        not verify_sha256
+        or (source_matches_size and verified_file_sha256(source) == expected_sha.lower())
+    )
+    if source_matches_size and source_matches_sha:
+        source_provenance = {
+            "mode": "DIRECT_SOURCE",
+            "verified_source_sha256": expected_sha.lower(),
+        }
+    else:
+        derived = _verified_alignment_derivation(
+            source,
+            calibration_source_bytes=expected_bytes,
+            calibration_source_sha256=expected_sha,
+        )
+        if derived is None:
+            if not source_matches_size:
+                raise CalibrationError("Crop calibration does not match the source file size")
+            raise CalibrationError("Crop calibration does not match the source SHA-256")
+        source_provenance = derived
 
     resolution = value.get("analysis_resolution_metres")
     if (
@@ -215,6 +306,8 @@ def load_calibration(
         raise CalibrationError("A crop calibration band correlation is below the quality gate")
     if correlation_values.mean() < MIN_MEAN_BAND_CORRELATION:
         raise CalibrationError("Mean crop calibration correlation is below the quality gate")
+    value["_source_provenance"] = source_provenance
+    value["_verified_source_sha256"] = source_provenance["verified_source_sha256"]
     return value
 
 
