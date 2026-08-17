@@ -331,6 +331,7 @@ def _execute_local_mvp(
         cloud_backend=cloud.backend,
         cloud_config=cloud.config,
         crop_model=crop_model,
+        allow_experimental_raw_proxy=getattr(args, "experimental_raw_proxy", False),
         progress_callback=progress,
     )
     pipeline_seconds = time.perf_counter() - pipeline_started
@@ -401,6 +402,27 @@ def run_balkan(args: argparse.Namespace) -> int:
     source = args.input.resolve()
     if not source.is_file():
         raise ValueError(f"Input GeoTIFF does not exist: {source}")
+    scene_source = source
+    if args.align_bands_to is not None:
+        from prithvi_payload.balkan_alignment import align_balkan_geotiff
+
+        aligned_source = args.align_bands_to.resolve()
+        print(f"progress: aligning Balkan bands -> {aligned_source}", flush=True)
+        alignment_report = align_balkan_geotiff(
+            source,
+            aligned_source,
+            explicit_band_order=args.alignment_band_order,
+            metadata_path=args.alignment_metadata,
+            band_start_row_scale=args.alignment_band_start_row_scale,
+            band_start_axis=args.alignment_band_start_axis,
+            overwrite=args.overwrite,
+        )
+        print(
+            "progress: alignment ready "
+            f"({alignment_report['runtime_seconds']:.3f} seconds)",
+            flush=True,
+        )
+        source = aligned_source
     calibration = (
         args.crop_calibration.resolve()
         if args.crop_calibration
@@ -417,8 +439,8 @@ def run_balkan(args: argparse.Namespace) -> int:
         acquired_at = calibration_record.get("acquired_at")
     if not isinstance(acquired_at, str) or not acquired_at:
         raise ValueError("The calibration has no acquisition time; pass --acquired-at explicitly.")
-    source_id = re.sub(r"(?i)_L1ORT$", "", source.stem)
-    scene_id = _execution_scene_id(source.with_stem(source_id), args.scene_id)
+    source_id = re.sub(r"(?i)_(?:L1ORT|RAW)$", "", scene_source.stem)
+    scene_id = _execution_scene_id(scene_source.with_stem(source_id), args.scene_id)
     return _execute_local_mvp(
         args,
         command_started=command_started,
@@ -470,6 +492,37 @@ def parser() -> argparse.ArgumentParser:
     balkan.add_argument("--scene-id")
     balkan.add_argument("--crop-calibration", type=Path)
     balkan.add_argument("--reflectance-scale", type=float)
+    balkan.add_argument(
+        "--experimental-raw-proxy",
+        action="store_true",
+        help="Explicitly allow the unqualified raw DN proxy to reach crop inference",
+    )
+    balkan.add_argument(
+        "--align-bands-to",
+        type=Path,
+        help=(
+            "Run PAN-referenced band alignment first and write this GeoTIFF; its "
+            "verified parent calibration must be supplied before model inference"
+        ),
+    )
+    balkan.add_argument(
+        "--alignment-band-order",
+        nargs=5,
+        default=BALKAN_BAND_ORDER,
+        metavar=("B1", "B2", "B3", "B4", "B5"),
+        help="Source band roles supplied to alignment when descriptions are absent",
+    )
+    balkan.add_argument(
+        "--alignment-metadata",
+        type=Path,
+        help="Optional L0 manifest containing the detector BandStartRow array",
+    )
+    balkan.add_argument("--alignment-band-start-row-scale", type=float, default=1.0)
+    balkan.add_argument(
+        "--alignment-band-start-axis",
+        choices=("row", "column"),
+        default="row",
+    )
     balkan.add_argument("--condition-tile-size", type=int, default=512)
     balkan.add_argument("--output", type=Path)
     balkan.add_argument("--ground-store", type=Path, default=DEFAULT_GROUND_STORE)

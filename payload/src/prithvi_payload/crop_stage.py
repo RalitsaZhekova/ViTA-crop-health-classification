@@ -40,6 +40,7 @@ def build_crop_stage_plan(
     *,
     max_cloud_percentage: float = DEFAULT_MAX_CLOUD_PERCENTAGE,
     unusable_mask_available: bool = False,
+    allow_experimental_raw_proxy: bool = False,
 ) -> dict[str, Any]:
     """Build a deterministic crop-stage plan without loading the crop model."""
     if not 0 < max_cloud_percentage <= 100:
@@ -68,6 +69,7 @@ def build_crop_stage_plan(
     )
     errors: list[str] = []
     warnings: list[str] = []
+    experimental_thresholds: tuple[float, float] | None = None
     crop_input_readiness = intake.get("readiness", {}).get("crop")
     spectral_adapter = route.get("spectral_adapter")
     calibrated_balkan = (
@@ -82,8 +84,34 @@ def build_crop_stage_plan(
             "BLUE, GREEN, RED and NIR_NARROW"
         )
     if gate_passed and calibrated_balkan:
-        if spectral_adapter.get("validation_status") != "VALIDATED_SENTINEL_EQUIVALENCE":
+        validation_status = spectral_adapter.get("validation_status")
+        experimental_proxy = spectral_adapter.get("experimental_raw_proxy")
+        experimental_allowed = (
+            allow_experimental_raw_proxy
+            and validation_status == "EXPERIMENTAL_RAW_PROXY"
+            and isinstance(experimental_proxy, dict)
+            and experimental_proxy.get("status") == "UNQUALIFIED_ENGINEERING_EXPERIMENT"
+        )
+        if validation_status != "VALIDATED_SENTINEL_EQUIVALENCE" and not experimental_allowed:
             errors.append("Balkan-1 crop calibration is not validated")
+        elif experimental_allowed:
+            warnings.append(
+                "Crop inference is running on an explicitly enabled, unqualified raw proxy"
+            )
+            raw_crop_threshold = experimental_proxy.get("crop_probability_threshold")
+            raw_health_threshold = experimental_proxy.get("health_analysis_crop_threshold")
+            if any(
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not 0.0 <= float(value) <= 1.0
+                for value in (raw_crop_threshold, raw_health_threshold)
+            ):
+                errors.append("Experimental raw-proxy probability thresholds are invalid")
+            else:
+                experimental_thresholds = (
+                    float(raw_crop_threshold),
+                    float(raw_health_threshold),
+                )
         calibration_path = spectral_adapter.get("calibration_path")
         if not isinstance(calibration_path, str) or not Path(calibration_path).is_file():
             errors.append("Balkan-1 crop calibration sidecar is unavailable")
@@ -113,8 +141,10 @@ def build_crop_stage_plan(
         errors.append("A verified reflectance scale is required for crop classification")
 
     unusable_mask = cloud_metadata.get("output_files", {}).get("unusable_mask")
-    if gate_passed and not unusable_mask_available and (
-        not isinstance(unusable_mask, str) or not Path(unusable_mask).is_file()
+    if (
+        gate_passed
+        and not unusable_mask_available
+        and (not isinstance(unusable_mask, str) or not Path(unusable_mask).is_file())
     ):
         errors.append("The cloud stage did not provide an unusable-pixel mask")
 
@@ -126,9 +156,17 @@ def build_crop_stage_plan(
         readiness = "READY"
 
     if calibrated_balkan:
-        crop_probability_threshold = BALKAN_CROP_CLASSIFICATION_THRESHOLD
-        health_analysis_crop_threshold = BALKAN_HEALTH_ANALYSIS_CROP_THRESHOLD
-        threshold_source = "balkan_1_operational_calibration"
+        if experimental_thresholds is not None:
+            crop_probability_threshold, health_analysis_crop_threshold = experimental_thresholds
+            threshold_source = "balkan_1_experimental_raw_proxy_scene_parity"
+        else:
+            crop_probability_threshold = BALKAN_CROP_CLASSIFICATION_THRESHOLD
+            health_analysis_crop_threshold = BALKAN_HEALTH_ANALYSIS_CROP_THRESHOLD
+            threshold_source = (
+                "balkan_1_experimental_raw_proxy_invalid_fallback"
+                if spectral_adapter.get("validation_status") == "EXPERIMENTAL_RAW_PROXY"
+                else "balkan_1_operational_calibration"
+            )
     else:
         crop_probability_threshold = CROP_CLASSIFICATION_THRESHOLD
         health_analysis_crop_threshold = HEALTH_ANALYSIS_CROP_THRESHOLD
@@ -164,9 +202,7 @@ def build_crop_stage_plan(
             "source_logical_band_order": route.get("source_logical_order"),
             "source_band_indices_1_based": source_indices,
             "spectral_adapter": spectral_adapter,
-            "calibration_source_path": (
-                intake.get("source_path") if calibrated_balkan else None
-            ),
+            "calibration_source_path": (intake.get("source_path") if calibrated_balkan else None),
             "analysis_grid_ready": analysis_ready,
             "unusable_mask": unusable_mask,
             "training_scale_multiplier": training_scale_multiplier,

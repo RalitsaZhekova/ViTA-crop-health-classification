@@ -32,6 +32,8 @@ dev = [
 vita-mvp = "vita_integration.cli:main"
 vita-dashboard = "prithvi_ground.api:main"
 vita-ingest = "vita_integration.ingest:main"
+vita-balkan-align = "prithvi_payload.balkan_alignment:main"
+vita-balkan-raw-proxy = "prithvi_payload.balkan_raw_proxy:main"
 vita-payload-server = "prithvi_payload.service:main"
 
 [tool.setuptools.packages.find]

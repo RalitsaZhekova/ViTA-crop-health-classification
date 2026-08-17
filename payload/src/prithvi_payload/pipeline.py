@@ -64,6 +64,7 @@ def run_scene(
     cloud_config: dict[str, Any] | None = None,
     crop_model: Any | None = None,
     acquisition_metadata: dict[str, Any] | None = None,
+    allow_experimental_raw_proxy: bool = False,
     progress_callback: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """Run only the explicitly selected stages for one preprocessed scene."""
@@ -307,6 +308,7 @@ def run_scene(
         overwrite=overwrite,
         crop_model=crop_model,
         acquisition_metadata=acquisition_metadata,
+        allow_experimental_raw_proxy=allow_experimental_raw_proxy,
         progress_callback=progress_callback,
         cloud_products=cloud_products,
         prepared_rgb_future=prepared_rgb_future,
@@ -325,6 +327,7 @@ def continue_scene_from_cloud(
     overwrite: bool = False,
     crop_model: Any | None = None,
     acquisition_metadata: dict[str, Any] | None = None,
+    allow_experimental_raw_proxy: bool = False,
     progress_callback: Callable[[str], None] | None = None,
     cloud_products: dict[str, Any] | None = None,
     prepared_rgb_future: Future[dict[str, Any]] | None = None,
@@ -372,6 +375,7 @@ def continue_scene_from_cloud(
         cloud_metadata,
         max_cloud_percentage=max_cloud_percentage,
         unusable_mask_available=cloud_products is not None,
+        allow_experimental_raw_proxy=allow_experimental_raw_proxy,
     )
     crop_plan_path = output_root / "metadata" / f"{resolved_scene_id}_crop_plan.json"
     _write_json(crop_plan_path, crop_plan)

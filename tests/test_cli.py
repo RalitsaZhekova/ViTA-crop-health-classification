@@ -126,6 +126,28 @@ def test_balkan_command_fails_before_models_when_source_is_missing(tmp_path: Pat
         run_balkan(args)
 
 
+def test_balkan_command_exposes_local_alignment_handoff() -> None:
+    args = parser().parse_args(
+        [
+            "balkan",
+            "data/balkan1/preprocessed/3408_L1ORT.tif",
+            "--region-id",
+            "balkan-test",
+            "--align-bands-to",
+            "runtime/aligned/3408_L1ORT_aligned.tif",
+            "--alignment-band-start-axis",
+            "column",
+            "--experimental-raw-proxy",
+        ]
+    )
+
+    assert args.align_bands_to == Path("runtime/aligned/3408_L1ORT_aligned.tif")
+    assert args.alignment_metadata is None
+    assert args.alignment_band_order == ("BLUE", "GREEN", "RED", "NIR", "PAN")
+    assert args.alignment_band_start_axis == "column"
+    assert args.experimental_raw_proxy is True
+
+
 def test_local_timing_extraction_uses_stage_runtime_contracts() -> None:
     result = {
         "timing": {
