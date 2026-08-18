@@ -1,0 +1,16 @@
+services:
+  payload:
+    image: ${VITA_NSYS_IMAGE:-vita-payload:nsight}
+    user: "0:0"
+    restart: "no"
+    cap_add:
+      - SYS_ADMIN
+      - SYS_PTRACE
+    security_opt:
+      - seccomp=unconfined
+    environment:
+      VITA_NVTX_ENABLED: "1"
+      VITA_NSYS_CAPTURE: "1"
+    volumes:
+      - ${VITA_NSYS_HOST_ROOT:?set VITA_NSYS_HOST_ROOT}:${VITA_NSYS_HOST_ROOT:?set VITA_NSYS_HOST_ROOT}:ro
+      - ../runtime/nsight:/profiles:Z

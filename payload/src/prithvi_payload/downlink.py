@@ -26,6 +26,7 @@ from prithvi_payload.balkan_crop_calibration import (
     load_calibration,
 )
 from prithvi_payload.cloud_classifier import CLOUD_MODEL_NAME, CLOUD_MODEL_SHA256
+from prithvi_payload.nvtx import annotate as nvtx_annotate
 from prithvi_payload.runtime_config import environment_flag
 
 DOWNLINK_SCHEMA_VERSION = "1.0"
@@ -215,6 +216,7 @@ def _apply_balkan_rgb_calibration(
     return calibrated / np.float32(10_000.0)
 
 
+@nvtx_annotate("vita.cpu.rgb_preview_preparation")
 def prepare_rgb_preview(
     source_path: str | Path,
     *,

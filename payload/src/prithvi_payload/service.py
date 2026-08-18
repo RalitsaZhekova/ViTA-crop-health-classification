@@ -24,6 +24,7 @@ from starlette.concurrency import run_in_threadpool
 
 from prithvi_payload.cloud_classifier import load_cloud_model
 from prithvi_payload.inference import PayloadCropModel
+from prithvi_payload.nvtx import range as nvtx_range
 from prithvi_payload.pipeline import run_scene
 from prithvi_payload.runtime_config import environment_flag
 
@@ -645,25 +646,26 @@ class PayloadRuntime:
             raise FileExistsError(f"Payload job already exists: {request.job_id}")
         progress: list[str] = []
         started = time.perf_counter()
-        result = run_scene(
-            source,
-            sensor=request.sensor,
-            output_root=output,
-            acquired_at=acquired_at,
-            scene_id=request.job_id,
-            band_order=band_order,
-            crop_calibration_path=calibration,
-            reflectance_scale=reflectance_scale,
-            stop_after="downlink",
-            region_id=request.region_id,
-            cloud_backend=self.cloud.backend,
-            cloud_config=self.cloud.config,
-            crop_model=self.crop,
-            condition_tile_size=int(
-                os.environ.get("VITA_CONDITION_TILE_SIZE", "4096")
-            ),
-            progress_callback=progress.append,
-        )
+        with nvtx_range(f"vita.job.{request.sensor}.{request.job_id}"):
+            result = run_scene(
+                source,
+                sensor=request.sensor,
+                output_root=output,
+                acquired_at=acquired_at,
+                scene_id=request.job_id,
+                band_order=band_order,
+                crop_calibration_path=calibration,
+                reflectance_scale=reflectance_scale,
+                stop_after="downlink",
+                region_id=request.region_id,
+                cloud_backend=self.cloud.backend,
+                cloud_config=self.cloud.config,
+                crop_model=self.crop,
+                condition_tile_size=int(
+                    os.environ.get("VITA_CONDITION_TILE_SIZE", "4096")
+                ),
+                progress_callback=progress.append,
+            )
         payload_seconds = time.perf_counter() - started
         if result.get("status") != "DOWNLINK_READY":
             raise RuntimeError(f"Pipeline stopped with status {result.get('status')}")

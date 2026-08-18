@@ -21,6 +21,7 @@ from prithvi_payload.crop_stage import (
     build_crop_stage_plan,
 )
 from prithvi_payload.downlink import DEFAULT_GRID_SIZE, DEFAULT_MAX_IMAGE_DIMENSION
+from prithvi_payload.nvtx import range as nvtx_range
 from prithvi_payload.runtime_config import environment_flag
 from prithvi_payload.scene_intake import inspect_scene
 
@@ -79,14 +80,15 @@ def run_scene(
     )
     output_root = Path(output_root)
     intake_started = time.perf_counter()
-    intake = inspect_scene(
-        input_path,
-        sensor=sensor,
-        acquired_at=acquired_at,
-        scene_id=scene_id,
-        band_order=band_order,
-        crop_calibration_path=crop_calibration_path,
-    )
+    with nvtx_range("vita.stage.intake"):
+        intake = inspect_scene(
+            input_path,
+            sensor=sensor,
+            acquired_at=acquired_at,
+            scene_id=scene_id,
+            band_order=band_order,
+            crop_calibration_path=crop_calibration_path,
+        )
     resolved_scene_id = intake["scene_id"]
     intake_seconds = time.perf_counter() - intake_started
     analysis_grid_seconds = 0.0
@@ -99,11 +101,12 @@ def run_scene(
 
         if progress_callback is not None:
             progress_callback("preparing_analysis_grid")
-        analysis = materialize_balkan_analysis_grid(
-            intake,
-            output_root=output_root,
-            overwrite=overwrite,
-        )
+        with nvtx_range("vita.stage.balkan_analysis_grid"):
+            analysis = materialize_balkan_analysis_grid(
+                intake,
+                output_root=output_root,
+                overwrite=overwrite,
+            )
         intake["analysis"] = analysis
         analysis_grid_seconds = float(analysis["runtime"]["seconds"])
     intake_path = output_root / "metadata" / f"{resolved_scene_id}_intake.json"
@@ -142,10 +145,11 @@ def run_scene(
         return _finish(output_root, result)
 
     cloud_plan_started = time.perf_counter()
-    plan = build_cloud_stage_plan(
-        intake,
-        reflectance_scale=reflectance_scale,
-    )
+    with nvtx_range("vita.stage.cloud_plan"):
+        plan = build_cloud_stage_plan(
+            intake,
+            reflectance_scale=reflectance_scale,
+        )
     plan_path = output_root / "metadata" / f"{resolved_scene_id}_cloud_plan.json"
     _write_json(plan_path, plan)
     result["artifacts"]["cloud_plan"] = str(plan_path.resolve())
@@ -277,14 +281,15 @@ def run_scene(
         cloud_config = runtime.config
     elif cloud_config is None:
         cloud_config = load_config(cloud_config_path)
-    cloud_metadata = execute_cloud_stage(
-        plan,
-        output_root=output_root,
-        backend=cloud_backend,
-        config=cloud_config,
-        persist_rasters=not compact_payload,
-        compact_crop_preparer=compact_crop_preparer,
-    )
+    with nvtx_range("vita.stage.cloud"):
+        cloud_metadata = execute_cloud_stage(
+            plan,
+            output_root=output_root,
+            backend=cloud_backend,
+            config=cloud_config,
+            persist_rasters=not compact_payload,
+            compact_crop_preparer=compact_crop_preparer,
+        )
     cloud_products = cloud_metadata.pop("_products", None)
     result["completed_stages"].append("cloud")
     result["status"] = "CLOUD_COMPLETE"
@@ -379,14 +384,15 @@ def continue_scene_from_cloud(
         progress_callback("validating_input")
 
     crop_plan_started = time.perf_counter()
-    crop_plan = build_crop_stage_plan(
-        intake,
-        plan,
-        cloud_metadata,
-        max_cloud_percentage=max_cloud_percentage,
-        unusable_mask_available=cloud_products is not None,
-        allow_experimental_raw_proxy=allow_experimental_raw_proxy,
-    )
+    with nvtx_range("vita.stage.crop_plan"):
+        crop_plan = build_crop_stage_plan(
+            intake,
+            plan,
+            cloud_metadata,
+            max_cloud_percentage=max_cloud_percentage,
+            unusable_mask_available=cloud_products is not None,
+            allow_experimental_raw_proxy=allow_experimental_raw_proxy,
+        )
     crop_plan_path = output_root / "metadata" / f"{resolved_scene_id}_crop_plan.json"
     _write_json(crop_plan_path, crop_plan)
     result["artifacts"]["crop_plan"] = str(crop_plan_path.resolve())
@@ -415,13 +421,14 @@ def continue_scene_from_cloud(
     compact_payload = stop_after == "downlink" and environment_flag(
         "VITA_COMPACT_PAYLOAD_PIPELINE", False
     )
-    crop_metadata = execute_crop_stage(
-        crop_plan,
-        output_root=output_root,
-        model=crop_model,
-        persist_rasters=not compact_payload,
-        cloud_products=cloud_products,
-    )
+    with nvtx_range("vita.stage.crop"):
+        crop_metadata = execute_crop_stage(
+            crop_plan,
+            output_root=output_root,
+            model=crop_model,
+            persist_rasters=not compact_payload,
+            cloud_products=cloud_products,
+        )
     crop_products = crop_metadata.pop("_products", None)
     result["completed_stages"].append("crop")
     result["status"] = "CROP_COMPLETE"
@@ -450,15 +457,16 @@ def continue_scene_from_cloud(
     if progress_callback is not None:
         progress_callback("running_condition")
     condition_root = output_root / "condition_analysis"
-    condition_report = run_payload_condition(
-        output_root / "result.json",
-        output_root=condition_root,
-        region_id=region_id,
-        tile_size=condition_tile_size,
-        overwrite=overwrite,
-        crop_products=crop_products,
-        persist_rasters=not compact_payload,
-    )
+    with nvtx_range("vita.stage.condition"):
+        condition_report = run_payload_condition(
+            output_root / "result.json",
+            output_root=condition_root,
+            region_id=region_id,
+            tile_size=condition_tile_size,
+            overwrite=overwrite,
+            crop_products=crop_products,
+            persist_rasters=not compact_payload,
+        )
     condition_products = condition_report.pop("_products", None)
     condition_report_path = condition_root / "crop_condition_report.json"
     result["completed_stages"].append("condition")
@@ -487,19 +495,20 @@ def continue_scene_from_cloud(
         progress_callback("packaging")
     downlink_root = output_root / "downlink"
     packaging_started = time.perf_counter()
-    downlink = build_downlink_bundle(
-        output_root / "result.json",
-        output_root=downlink_root,
-        max_image_dimension=downlink_max_image_dimension,
-        grid_size=downlink_grid_size,
-        overwrite=overwrite,
-        products=condition_products,
-        prepared_rgb=(
-            prepared_rgb_future.result()
-            if prepared_rgb_future is not None
-            else None
-        ),
-    )
+    with nvtx_range("vita.stage.downlink"):
+        downlink = build_downlink_bundle(
+            output_root / "result.json",
+            output_root=downlink_root,
+            max_image_dimension=downlink_max_image_dimension,
+            grid_size=downlink_grid_size,
+            overwrite=overwrite,
+            products=condition_products,
+            prepared_rgb=(
+                prepared_rgb_future.result()
+                if prepared_rgb_future is not None
+                else None
+            ),
+        )
     packaging_detail = downlink.pop("_runtime", {})
     packaging_seconds = time.perf_counter() - packaging_started
     downlink_files = {

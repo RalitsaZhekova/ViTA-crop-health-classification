@@ -27,6 +27,8 @@ from prithvi_payload.balkan_crop_calibration import (
     load_calibration,
 )
 from prithvi_payload.inference import PayloadCropModel
+from prithvi_payload.nvtx import annotate as nvtx_annotate
+from prithvi_payload.nvtx import range as nvtx_range
 from prithvi_payload.raster_ops import copy_padded_array, read_padded_tile
 from prithvi_payload.runtime_config import environment_flag
 
@@ -81,6 +83,7 @@ def _compact_invalid_input_mask(
     return invalid
 
 
+@nvtx_annotate("vita.cpu.crop_input_preparation")
 def prepare_compact_crop_inputs(
     source_bands: np.ndarray,
     source_valid_mask: np.ndarray,
@@ -676,11 +679,12 @@ def _execute_native_crop_stage(
             if model.device.type == "cuda":
                 torch.cuda.synchronize(model.device)
             inference_started = time.perf_counter()
-            prediction = model.predict(
-                images,
-                temporal_coords=temporal,
-                location_coords=locations,
-            )
+            with nvtx_range(f"vita.crop.inference.batch_{len(pending)}"):
+                prediction = model.predict(
+                    images,
+                    temporal_coords=temporal,
+                    location_coords=locations,
+                )
             if model.device.type == "cuda":
                 torch.cuda.synchronize(model.device)
             inference_seconds += time.perf_counter() - inference_started

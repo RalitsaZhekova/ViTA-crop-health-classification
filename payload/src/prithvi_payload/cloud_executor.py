@@ -22,6 +22,7 @@ from rasterio.enums import Resampling
 from rasterio.warp import calculate_default_transform, reproject
 from rasterio.windows import Window as RasterWindow
 
+from prithvi_payload.nvtx import range as nvtx_range
 from prithvi_payload.raster_ops import (
     read_padded_array,
     read_padded_tile,
@@ -189,10 +190,13 @@ def _prepare_and_predict_semantic(
         preparation_seconds = time.perf_counter() - preparation_started
         _synchronize_cuda(backend)
         inference_started = time.perf_counter()
-        if has_model_input:
-            semantic = np.asarray(prepared_predictor(model_input), dtype=np.uint8)
-        else:
-            semantic = np.zeros(raw_image.shape[1:], dtype=np.uint8)
+        with nvtx_range(
+            f"vita.cloud.inference.{model_input.shape[1]}x{model_input.shape[2]}"
+        ):
+            if has_model_input:
+                semantic = np.asarray(prepared_predictor(model_input), dtype=np.uint8)
+            else:
+                semantic = np.zeros(raw_image.shape[1:], dtype=np.uint8)
         _synchronize_cuda(backend)
         inference_seconds = time.perf_counter() - inference_started
         expected_shape = raw_image.shape[1:]
@@ -234,10 +238,11 @@ def _prepare_and_predict_semantic(
     preparation_seconds = time.perf_counter() - preparation_started
     _synchronize_cuda(backend)
     inference_started = time.perf_counter()
-    semantic, score_kind = _predict_semantic(
-        backend,
-        image.astype(np.float32, copy=False),
-    )
+    with nvtx_range(f"vita.cloud.inference.{image.shape[1]}x{image.shape[2]}"):
+        semantic, score_kind = _predict_semantic(
+            backend,
+            image.astype(np.float32, copy=False),
+        )
     _synchronize_cuda(backend)
     return (
         semantic,
