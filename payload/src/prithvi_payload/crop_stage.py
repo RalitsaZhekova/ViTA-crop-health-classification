@@ -70,6 +70,7 @@ def build_crop_stage_plan(
     errors: list[str] = []
     warnings: list[str] = []
     experimental_thresholds: tuple[float, float] | None = None
+    crop_spatial_detail_restoration: dict[str, Any] | None = None
     crop_input_readiness = intake.get("readiness", {}).get("crop")
     spectral_adapter = route.get("spectral_adapter")
     calibrated_balkan = (
@@ -112,6 +113,31 @@ def build_crop_stage_plan(
                     float(raw_crop_threshold),
                     float(raw_health_threshold),
                 )
+            raw_detail = experimental_proxy.get("crop_spatial_detail_restoration")
+            if raw_detail is not None:
+                expected_bands = ["BLUE", "GREEN", "RED", "NIR_BROAD"]
+                valid_detail = (
+                    isinstance(raw_detail, dict)
+                    and raw_detail.get("method") == "nodata_aware_unsharp_mask"
+                    and raw_detail.get("bands") == expected_bands
+                    and isinstance(raw_detail.get("sigma_pixels"), (int, float))
+                    and not isinstance(raw_detail.get("sigma_pixels"), bool)
+                    and 0.1 <= float(raw_detail["sigma_pixels"]) <= 5.0
+                    and isinstance(raw_detail.get("amount"), (int, float))
+                    and not isinstance(raw_detail.get("amount"), bool)
+                    and 0.0 <= float(raw_detail["amount"]) <= 8.0
+                )
+                if not valid_detail:
+                    errors.append(
+                        "Experimental raw-proxy crop spatial-detail restoration is invalid"
+                    )
+                else:
+                    crop_spatial_detail_restoration = {
+                        "method": raw_detail["method"],
+                        "sigma_pixels": float(raw_detail["sigma_pixels"]),
+                        "amount": float(raw_detail["amount"]),
+                        "bands": list(raw_detail["bands"]),
+                    }
         calibration_path = spectral_adapter.get("calibration_path")
         if not isinstance(calibration_path, str) or not Path(calibration_path).is_file():
             errors.append("Balkan-1 crop calibration sidecar is unavailable")
@@ -207,6 +233,7 @@ def build_crop_stage_plan(
             "unusable_mask": unusable_mask,
             "training_scale_multiplier": training_scale_multiplier,
             "temporal_coordinate_year_doy": temporal_coordinate,
+            "spatial_detail_restoration": crop_spatial_detail_restoration,
         },
         "model": {
             "artifact": SELECTED_CHECKPOINT_NAME,

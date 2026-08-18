@@ -7,6 +7,7 @@ from prithvi_payload.downlink import (
     _build_overlay,
     _calibrated_balkan_rgb,
     _stretch_rgb,
+    prepare_rgb_preview,
 )
 from rasterio.transform import from_origin
 
@@ -95,6 +96,78 @@ def test_reduced_saturation_display_preserves_brightness_but_mutes_chroma() -> N
 
     assert np.ptp(muted[0, 0]) < np.ptp(saturated[0, 0])
     assert np.any(muted != saturated)
+
+
+def test_strict_positive_rgb_hides_incomplete_raw_color_fringe() -> None:
+    values = np.ones((3, 8, 8), dtype=np.float32)
+    values[:, 2:6, 2:6] = np.array([0.7, 0.5, 0.3], dtype=np.float32)[:, None, None]
+    values[2, :, 0] = 0.0
+
+    result = _stretch_rgb(
+        values,
+        channelwise=True,
+        percentiles=(0.0, 100.0),
+        require_all_positive=True,
+    )
+
+    assert np.all(result[:, 0] == 0)
+    assert np.any(result[:, 1:] > 0)
+
+
+def test_experimental_raw_preview_uses_neutral_per_channel_stretch(
+    tmp_path, monkeypatch
+) -> None:
+    source = tmp_path / "raw-proxy.tif"
+    relative_brightness = np.asarray([[0.1, 0.2], [0.3, 0.4]], dtype=np.float32)
+    with rasterio.open(
+        source,
+        "w",
+        driver="GTiff",
+        width=2,
+        height=2,
+        count=4,
+        dtype="float32",
+        crs="EPSG:32635",
+        transform=from_origin(500_000, 4_700_000, 10, 10),
+    ) as dataset:
+        dataset.write(
+            np.stack(
+                (
+                    10.0 + 10.0 * relative_brightness,
+                    1.0 + relative_brightness,
+                    0.1 + 0.1 * relative_brightness,
+                    np.ones_like(relative_brightness),
+                )
+            )
+        )
+    import prithvi_payload.downlink as downlink
+
+    monkeypatch.setattr(
+        downlink,
+        "_calibrated_balkan_rgb",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("Experimental raw display must not reapply crop calibration")
+        ),
+    )
+    preview = prepare_rgb_preview(
+        source,
+        mapping={
+            role: {"index": index}
+            for index, role in enumerate(("BLUE", "GREEN", "RED", "NIR_BROAD"), start=1)
+        },
+        spectral_adapter={
+            "mode": "BALKAN_1_SENTINEL_MONOTONIC_V1",
+            "experimental_raw_proxy": {"status": "UNQUALIFIED_ENGINEERING_EXPERIMENT"},
+        },
+        original_source_path=source,
+        sensor="balkan-1",
+        reflectance_scale=1.0,
+        maximum_dimension=2,
+    )
+
+    assert preview["experimental_raw_display"] is True
+    pixels = preview["pixels"].astype(np.int16)
+    assert np.max(np.ptp(pixels, axis=-1)) <= 1
 
 
 def test_experimental_condition_overlay_can_be_muted() -> None:

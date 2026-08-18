@@ -95,3 +95,31 @@ def test_compact_cloud_preparation_preserves_non_strict_output_mask() -> None:
     assert np.all(prepared[:, 2, 3] == 0.0)
     np.testing.assert_array_equal(invalid, expected_invalid)
     assert has_model_input
+
+
+def test_experimental_raw_cloud_detail_restoration_is_model_input_only() -> None:
+    raw = np.full((4, 33, 33), 0.4, dtype=np.float32)
+    raw[:3, 16, 16] = 0.5
+    raw[:, 0, 0] = 0.0
+
+    prepared, invalid, has_model_input = _prepare_semantic_input(
+        raw,
+        scale=1.0,
+        clip_min=None,
+        clip_max=None,
+        nodata_value=0.0,
+        strict_positive_rgn=True,
+        spatial_detail_restoration={
+            "method": "nodata_aware_unsharp_mask",
+            "sigma_pixels": 1.2,
+            "amount": 4.0,
+            "bands": ["RED", "GREEN", "NIR_BROAD"],
+        },
+    )
+
+    assert prepared.shape == (3, 33, 33)
+    assert np.all(prepared[:, 16, 16] > 0.5)
+    assert np.all(prepared[:, 0, 0] == 0.0)
+    assert invalid[0, 0]
+    assert has_model_input
+    np.testing.assert_allclose(raw[:, 16, 16], np.array([0.5, 0.5, 0.5, 0.4]))

@@ -25,7 +25,7 @@ DEFAULT_ANALYSIS_RESOLUTION_METRES = 10.0
 MIN_VALIDATION_PIXELS = 10_000
 MIN_BAND_CORRELATION = 0.75
 MIN_MEAN_BAND_CORRELATION = 0.80
-GEOMETRY_ONLY_ALIGNMENT_ALGORITHM = "balkan-pan-local-shift-field-v1"
+GEOMETRY_ONLY_ALIGNMENT_ALGORITHM = "balkan-pan-seeded-global-bridge-v1"
 # Balkan reflectance is calibrated into the selected model's Sentinel-equivalent
 # input domain, so it uses the same model-validation probability thresholds.
 BALKAN_CROP_CLASSIFICATION_THRESHOLD = CROP_CLASSIFICATION_THRESHOLD

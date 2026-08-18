@@ -10,6 +10,7 @@ from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
+import cv2
 import numpy as np
 import rasterio
 import torch
@@ -31,6 +32,34 @@ from prithvi_payload.runtime_config import environment_flag
 
 FLOAT_NODATA = -9999.0
 BYTE_NODATA = 255
+
+
+def _restore_spatial_detail(
+    values: np.ndarray,
+    valid: np.ndarray,
+    restoration: dict[str, Any] | None,
+) -> np.ndarray:
+    """Restore detail lost by raw-to-10 m area averaging without crossing nodata."""
+    image = np.asarray(values, dtype=np.float32)
+    if restoration is None or float(restoration["amount"]) == 0.0:
+        return image
+    sigma = float(restoration["sigma_pixels"])
+    amount = np.float32(restoration["amount"])
+    detail_valid = np.asarray(valid, dtype=bool) & np.isfinite(image).all(axis=0)
+    weight = cv2.GaussianBlur(detail_valid.astype(np.float32), (0, 0), sigma)
+    restored = image.copy()
+    for channel in range(image.shape[0]):
+        blurred = cv2.GaussianBlur(
+            np.where(detail_valid, image[channel], 0.0).astype(np.float32),
+            (0, 0),
+            sigma,
+        )
+        blurred /= np.maximum(weight, np.float32(1e-6))
+        restored[channel, detail_valid] += amount * (
+            image[channel, detail_valid] - blurred[detail_valid]
+        )
+    restored[:, ~detail_valid] = image[:, ~detail_valid]
+    return restored
 
 
 def _compact_invalid_input_mask(
@@ -62,6 +91,7 @@ def prepare_compact_crop_inputs(
     nodata: float | None,
     calibration_path: str | None = None,
     calibration_source_path: str | None = None,
+    spatial_detail_restoration: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Prepare immutable crop inputs while cloud inference occupies the GPU."""
     started = time.perf_counter()
@@ -86,7 +116,12 @@ def prepare_compact_crop_inputs(
             calibration_path,
             source_path=calibration_source_path,
         )
-    model_bands = prepared_source * np.float32(multiplier)
+    restored_source = _restore_spatial_detail(
+        prepared_source,
+        prepared_valid,
+        spatial_detail_restoration,
+    )
+    model_bands = restored_source * np.float32(multiplier)
     if calibration is not None:
         with ThreadPoolExecutor(
             max_workers=4,
@@ -393,6 +428,7 @@ def _execute_native_crop_stage(
             source_path=calibration_source_path,
         )
     temporal_coordinate = plan["input"]["temporal_coordinate_year_doy"]
+    spatial_detail_restoration = plan["input"].get("spatial_detail_restoration")
     tile_size = int(plan["execution"]["tile_size"])
     halo = int(plan["execution"]["halo"])
     batch_size = int(plan["execution"]["batch_size"])
@@ -745,7 +781,15 @@ def _execute_native_crop_stage(
                         halo=halo,
                         out_dtype="float32",
                     )
-                    image = raw_tile * np.float32(multiplier)
+                    raw_valid = np.isfinite(raw_tile).all(axis=0)
+                    if source.nodata is not None:
+                        raw_valid &= ~np.any(raw_tile == source.nodata, axis=0)
+                    restored_tile = _restore_spatial_detail(
+                        raw_tile,
+                        raw_valid,
+                        spatial_detail_restoration,
+                    )
+                    image = restored_tile * np.float32(multiplier)
                     if calibration is not None:
                         image = apply_calibration(image, calibration)
                 else:

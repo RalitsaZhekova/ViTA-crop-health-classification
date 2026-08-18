@@ -15,6 +15,7 @@ import rasterio
 from rasterio.enums import Resampling
 from rasterio.warp import calculate_default_transform, reproject
 
+from prithvi_payload.balkan_raw_proxy import RAW_PROXY_ALGORITHM
 from prithvi_payload.raster_ops import utm_crs_for_bounds
 from prithvi_payload.runtime_config import environment_flag
 
@@ -216,6 +217,128 @@ def _display_limits(rgb: np.ndarray) -> list[list[float]]:
     return limits
 
 
+def _single_pass_raw_proxy_record(
+    source: rasterio.DatasetReader,
+    *,
+    source_path: Path,
+    source_indices: list[int],
+    resolution: float,
+    started: float,
+    strategy_selection_started: float,
+) -> dict[str, Any] | None:
+    tags = source.tags()
+    if tags.get("RAW_PROXY_ALGORITHM") != RAW_PROXY_ALGORITHM:
+        return None
+    transform = source.transform
+    north_up = (
+        np.isclose(transform.b, 0.0)
+        and np.isclose(transform.d, 0.0)
+        and transform.a > 0
+        and transform.e < 0
+    )
+    target_resolution = (
+        np.isclose(transform.a, resolution)
+        and np.isclose(-transform.e, resolution)
+    )
+    if not north_up or not target_resolution:
+        raise ValueError(
+            "Single-pass raw proxy must already be a north-up raster at the analysis resolution"
+        )
+    maximum_dimension = max(source.width, source.height)
+    display_scale = min(1.0, DISPLAY_MAX_DIMENSION / maximum_dimension)
+    display_height = max(1, round(source.height * display_scale))
+    display_width = max(1, round(source.width * display_scale))
+    display_rgb = source.read(
+        [source_indices[2], source_indices[1], source_indices[0]],
+        out_shape=(3, display_height, display_width),
+        out_dtype="float32",
+        resampling=Resampling.bilinear,
+    )
+    display_stretch = _display_limits(display_rgb)
+    return {
+        "schema_version": "1.0",
+        "algorithm_version": ANALYSIS_ALGORITHM_VERSION,
+        "source_path": str(source_path),
+        "source_band_indices_1_based": source_indices,
+        "logical_band_mapping": {
+            role: {
+                "index": index,
+                "description": role,
+                "mapping_source": "single_pass_raw_proxy",
+            }
+            for role, index in zip(ANALYSIS_BAND_ROLES, source_indices, strict=True)
+        },
+        "model_band_routes": {
+            "cloud_detection": {
+                "expected_logical_order": ["NIR_BROAD", "RED", "GREEN", "BLUE"],
+                "source_band_indices": [
+                    source_indices[3],
+                    source_indices[2],
+                    source_indices[1],
+                    source_indices[0],
+                ],
+            },
+            "crop_classification": {
+                "expected_logical_order": ["BLUE", "GREEN", "RED", "NIR_NARROW"],
+                "source_band_indices": source_indices,
+            },
+        },
+        "raster": {
+            "driver": source.driver,
+            "width": source.width,
+            "height": source.height,
+            "band_count": source.count,
+            "crs": str(source.crs),
+            "transform": list(transform)[:6],
+            "resolution": [resolution, resolution],
+            "nodata": source.nodata,
+            "resampling": "none_already_final_grid",
+        },
+        "original_raster": {
+            "crs": str(source.crs),
+            "width": source.width,
+            "height": source.height,
+            "bounds": [float(value) for value in source.bounds],
+            "overviews": _shared_overview_factors(source, source_indices),
+        },
+        "preprocessing": {
+            "mode": "single_pass_raw_proxy_passthrough",
+            "overview_factor": None,
+            "overview_level": None,
+            "available_overview_factors": _shared_overview_factors(source, source_indices),
+            "target_decimation": 1.0,
+            "overview_width": None,
+            "overview_height": None,
+            "estimated_working_set_bytes": 0,
+            "memory_limit_bytes": _preparation_memory_limit(),
+            "source_read_resampling": "none",
+            "target_resampling": "none",
+            "output_band_order": list(ANALYSIS_BAND_ROLES),
+            "radiometry_modified": False,
+            "raw_to_model_resampling_passes": 1,
+            "additional_analysis_resampling_passes": 0,
+        },
+        "display": {
+            "rgb_order": ["RED", "GREEN", "BLUE"],
+            "stretch_percentiles": [2.0, 98.0],
+            "native_source_channel_limits": display_stretch,
+        },
+        "cache": {"enabled": False, "hit": False, "key": None},
+        "runtime": {
+            "seconds": time.perf_counter() - started,
+            "cache_hit": False,
+            "cache_key": None,
+            "strategy_selection_seconds": (
+                time.perf_counter() - strategy_selection_started
+            ),
+            "overview_read_seconds": 0.0,
+            "warp_seconds": 0.0,
+            "write_seconds": 0.0,
+            "display_statistics_seconds": time.perf_counter() - started,
+        },
+    }
+
+
 def materialize_balkan_analysis_grid(
     intake: dict[str, Any],
     *,
@@ -263,6 +386,16 @@ def materialize_balkan_analysis_grid(
     with rasterio.open(source_path) as source:
         if source.crs is None:
             raise ValueError("Balkan source has no CRS")
+        passthrough = _single_pass_raw_proxy_record(
+            source,
+            source_path=source_path,
+            source_indices=source_indices,
+            resolution=resolution,
+            started=started,
+            strategy_selection_started=strategy_selection_started,
+        )
+        if passthrough is not None:
+            return passthrough
         target_crs = utm_crs_for_bounds(source.crs, source.bounds)
         transform, width, height = calculate_default_transform(
             source.crs,
