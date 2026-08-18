@@ -76,6 +76,42 @@ def build_cloud_stage_plan(
     if selected_scale is None:
         errors.append("Reflectance calibration is unresolved; supply a verified reflectance scale")
 
+    crop_route = intake.get("model_band_routes", {}).get("crop_classification", {})
+    spectral_adapter = crop_route.get("spectral_adapter")
+    experimental_proxy = (
+        spectral_adapter.get("experimental_raw_proxy")
+        if isinstance(spectral_adapter, dict)
+        else None
+    )
+    spatial_detail_restoration = None
+    if isinstance(experimental_proxy, dict):
+        candidate = experimental_proxy.get("cloud_spatial_detail_restoration")
+        if isinstance(candidate, dict):
+            try:
+                method = str(candidate["method"])
+                sigma_pixels = float(candidate["sigma_pixels"])
+                amount = float(candidate["amount"])
+                bands = list(candidate["bands"])
+            except (KeyError, TypeError, ValueError):
+                errors.append("Experimental raw cloud detail restoration is invalid")
+            else:
+                if (
+                    method != "nodata_aware_unsharp_mask"
+                    or not math.isfinite(sigma_pixels)
+                    or not 0.1 <= sigma_pixels <= 5.0
+                    or not math.isfinite(amount)
+                    or not 0.0 <= amount <= 8.0
+                    or bands != ["RED", "GREEN", "NIR_BROAD"]
+                ):
+                    errors.append("Experimental raw cloud detail restoration is invalid")
+                else:
+                    spatial_detail_restoration = {
+                        "method": method,
+                        "sigma_pixels": sigma_pixels,
+                        "amount": amount,
+                        "bands": bands,
+                    }
+
     if sensor == "sentinel-2":
         compatibility = "OMNICLOUDMASK_SENTINEL_2"
         validation_status = "UPSTREAM_VALIDATED_SENTINEL_2"
@@ -116,6 +152,7 @@ def build_cloud_stage_plan(
             ),
             "analysis_grid_ready": analysis_ready,
             "pan_used": False,
+            "spatial_detail_restoration": spatial_detail_restoration,
         },
         "execution": {
             "mode": "WINDOWED_GEOTIFF",

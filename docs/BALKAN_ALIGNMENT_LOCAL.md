@@ -1,8 +1,13 @@
 # Local Balkan-1 band-alignment integration
 
-The local integration adapts the PAN-referenced local shift-field method from
-[`balkan1-band-alignment` Test-2](https://github.com/stelspirou-git/balkan1-band-alignment/tree/Test-2),
-pinned to commit `5688c564f733c754601240e6263b48f2792aafeb`.
+The local integration adapts the PAN-referenced seeded global-shift method from
+[`RalitsaZhekova/balkan1-band-alignment`](https://github.com/RalitsaZhekova/balkan1-band-alignment),
+pinned to commit `5ba3076f5d8a198248067512dbbff2728dc2e35b`.
+
+The corrected algorithm tries direct phase correlation to PAN, retries a weak
+match using gradient magnitude, and then bridges a still-failed band through
+any other band that aligned successfully. It fails closed if no path reaches
+the configured confidence threshold.
 
 It is a geometry-only preprocessing stage. It does not create georeferencing,
 orthorectify a raw image, repair detector defects, or calibrate digital numbers.
@@ -68,6 +73,8 @@ aligned for inspection using the L0 manifest's `BandStartRow` metadata:
   data\balkan1\raw\3408\3408_Raw.tif `
   runtime\aligned\3408_L0_registered.tif `
   --metadata data\balkan1\derived\l1a\3408_L0R_manifest.json `
+  --band-start-axis column `
+  --band-start-row-scale 0.19 `
   --allow-ungeoreferenced
 ```
 
@@ -79,9 +86,9 @@ it because band alignment does not supply the missing Earth-location transform.
 Scene 3408 revealed that delivered `BandStartRow` offsets map to raster
 **columns**, at approximately `0.19` raster pixel per detector-row unit. This
 was measured from the raw raster itself: the broad central correlation peaks
-were BLUE `+234 px`, GREEN `+156 px`, RED `+70 px`, and NIR `-67 px`. With the
-correct seed orientation, the upstream local-field method obtains 19--30
-accepted control tiles per band instead of falling back to weak global peaks.
+were BLUE `+234 px`, GREEN `+156 px`, RED `+70 px`, and NIR `-67 px`. The
+metadata is an approximate search seed; the correlation result, not the seed,
+defines the final shift.
 
 Build the aligned raw raster:
 
@@ -95,15 +102,33 @@ Build the aligned raw raster:
   --allow-ungeoreferenced `
   --measurement-tile-size 512 `
   --global-search-radius 96 `
-  --minimum-confidence 0.20
+  --minimum-confidence 0.25 `
+  --device auto `
+  --warp-tile-size 2048 `
+  --compression zstd
 ```
 
-The experimental adapter then performs line-wise dark-reference subtraction,
-removes the 88 inactive detector columns on each side, averages to 10 m,
-applies the available L1A-to-L1ORT QA affine fits, and constructs an approximate
-rotated UTM grid from ECEF position and midpoint roll/pitch. Detector columns
-are encoded right-of-track, which is the geospatial equivalent of the flip-x
-established by the offline L1A QA:
+`--device auto` selects CUDA when PyTorch can see a CUDA device and otherwise
+falls back to the bounded CPU implementation. The CUDA path batches the four
+direct phase correlations and any bridge candidates, then fuses all four
+moving-band warps into one operation per output tile. Correlation uses a
+bounded central tile rather than materializing the complete raw scene on the
+GPU.
+
+On scene 3086 and an RTX 3060 Laptop GPU, the corrected alignment completed in
+`24.74 s`. Registration, including BLUE's bridge through GREEN, took `3.07 s`;
+the fused warp and GeoTIFF write took `10.09 s`; overviews took `7.46 s`; and
+the output SHA-256 took `2.42 s`. The resulting shifts were BLUE `(38, 100)`
+via GREEN, GREEN `(26, 70)`, RED `(12, 33)`, and NIR `(-5, -30)` in `(dy, dx)`
+order.
+
+The experimental adapter performs dark-reference subtraction on every native
+raw line, removes the 88 inactive detector columns on each side, applies the
+available L1A-to-L1ORT QA affine fits, and warps directly from native 1.5 m raw
+pixels to one north-up 10 m UTM grid. There is no intermediate 10 m image and
+no second analysis-grid resampling. Detector columns are encoded right-of-track,
+which is the geospatial equivalent of the flip-x established by the offline
+L1A QA:
 
 ```powershell
 .\.venv\Scripts\python.exe -m prithvi_payload.balkan_raw_proxy `
@@ -130,45 +155,77 @@ silently enter the operational path:
   --ground-store runtime\raw-experiment\ground
 ```
 
-The improved local experiment on 2026-08-18 produced `DOWNLINK_READY` and:
+Area averaging removes more spatial detail than the supplied L1ORT product.
+That blur was the main cause of cloud false positives: the old path resampled
+twice and reported `48.78%` cloud on scene 3086. The proxy now passes through
+the shared analysis stage without another warp. A nodata-aware unsharp filter
+is applied only to RED/GREEN/NIR at cloud-model input (`sigma=1.2`,
+`amount=4.0`); the stored reflectance and visible image remain untouched. Crop
+inference uses the same idea on all four model bands with the milder
+`amount=1.75` and retains the operational `0.30` threshold when a same-scene
+crop adapter exists. If the offline raw/L1ORT QA has a minimum pairwise band
+correlation below `0.80`, the more conservative profile uses cloud amount
+`5.0` and disables crop sharpening; scene 3215 showed that this avoids bright-
+ground cloud errors and crop undercounting caused by a poorly constrained
+spatial fit.
 
-- central BLUE-to-RED residual: `165.0 px -> 5.8 px`;
-- central GREEN-to-RED residual: `86.0 px -> 5.0 px`;
-- cloud estimate: `5.73%` (qualified L1ORT baseline: `2.09%`);
-- crop over usable pixels: `43.46%` (L1ORT baseline: `41.93%`);
-- condition-analysis coverage: `23.68%` (L1ORT baseline: `22.54%`);
-- condition score: `36.21`, labelled `Moderate anomaly` (L1ORT: `29.25`);
-- warm model pipeline: `9.35 s`; total command including model load: `16.43 s`.
+The delivered attitude/position telemetry initially placed some raw scenes
+several kilometres from their supplied references. A small roll/pitch ground
+offset model fitted across the 11 supplied scene centers now corrects the
+translation before the north-up warp. Its leave-one-scene-out position RMSE is
+`4.20 km`; it is useful for crop location embeddings, but it is not an
+orthorectification or navigation solution.
 
-The raw proxy uses an experimental crop probability threshold of `0.55` and a
-more conservative condition-analysis threshold of `0.65`. These replace the
-parent model's `0.30` threshold only for an explicitly enabled raw proxy. The
-values were selected from a scene-3408 parity sweep: `0.55` gives crop coverage
-close to the qualified L1ORT run while visibly reducing desert false positives.
-They are not validated for a second raw scene and must not be presented as a
-general Balkan-1 threshold calibration.
+Validation results after these changes are:
 
-The experimental web preview also uses a wider combined RGB stretch with
-reduced saturation. The condition overlay has lower opacity and muted colors.
-Both changes are display-only; neither modifies the reflectance passed to the
-cloud or crop models. A before/improved/reference visualization is written to
-`runtime/raw-experiment/3408_raw_v2_v3_l1ort_comparison.png`.
+| Scene | Product | Cloud | Shadow | Crop of usable | Health score |
+|---|---:|---:|---:|---:|---:|
+| 3086 | raw-derived | 30.16% | 9.08% | 1.68% | 0.00 |
+| 3086 | supplied L1ORT | 26.75% | 10.61% | 1.94% | 2.03 |
+| 3215 | raw-derived | 0.21% | 0.00% | 33.78% | 7.32 |
+| 3215 | supplied L1ORT | 0.04% | 0.00% | 35.17% | 6.43 |
+| 3283 | raw-derived | 1.60% | 0.12% | 16.02% | experimental |
+| 3283 | supplied L1ORT | 2.10% | 0.80% | 17.02% | 2.94 |
+| 3370 | raw-derived | 0.01% | 0.00% | 41.26% | 50.10 |
+| 3370 | supplied L1ORT | 0.02% | 0.00% | 40.83% | 53.74 |
+| 3408 | raw-derived | 0.36% | 0.42% | 43.54% | 23.66 |
+| 3408 | supplied L1ORT | 2.09% | 0.94% | 41.93% | 29.25 |
 
-The proxy, calibration, intake, crop plan, and downlink metadata all retain
+Scene 3086 has no same-scene Sentinel crop calibration. Its inherited adapter
+is explicitly marked as an unqualified cross-scene fallback, so the raw proxy
+uses a conservative `0.50` crop/health threshold; this reduces urban false
+positives and matches the equally unqualified L1ORT comparison. It must not be
+treated as a general threshold for calibrated scenes.
+
+The raw preview uses independent 1st-to-99th percentile RGB stretches, low
+saturation, and requires every visible band to be positive. This produces the
+neutral, no-rainbow appearance of `data/band_alignment.png` and hides colored
+nodata fringes. It is display-only. Cloud and crop detail restoration are also
+model-input-only. Render readable result overlays with:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\balkan1\render_pipeline_results.py `
+  runtime\raw-cloud-3086\pipeline-final-working\result.json `
+  runtime\raw-cloud-3086\final-visualizations
+```
+
+The proxy, calibration, intake, crop plan, and downlink metadata retain
 `EXPERIMENTAL_RAW_PROXY` / `UNQUALIFIED_ENGINEERING_EXPERIMENT` provenance.
-The map location is approximate (about 5 km from the supplied reference center
-on scene 3408), and the radiometric QA fits are not an absolute calibration.
-These outputs demonstrate that the software can run from raw-derived bands;
-they are not science-qualified measurements.
+All model pixels in these runs originate from the raw TIFF after alignment;
+the supplied L1ORT files are used only offline to derive/check the currently
+missing absolute radiometric calibration. These outputs are working
+engineering results, not science-qualified measurements.
 
 ## Processing and safety contract
 
 - PAN is the reference and remains band 5, but the cloud and crop models do not
   consume it.
-- Local phase-correlation measurements are fitted to a smooth bilinear field.
-  A deterministic spatial-consensus pass rejects inconsistent control points.
-- A global direct/gradient shift remains the fallback when a local field cannot
-  pass the residual gates.
+- Each moving band first attempts a seeded direct phase correlation to PAN.
+- A weak direct match is retried using gradient magnitude. A still-failed band
+  is tried through every already-aligned non-reference band in deterministic
+  order, and the two accepted shifts are composed.
+- The upstream `0.25` PSR confidence gate is retained; a weak direct peak is not
+  accepted merely because it is the best available peak.
 - Any band that cannot pass alignment fails the complete operation; an unwarped
   band is never silently forwarded.
 - Raster reads and bilinear writes are windowed, avoiding a full-scene dense
@@ -179,27 +236,16 @@ they are not science-qualified measurements.
 
 ## Current qualification boundary
 
-Synthetic tests cover known constant and metadata-seeded shifts, GeoTIFF
-metadata, pipeline intake, calibration inheritance, report tampering, and
-failure behavior. A read-only check on the real `3408_L1ORT` scene found local
-fields for BLUE, GREEN, and RED; NIR selected the documented global-gradient
-fallback.
-
-The real `3408_L1ORT` local acceptance run completed on 2026-08-17:
-
-- alignment product: 1,482,501,587 bytes, produced in 291.93 seconds;
-- pipeline status: `DOWNLINK_READY` / `MVP_READY`;
-- model execution: PyTorch CUDA;
-- post-alignment pipeline: 15.51 seconds;
-- one-shot end to end including model loads: 23.35 seconds;
-- downlink bundle: 688,931 bytes across three files.
+Synthetic tests cover known constant shifts, row- and column-oriented metadata
+seeds, the upstream-style generic bridge, CUDA/CPU parity, GeoTIFF metadata,
+pipeline intake, calibration inheritance, report tampering, and failure
+behavior. The real raw scene-3086 check exercises the bridge path and passes a
+per-band `0.80` correlation gate against the supplied L1ORT image.
 
 This proves local engineering integration, not scientific or Jetson latency
 acceptance. Before replacing an operational input, compare the corrected
 product against manual control points or a trusted reference and rerun
-cloud/crop parity. The five-minute alignment implementation must also be
-optimized or moved outside the time-critical payload path before onboard use.
-The experimental proxy provides an engineering fallback when the operational
-raw orthorectification/geolocation assets are unavailable. A science-qualified
-raw-to-final onboard product still needs the missing camera, terrain, and
-absolute calibration stages.
+cloud/crop parity. The experimental proxy provides an engineering fallback
+when the operational raw orthorectification/geolocation assets are unavailable.
+A science-qualified raw-to-final onboard product still needs the missing
+camera, terrain, and absolute calibration stages.

@@ -11,6 +11,7 @@ from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
+import cv2
 import numpy as np
 import rasterio
 import torch
@@ -112,6 +113,7 @@ def _prepare_semantic_input(
     clip_max: float | None,
     nodata_value: int | float | None,
     strict_positive_rgn: bool,
+    spatial_detail_restoration: dict[str, Any] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, bool]:
     """Prepare native R/G/NIR input with the legacy invalid-pixel semantics."""
     values = np.asarray(raw_image)
@@ -133,6 +135,24 @@ def _prepare_semantic_input(
         upper = np.inf if clip_max is None else float(clip_max)
         np.clip(image_rgn, lower, upper, out=image_rgn)
 
+    if spatial_detail_restoration is not None:
+        sigma = float(spatial_detail_restoration["sigma_pixels"])
+        amount = float(spatial_detail_restoration["amount"])
+        detail_valid = (~invalid) & strict_valid_mask(image_rgn)
+        weight = cv2.GaussianBlur(detail_valid.astype(np.float32), (0, 0), sigma)
+        for channel in range(image_rgn.shape[0]):
+            blurred = cv2.GaussianBlur(
+                np.where(detail_valid, image_rgn[channel], 0.0).astype(np.float32),
+                (0, 0),
+                sigma,
+            )
+            blurred /= np.maximum(weight, np.float32(1e-6))
+            restored = image_rgn[channel] + np.float32(amount) * (
+                image_rgn[channel] - blurred
+            )
+            image_rgn[channel] = np.clip(restored, 1e-6, 1.5)
+        image_rgn[:, ~detail_valid] = 0.0
+
     model_invalid = invalid | ~strict_valid_mask(image_rgn)
     image_rgn[:, model_invalid] = 0.0
     return (
@@ -151,6 +171,7 @@ def _prepare_and_predict_semantic(
     clip_max: float | None,
     nodata_value: int | float | None,
     strict_positive_rgn: bool,
+    spatial_detail_restoration: dict[str, Any] | None = None,
 ) -> tuple[np.ndarray, str, np.ndarray, float, float]:
     """Prepare one cloud input and time only the synchronized model call."""
     preparation_started = time.perf_counter()
@@ -163,6 +184,7 @@ def _prepare_and_predict_semantic(
             clip_max=clip_max,
             nodata_value=nodata_value,
             strict_positive_rgn=strict_positive_rgn,
+            spatial_detail_restoration=spatial_detail_restoration,
         )
         preparation_seconds = time.perf_counter() - preparation_started
         _synchronize_cuda(backend)
@@ -195,6 +217,19 @@ def _prepare_and_predict_semantic(
     )
     if strict_positive_rgn:
         invalid |= ~strict_valid_mask(image[[1, 2, 0]])
+        image[:, invalid] = 0.0
+    if spatial_detail_restoration is not None:
+        image_rgn, restored_invalid, _ = _prepare_semantic_input(
+            raw_image,
+            scale=scale,
+            clip_min=clip_min,
+            clip_max=clip_max,
+            nodata_value=nodata_value,
+            strict_positive_rgn=strict_positive_rgn,
+            spatial_detail_restoration=spatial_detail_restoration,
+        )
+        image[[1, 2, 0]] = image_rgn
+        invalid |= restored_invalid
         image[:, invalid] = 0.0
     preparation_seconds = time.perf_counter() - preparation_started
     _synchronize_cuda(backend)
@@ -453,6 +488,9 @@ def execute_cloud_stage(
                     strict_positive_rgn=bool(
                         config["input"].get("strict_positive_rgn", True)
                     ),
+                    spatial_detail_restoration=plan["input"].get(
+                        "spatial_detail_restoration"
+                    ),
                 )
                 input_preparation_seconds += preparation_elapsed
                 inference_seconds += inference_elapsed
@@ -522,6 +560,9 @@ def execute_cloud_stage(
                             nodata_value=nodata_value,
                             strict_positive_rgn=bool(
                                 config["input"].get("strict_positive_rgn", True)
+                            ),
+                            spatial_detail_restoration=plan["input"].get(
+                                "spatial_detail_restoration"
                             ),
                         )
                         input_preparation_seconds += preparation_elapsed
@@ -679,6 +720,11 @@ def execute_cloud_stage(
             "ensemble_sha256": config["model"].get("expected_sha256"),
         },
         "score_kind": score_kind,
+        "input_preprocessing": {
+            "spatial_detail_restoration": plan["input"].get(
+                "spatial_detail_restoration"
+            )
+        },
         "raster": {
             "width": width,
             "height": height,

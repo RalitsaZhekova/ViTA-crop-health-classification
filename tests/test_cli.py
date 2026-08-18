@@ -137,6 +137,13 @@ def test_balkan_command_exposes_local_alignment_handoff() -> None:
             "runtime/aligned/3408_L1ORT_aligned.tif",
             "--alignment-band-start-axis",
             "column",
+            "--alignment-device",
+            "cuda",
+            "--alignment-warp-tile-size",
+            "1024",
+            "--alignment-compression",
+            "deflate",
+            "--alignment-skip-overviews",
             "--experimental-raw-proxy",
         ]
     )
@@ -145,6 +152,10 @@ def test_balkan_command_exposes_local_alignment_handoff() -> None:
     assert args.alignment_metadata is None
     assert args.alignment_band_order == ("BLUE", "GREEN", "RED", "NIR", "PAN")
     assert args.alignment_band_start_axis == "column"
+    assert args.alignment_device == "cuda"
+    assert args.alignment_warp_tile_size == 1024
+    assert args.alignment_compression == "deflate"
+    assert args.alignment_skip_overviews is True
     assert args.experimental_raw_proxy is True
 
 

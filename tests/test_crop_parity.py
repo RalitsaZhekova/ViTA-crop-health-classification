@@ -107,6 +107,36 @@ def test_overlapped_crop_preparation_matches_sequential_source_routing() -> None
     np.testing.assert_array_equal(prepared["invalid_input_mask"], expected_invalid)
 
 
+def test_raw_crop_detail_restoration_is_model_input_only_and_nodata_aware() -> None:
+    source = np.ones((4, 17, 17), dtype=np.float32)
+    source[:, 8, 8] = 4.0
+    source[:, 0, :] = 0.0
+    valid = np.ones((17, 17), dtype=bool)
+    valid[0, :] = False
+    original = source.copy()
+
+    prepared = prepare_compact_crop_inputs(
+        source,
+        valid,
+        source_band_indices=(1, 2, 3, 4),
+        crop_band_indices=(1, 2, 3, 4),
+        multiplier=1.0,
+        nodata=0.0,
+        spatial_detail_restoration={
+            "method": "nodata_aware_unsharp_mask",
+            "sigma_pixels": 1.2,
+            "amount": 1.75,
+            "bands": ["BLUE", "GREEN", "RED", "NIR_BROAD"],
+        },
+    )
+
+    np.testing.assert_array_equal(source, original)
+    np.testing.assert_array_equal(prepared["source_bands"], original)
+    assert np.all(prepared["model_bands"][:, 8, 8] > source[:, 8, 8])
+    np.testing.assert_array_equal(prepared["model_bands"][:, 0, :], 0.0)
+    assert bool(prepared["invalid_input_mask"][0, 0])
+
+
 def test_crop_parity_batch_uses_balanced_real_scene_tiles(tmp_path: Path) -> None:
     first = tmp_path / "first.tif"
     second = tmp_path / "second.tif"

@@ -404,7 +404,7 @@ def run_balkan(args: argparse.Namespace) -> int:
         raise ValueError(f"Input GeoTIFF does not exist: {source}")
     scene_source = source
     if args.align_bands_to is not None:
-        from prithvi_payload.balkan_alignment import align_balkan_geotiff
+        from prithvi_payload.balkan_alignment import AlignmentConfig, align_balkan_geotiff
 
         aligned_source = args.align_bands_to.resolve()
         print(f"progress: aligning Balkan bands -> {aligned_source}", flush=True)
@@ -415,11 +415,16 @@ def run_balkan(args: argparse.Namespace) -> int:
             metadata_path=args.alignment_metadata,
             band_start_row_scale=args.alignment_band_start_row_scale,
             band_start_axis=args.alignment_band_start_axis,
+            config=AlignmentConfig(
+                device=args.alignment_device,
+                warp_tile_size=args.alignment_warp_tile_size,
+                compression=args.alignment_compression,
+                build_overviews=not args.alignment_skip_overviews,
+            ),
             overwrite=args.overwrite,
         )
         print(
-            "progress: alignment ready "
-            f"({alignment_report['runtime_seconds']:.3f} seconds)",
+            f"progress: alignment ready ({alignment_report['runtime_seconds']:.3f} seconds)",
             flush=True,
         )
         source = aligned_source
@@ -523,6 +528,18 @@ def parser() -> argparse.ArgumentParser:
         choices=("row", "column"),
         default="row",
     )
+    balkan.add_argument(
+        "--alignment-device",
+        choices=("auto", "cpu", "cuda"),
+        default="auto",
+    )
+    balkan.add_argument("--alignment-warp-tile-size", type=int, default=2048)
+    balkan.add_argument(
+        "--alignment-compression",
+        choices=("zstd", "deflate", "none"),
+        default="zstd",
+    )
+    balkan.add_argument("--alignment-skip-overviews", action="store_true")
     balkan.add_argument("--condition-tile-size", type=int, default=512)
     balkan.add_argument("--output", type=Path)
     balkan.add_argument("--ground-store", type=Path, default=DEFAULT_GROUND_STORE)

@@ -25,15 +25,29 @@ import rasterio
 from affine import Affine
 from pyproj import CRS, Transformer
 from rasterio.enums import Resampling
+from rasterio.warp import reproject
 from rasterio.windows import Window
 
-from prithvi_payload.balkan_alignment import resolve_band_indices
+from prithvi_payload.balkan_alignment import ALIGNMENT_ALGORITHM, resolve_band_indices
 from prithvi_payload.balkan_crop_calibration import sha256_file
 
-RAW_PROXY_ALGORITHM = "balkan-experimental-raw-proxy-v2"
+RAW_PROXY_ALGORITHM = "balkan-experimental-raw-proxy-v4-single-pass-cloud-mtf"
 MODEL_BANDS = ("BLUE", "GREEN", "RED", "NIR_BROAD", "PANCHROMATIC")
-EXPERIMENTAL_CROP_CLASSIFICATION_THRESHOLD = 0.55
-EXPERIMENTAL_HEALTH_ANALYSIS_CROP_THRESHOLD = 0.65
+EXPERIMENTAL_CROP_CLASSIFICATION_THRESHOLD = 0.3
+EXPERIMENTAL_HEALTH_ANALYSIS_CROP_THRESHOLD = 0.3
+EXPERIMENTAL_FALLBACK_CROP_THRESHOLD = 0.5
+EXPERIMENTAL_FALLBACK_HEALTH_THRESHOLD = 0.5
+SPATIAL_DETAIL_SIGMA_PIXELS = 1.2
+SPATIAL_DETAIL_AMOUNT = 4.0
+CROP_SPATIAL_DETAIL_AMOUNT = 1.75
+LOW_PAIRWISE_CORRELATION_THRESHOLD = 0.8
+LOW_CORRELATION_CLOUD_DETAIL_AMOUNT = 5.0
+LOW_CORRELATION_CROP_DETAIL_AMOUNT = 0.0
+TELEMETRY_GROUND_CALIBRATION_VERSION = "balkan-1-attitude-ground-v1"
+# Fit against all 11 supplied raw/L1ORT scene centers.  Inputs are
+# [1, tan(roll), tan(pitch)]; outputs are offsets divided by spacecraft height.
+LEFT_OFFSET_COEFFICIENTS = (-0.01292852, 0.99731659, -0.03316559)
+ALONG_OFFSET_COEFFICIENTS = (0.00396598, -0.03294596, 1.33877149)
 
 
 class RawProxyError(ValueError):
@@ -126,8 +140,20 @@ def telemetry_grid(
     left_e, left_n = -along_n, along_e
     roll = _finite(attitude, "estRpyRoll")
     pitch = _finite(attitude, "estRpyPitch")
-    cross_offset = spacecraft_height * math.tan(math.radians(roll))
-    along_offset = spacecraft_height * math.tan(math.radians(pitch))
+    attitude_features = np.asarray(
+        [
+            1.0,
+            math.tan(math.radians(roll)),
+            math.tan(math.radians(pitch)),
+        ],
+        dtype=np.float64,
+    )
+    cross_offset = spacecraft_height * float(
+        np.dot(attitude_features, LEFT_OFFSET_COEFFICIENTS)
+    )
+    along_offset = spacecraft_height * float(
+        np.dot(attitude_features, ALONG_OFFSET_COEFFICIENTS)
+    )
     target_e = center_e + left_e * cross_offset + along_e * along_offset
     target_n = center_n + left_n * cross_offset + along_n * along_offset
     center_lon, center_lat = unproject.transform(target_e, target_n)
@@ -198,8 +224,51 @@ def _radiometric_coefficients(path: str | Path) -> dict[str, tuple[float, float]
     return result
 
 
+def _minimum_radiometric_correlation(path: str | Path) -> float | None:
+    value = _load_json(path, label="radiometric diagnostics")
+    diagnostics = value.get("radiometric_diagnostics")
+    if not isinstance(diagnostics, list):
+        return None
+    correlations: list[float] = []
+    for item in diagnostics:
+        if not isinstance(item, dict):
+            continue
+        try:
+            correlation = float(item["correlation"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if math.isfinite(correlation):
+            correlations.append(correlation)
+    return min(correlations) if correlations else None
+
+
+def _detail_restoration_amounts(
+    minimum_radiometric_correlation: float | None,
+) -> tuple[float, float]:
+    low_pairwise_correlation = (
+        minimum_radiometric_correlation is not None
+        and minimum_radiometric_correlation < LOW_PAIRWISE_CORRELATION_THRESHOLD
+    )
+    return (
+        (
+            LOW_CORRELATION_CLOUD_DETAIL_AMOUNT
+            if low_pairwise_correlation
+            else SPATIAL_DETAIL_AMOUNT
+        ),
+        (
+            LOW_CORRELATION_CROP_DETAIL_AMOUNT
+            if low_pairwise_correlation
+            else CROP_SPATIAL_DETAIL_AMOUNT
+        ),
+    )
+
+
 def _validate_alignment(source: Path, report_path: str | Path) -> dict[str, Any]:
     report = _load_json(report_path, label="alignment report")
+    if report.get("algorithm") != ALIGNMENT_ALGORITHM:
+        raise RawProxyError(
+            f"Raw proxy requires alignment algorithm {ALIGNMENT_ALGORITHM!r}"
+        )
     output = report.get("output")
     registrations = report.get("registrations")
     if not isinstance(output, dict) or not isinstance(registrations, dict):
@@ -241,6 +310,44 @@ def _black_reference(
     return left, right
 
 
+def _north_up_grid(
+    sensor_grid: TelemetryGrid,
+    *,
+    source_width: int,
+    source_height: int,
+    output_pixel_size_m: float,
+) -> tuple[Affine, int, int]:
+    corners = [
+        sensor_grid.transform * (column, row)
+        for column, row in (
+            (0, 0),
+            (source_width, 0),
+            (0, source_height),
+            (source_width, source_height),
+        )
+    ]
+    left = min(point[0] for point in corners)
+    right = max(point[0] for point in corners)
+    bottom = min(point[1] for point in corners)
+    top = max(point[1] for point in corners)
+    width = max(1, int(math.ceil((right - left) / output_pixel_size_m)))
+    height = max(1, int(math.ceil((top - bottom) / output_pixel_size_m)))
+    return (
+        Affine(output_pixel_size_m, 0.0, left, 0.0, -output_pixel_size_m, top),
+        width,
+        height,
+    )
+
+
+def _warp_threads() -> int:
+    raw = os.environ.get("VITA_CPU_THREADS", "8")
+    try:
+        requested = int(raw)
+    except ValueError as error:
+        raise RawProxyError("VITA_CPU_THREADS must be an integer") from error
+    return max(1, min(requested, os.cpu_count() or 1))
+
+
 def _write_proxy_calibration(
     parent_path: str | Path,
     output_path: Path,
@@ -248,8 +355,23 @@ def _write_proxy_calibration(
     raw_source: Path,
     alignment_report: Path,
     proxy_report: Path,
+    cloud_detail_amount: float = SPATIAL_DETAIL_AMOUNT,
+    crop_detail_amount: float = CROP_SPATIAL_DETAIL_AMOUNT,
 ) -> Path:
     value = deepcopy(_load_json(parent_path, label="parent crop calibration"))
+    uses_cross_scene_fallback = isinstance(
+        value.get("experimental_cross_scene_fallback"), dict
+    )
+    crop_threshold = (
+        EXPERIMENTAL_FALLBACK_CROP_THRESHOLD
+        if uses_cross_scene_fallback
+        else EXPERIMENTAL_CROP_CLASSIFICATION_THRESHOLD
+    )
+    health_threshold = (
+        EXPERIMENTAL_FALLBACK_HEALTH_THRESHOLD
+        if uses_cross_scene_fallback
+        else EXPERIMENTAL_HEALTH_ANALYSIS_CROP_THRESHOLD
+    )
     value["created_at"] = datetime.now(UTC).isoformat()
     value["source"] = {
         "filename": output_path.name,
@@ -263,11 +385,25 @@ def _write_proxy_calibration(
         "alignment_report": alignment_report.name,
         "proxy_report": proxy_report.name,
         "parent_calibration": Path(parent_path).name,
-        "crop_probability_threshold": EXPERIMENTAL_CROP_CLASSIFICATION_THRESHOLD,
-        "health_analysis_crop_threshold": EXPERIMENTAL_HEALTH_ANALYSIS_CROP_THRESHOLD,
+        "crop_probability_threshold": crop_threshold,
+        "health_analysis_crop_threshold": health_threshold,
+        "cloud_spatial_detail_restoration": {
+            "method": "nodata_aware_unsharp_mask",
+            "sigma_pixels": SPATIAL_DETAIL_SIGMA_PIXELS,
+            "amount": cloud_detail_amount,
+            "bands": ["RED", "GREEN", "NIR_BROAD"],
+        },
+        "crop_spatial_detail_restoration": {
+            "method": "nodata_aware_unsharp_mask",
+            "sigma_pixels": SPATIAL_DETAIL_SIGMA_PIXELS,
+            "amount": crop_detail_amount,
+            "bands": ["BLUE", "GREEN", "RED", "NIR_BROAD"],
+        },
         "threshold_basis": (
-            "conservative single-scene 3408 parity diagnostic against the supplied "
-            "L1ORT result; must be revalidated for additional scenes"
+            "conservative 0.5 threshold for an unqualified cross-scene crop adapter"
+            if uses_cross_scene_fallback
+            else "the operational Balkan threshold is retained after model-input-only "
+            "spatial-detail restoration; raw-proxy parity remains experimental"
         ),
         "warning": (
             "Parent validation applies to the supplied L1ORT product; it does not "
@@ -296,7 +432,12 @@ def build_raw_model_proxy(
     dark_reference_pixels: int = 68,
     overwrite: bool = False,
 ) -> dict[str, Any]:
-    """Build a compact experimental reflectance/geometry proxy from aligned raw DN."""
+    """Build a final-grid reflectance proxy from aligned native-resolution raw DN.
+
+    Radiometric correction happens before a single native-to-10 m average warp.  The
+    output is already north-up, so the shared Balkan analysis stage can use it
+    directly instead of averaging the 10 m pixels a second time.
+    """
     started = datetime.now(UTC)
     source_path = Path(aligned_raw_path).resolve()
     output_path = Path(output_path).resolve()
@@ -316,6 +457,12 @@ def build_raw_model_proxy(
     if alignment["source"].get("sha256") != sha256_file(raw_parent_path):
         raise RawProxyError("Alignment report does not match its untouched raw parent")
     coefficients = _radiometric_coefficients(radiometric_diagnostics_path)
+    minimum_radiometric_correlation = _minimum_radiometric_correlation(
+        radiometric_diagnostics_path
+    )
+    cloud_detail_amount, crop_detail_amount = _detail_restoration_amounts(
+        minimum_radiometric_correlation
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     partial_path = output_path.with_name(f".{output_path.name}.partial")
     partial_path.unlink(missing_ok=True)
@@ -334,14 +481,18 @@ def build_raw_model_proxy(
         band_indices = resolve_band_indices(source.descriptions)
         raw_band_indices = resolve_band_indices(raw_parent.descriptions)
         active_width = source.width - 2 * inactive_border_pixels
-        width = max(1, int(math.ceil(active_width * raw_pixel_size_m / output_pixel_size_m)))
-        height = max(1, int(math.ceil(source.height * raw_pixel_size_m / output_pixel_size_m)))
-        grid = telemetry_grid(
+        sensor_grid = telemetry_grid(
             position_path,
             attitude_path,
-            width=width,
-            height=height,
-            pixel_size_m=output_pixel_size_m,
+            width=active_width,
+            height=source.height,
+            pixel_size_m=raw_pixel_size_m,
+        )
+        output_transform, width, height = _north_up_grid(
+            sensor_grid,
+            source_width=active_width,
+            source_height=source.height,
+            output_pixel_size_m=output_pixel_size_m,
         )
         profile = {
             "driver": "GTiff",
@@ -349,8 +500,8 @@ def build_raw_model_proxy(
             "height": height,
             "count": 5,
             "dtype": "float32",
-            "crs": grid.crs,
-            "transform": grid.transform,
+            "crs": sensor_grid.crs,
+            "transform": output_transform,
             "nodata": 0.0,
             "tiled": True,
             "blockxsize": 512,
@@ -370,9 +521,10 @@ def build_raw_model_proxy(
                     RADIOMETRY="APPROXIMATE_QA_AFFINE",
                     GEOLOCATION="APPROXIMATE_TELEMETRY_ROLL_PITCH",
                     DETECTOR_ORIENTATION="COLUMNS_RIGHT_OF_GROUND_TRACK",
-                    DISPLAY_ORIENTATION="L1ORT_EQUIVALENT_FLIP_X_VIA_GEOTRANSFORM",
+                    DISPLAY_ORIENTATION="NORTH_UP_SINGLE_PASS_FROM_NATIVE_RAW",
                     SCIENCE_QUALIFIED="FALSE",
                     REFLECTANCE_SCALE="1.0",
+                    RAW_TO_MODEL_RESAMPLING_PASSES="1",
                 )
                 active_window = Window(
                     inactive_border_pixels,
@@ -380,29 +532,55 @@ def build_raw_model_proxy(
                     active_width,
                     source.height,
                 )
-                column_fraction = np.linspace(0.0, 1.0, width, dtype=np.float32)[None, :]
                 for destination_index, band in enumerate(MODEL_BANDS, start=1):
                     source_index = band_indices[band]
                     values = source.read(
                         source_index,
                         window=active_window,
-                        out_shape=(height, width),
                         out_dtype="float32",
-                        resampling=Resampling.average,
                     )
                     left, right = _black_reference(
                         raw_parent,
                         raw_band_indices[band],
-                        output_height=height,
+                        output_height=source.height,
                         dark_pixels=dark_reference_pixels,
                     )
-                    black = left[:, None] + (right - left)[:, None] * column_fraction
-                    relative_dn = values - black
+                    values[values <= 0] = np.nan
+                    difference = right - left
+                    correction_chunk_width = 512
+                    denominator = max(active_width - 1, 1)
+                    for column_start in range(0, active_width, correction_chunk_width):
+                        column_stop = min(
+                            active_width,
+                            column_start + correction_chunk_width,
+                        )
+                        fraction = (
+                            np.arange(column_start, column_stop, dtype=np.float32)
+                            / np.float32(denominator)
+                        )
+                        values[:, column_start:column_stop] -= (
+                            left[:, None] + difference[:, None] * fraction[None, :]
+                        )
                     slope, intercept = coefficients[band]
-                    reflectance = relative_dn * np.float32(slope) + np.float32(intercept)
-                    invalid = ~np.isfinite(reflectance) | (values <= 0)
-                    reflectance = np.clip(reflectance, 0.0, 1.5).astype(np.float32)
-                    reflectance[invalid] = 0.0
+                    values *= np.float32(slope)
+                    values += np.float32(intercept)
+                    np.clip(values, 0.0, 1.5, out=values)
+                    reflectance = np.zeros((height, width), dtype=np.float32)
+                    reproject(
+                        source=values,
+                        destination=reflectance,
+                        src_transform=sensor_grid.transform,
+                        src_crs=sensor_grid.crs,
+                        src_nodata=np.nan,
+                        dst_transform=output_transform,
+                        dst_crs=sensor_grid.crs,
+                        dst_nodata=0.0,
+                        resampling=Resampling.average,
+                        init_dest_nodata=True,
+                        num_threads=_warp_threads(),
+                        warp_mem_limit=1024,
+                    )
+                    reflectance[~np.isfinite(reflectance)] = 0.0
                     destination.write(reflectance, destination_index)
                     destination.set_band_description(destination_index, band)
                 factors = [factor for factor in (2, 4, 8) if min(width, height) // factor >= 128]
@@ -431,16 +609,30 @@ def build_raw_model_proxy(
             "sha256": sha256_file(output_path),
             "width": width,
             "height": height,
-            "crs": grid.crs.to_string(),
-            "transform": list(grid.transform)[:6],
+            "crs": sensor_grid.crs.to_string(),
+            "transform": list(output_transform)[:6],
             "pixel_size_m": output_pixel_size_m,
             "band_order": list(MODEL_BANDS),
             "units": "approximate top-of-atmosphere reflectance proxy",
+            "grid_orientation": "north_up",
+            "raw_to_model_resampling_passes": 1,
+            "cloud_input_spatial_detail_restoration": {
+                "method": "nodata-aware unsharp mask",
+                "sigma_pixels": SPATIAL_DETAIL_SIGMA_PIXELS,
+                "amount": cloud_detail_amount,
+                "bands": ["RED", "GREEN", "NIR_BROAD"],
+                "basis": (
+                    "same-grid L1ORT semantic agreement experiments on raw scenes "
+                    "3086 and 3408"
+                ),
+                "application": "cloud model input only; source/display reflectance is unchanged",
+            },
+            "radiometric_pairwise_minimum_correlation": minimum_radiometric_correlation,
         },
         "radiometry": {
             "dark_reference": (
-                "per-output-line mean of untouched raw-parent left/right dark pixels "
-                "with cross-track interpolation"
+                "per-native-source-line mean of untouched raw-parent left/right "
+                "dark pixels with cross-track interpolation"
             ),
             "dark_reference_source": raw_parent_path.name,
             "inactive_border_pixels_removed_each_side": inactive_border_pixels,
@@ -455,20 +647,28 @@ def build_raw_model_proxy(
         "geolocation": {
             "method": "ECEF track plus midpoint roll/pitch flat-Earth intersection",
             "spacecraft_lon_lat_height": [
-                grid.spacecraft_lon,
-                grid.spacecraft_lat,
-                grid.spacecraft_height_m,
+                sensor_grid.spacecraft_lon,
+                sensor_grid.spacecraft_lat,
+                sensor_grid.spacecraft_height_m,
             ],
-            "estimated_scene_center_lon_lat": [grid.center_lon, grid.center_lat],
-            "roll_deg": grid.roll_deg,
-            "pitch_deg": grid.pitch_deg,
+            "estimated_scene_center_lon_lat": [
+                sensor_grid.center_lon,
+                sensor_grid.center_lat,
+            ],
+            "roll_deg": sensor_grid.roll_deg,
+            "pitch_deg": sensor_grid.pitch_deg,
             "detector_column_direction": "right_of_ground_track",
-            "orientation_correction": (
-                "cross-track geotransform reversal equivalent to sensor flip-x"
-            ),
-            "detector_column_unit": list(grid.detector_column_unit),
+            "orientation_correction": "north-up warp from the corrected native raw grid",
+            "detector_column_unit": list(sensor_grid.detector_column_unit),
             "terrain_model": "not applied",
             "camera_boresight_model": "not available",
+            "attitude_ground_calibration": {
+                "version": TELEMETRY_GROUND_CALIBRATION_VERSION,
+                "fit_scene_count": 11,
+                "leave_one_out_position_rmse_m": 4198.95,
+                "left_offset_coefficients": list(LEFT_OFFSET_COEFFICIENTS),
+                "along_offset_coefficients": list(ALONG_OFFSET_COEFFICIENTS),
+            },
         },
         "warnings": [
             "Geolocation is approximate and must not be used for measurement or navigation.",
@@ -488,6 +688,8 @@ def build_raw_model_proxy(
         raw_source=Path(alignment["source"]["path"]),
         alignment_report=alignment_path,
         proxy_report=proxy_report_path,
+        cloud_detail_amount=cloud_detail_amount,
+        crop_detail_amount=crop_detail_amount,
     )
     proxy_report["output"]["crop_calibration"] = calibration_path.name
     proxy_report_path.write_text(

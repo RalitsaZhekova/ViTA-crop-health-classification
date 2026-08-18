@@ -37,7 +37,7 @@ MINIMUM_GRID_CELL_PIXELS = 32
 RGB_WEBP_QUALITY = 82
 RGB_WEBP_METHOD = int(os.environ.get("VITA_WEBP_METHOD", "3"))
 PNG_COMPRESSION_LEVEL = int(os.environ.get("VITA_PNG_COMPRESSION_LEVEL", "4"))
-EXPERIMENTAL_RAW_RGB_SATURATION = 0.68
+EXPERIMENTAL_RAW_RGB_SATURATION = 0.20
 EXPERIMENTAL_RAW_RGB_PERCENTILES = (1.0, 99.0)
 EXPERIMENTAL_RAW_OVERLAY_ALPHA = 150
 EXPERIMENTAL_RAW_OVERLAY_SATURATION = 0.72
@@ -101,6 +101,7 @@ def _stretch_rgb(
     channel_limits: list[list[float]] | None = None,
     percentiles: tuple[float, float] = (2.0, 98.0),
     saturation: float = 1.0,
+    require_all_positive: bool = False,
 ) -> np.ndarray:
     if len(percentiles) != 2 or not 0.0 <= percentiles[0] < percentiles[1] <= 100.0:
         raise ValueError("RGB percentiles must be an increasing pair within 0..100")
@@ -118,9 +119,12 @@ def _stretch_rgb(
         return np.clip(luminance + saturation * (scaled - luminance), 0.0, 1.0)
 
     rgb = np.moveaxis(values, 0, -1).astype(np.float32, copy=False)
+    finite = np.all(np.isfinite(rgb), axis=-1)
+    valid = finite & (
+        np.all(rgb > 0, axis=-1) if require_all_positive else np.any(rgb != 0, axis=-1)
+    )
     if channelwise:
         output = np.zeros(rgb.shape, dtype=np.uint8)
-        valid = np.all(np.isfinite(rgb), axis=-1) & np.any(rgb != 0, axis=-1)
         for channel in range(rgb.shape[-1]):
             samples = rgb[..., channel][valid]
             if not samples.size:
@@ -134,13 +138,13 @@ def _stretch_rgb(
             if high <= low:
                 high = low + 1.0
             scaled = np.clip((rgb[..., channel] - low) / (high - low), 0.0, 1.0)
+            scaled = np.nan_to_num(scaled, nan=0.0, posinf=1.0, neginf=0.0)
             output[..., channel] = np.round(255.0 * scaled).astype(np.uint8)
         if saturation != 1.0:
             adjusted = adjust_saturation(output.astype(np.float32) / 255.0)
             output = np.round(255.0 * adjusted).astype(np.uint8)
         output[~valid] = 0
         return output
-    valid = np.all(np.isfinite(rgb), axis=-1) & np.any(rgb != 0, axis=-1)
     samples = rgb[valid]
     if not samples.size:
         return np.zeros(rgb.shape, dtype=np.uint8)
@@ -243,7 +247,7 @@ def prepare_rgb_preview(
             source.height,
             maximum_dimension,
         )
-        if calibrated_balkan:
+        if calibrated_balkan and not experimental_raw_display:
             rgb = _calibrated_balkan_rgb(
                 source,
                 mapping=mapping,
@@ -264,10 +268,19 @@ def prepare_rgb_preview(
     stretch_started = time.perf_counter()
     preview = _stretch_rgb(
         rgb,
-        channelwise=sensor == "balkan-1" and not calibrated_balkan,
-        channel_limits=channel_limits,
+        # The raw proxy bands have different offsets and dynamic ranges even
+        # after the engineering spectral curves. A combined stretch lets the
+        # strongest channel dominate and creates a green cast that is absent
+        # from the corrected reference imagery. Stretch each raw-proxy RGB
+        # channel independently for a neutral, geometry-focused display.
+        channelwise=(
+            sensor == "balkan-1"
+            and (not calibrated_balkan or experimental_raw_display)
+        ),
+        channel_limits=None if experimental_raw_display else channel_limits,
         percentiles=(EXPERIMENTAL_RAW_RGB_PERCENTILES if experimental_raw_display else (2.0, 98.0)),
         saturation=(EXPERIMENTAL_RAW_RGB_SATURATION if experimental_raw_display else 1.0),
+        require_all_positive=experimental_raw_display,
     )
     return {
         "pixels": preview,
@@ -758,14 +771,15 @@ def build_downlink_bundle(
             source.width, source.height, max_image_dimension
         )
         spectral_adapter = condition_report.get("radiometry", {}).get("spectral_adapter")
-        calibrated_balkan_display = (
+        has_balkan_calibration = (
             use_shared_analysis
             and isinstance(spectral_adapter, dict)
             and spectral_adapter.get("mode") == ADAPTER_MODE
         )
-        experimental_raw_display = calibrated_balkan_display and isinstance(
+        experimental_raw_display = has_balkan_calibration and isinstance(
             spectral_adapter.get("experimental_raw_proxy"), dict
         )
+        calibrated_balkan_display = has_balkan_calibration and not experimental_raw_display
         overlay_alpha = EXPERIMENTAL_RAW_OVERLAY_ALPHA if experimental_raw_display else 205
         overlay_saturation = (
             EXPERIMENTAL_RAW_OVERLAY_SATURATION if experimental_raw_display else 1.0
@@ -1016,8 +1030,8 @@ def build_downlink_bundle(
             "rgb_display": {
                 "input_values_modified": calibrated_balkan_display,
                 "mode": (
-                    "experimental raw-proxy Sentinel calibration, combined RGB "
-                    "1-99% stretch, and reduced-saturation preview"
+                    "experimental raw-proxy reflectance, per-channel RGB 1-99% "
+                    "stretch, and reduced-saturation preview"
                     if experimental_raw_display
                     else "validated Balkan-1 to Sentinel calibration and combined RGB "
                     "2-98% display stretch"

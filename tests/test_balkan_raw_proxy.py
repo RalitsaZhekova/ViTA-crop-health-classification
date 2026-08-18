@@ -7,7 +7,14 @@ from pathlib import Path
 import numpy as np
 import rasterio
 from prithvi_payload.balkan_crop_calibration import sha256_file
-from prithvi_payload.balkan_raw_proxy import build_raw_model_proxy, telemetry_grid
+from prithvi_payload.balkan_raw_proxy import (
+    RAW_PROXY_ALGORITHM,
+    TELEMETRY_GROUND_CALIBRATION_VERSION,
+    _detail_restoration_amounts,
+    _write_proxy_calibration,
+    build_raw_model_proxy,
+    telemetry_grid,
+)
 from pyproj import Transformer
 
 
@@ -42,6 +49,12 @@ def test_telemetry_grid_is_rotated_and_projected(tmp_path: Path) -> None:
     assert 32 < grid.center_lat < 34
 
 
+def test_low_pairwise_radiometric_correlation_uses_conservative_detail() -> None:
+    assert _detail_restoration_amounts(None) == (4.0, 1.75)
+    assert _detail_restoration_amounts(0.8) == (4.0, 1.75)
+    assert _detail_restoration_amounts(0.79) == (5.0, 0.0)
+
+
 def test_build_raw_model_proxy_marks_every_approximation(tmp_path: Path) -> None:
     source = tmp_path / "raw-aligned.tif"
     width = height = 64
@@ -71,6 +84,7 @@ def test_build_raw_model_proxy_marks_every_approximation(tmp_path: Path) -> None
     alignment.write_text(
         json.dumps(
             {
+                "algorithm": "balkan-pan-seeded-global-bridge-v1",
                 "source": {"path": str(source), "sha256": source_hash},
                 "output": {
                     "path": str(source),
@@ -100,6 +114,7 @@ def test_build_raw_model_proxy_marks_every_approximation(tmp_path: Path) -> None
                         "band": band,
                         "diagnostic_affine_slope": 0.0001,
                         "diagnostic_affine_intercept": 0.02,
+                        "correlation": 0.9,
                     }
                     for band in ("BLUE", "GREEN", "RED", "NIR", "PAN")
                 ]
@@ -134,6 +149,9 @@ def test_build_raw_model_proxy_marks_every_approximation(tmp_path: Path) -> None
     assert report["status"] == "UNQUALIFIED_ENGINEERING_EXPERIMENT"
     assert report["radiometry"]["column_fixed_pattern_correction"] == "not applied"
     assert report["geolocation"]["terrain_model"] == "not applied"
+    assert report["geolocation"]["attitude_ground_calibration"]["version"] == (
+        TELEMETRY_GROUND_CALIBRATION_VERSION
+    )
     with rasterio.open(output) as result:
         assert result.crs.to_epsg() == 32612
         assert result.descriptions == (
@@ -145,10 +163,62 @@ def test_build_raw_model_proxy_marks_every_approximation(tmp_path: Path) -> None
         )
         assert result.tags()["SCIENCE_QUALIFIED"] == "FALSE"
         assert result.tags()["DETECTOR_ORIENTATION"] == ("COLUMNS_RIGHT_OF_GROUND_TRACK")
-        assert np.all(result.read(1) > 0)
+        assert result.tags()["RAW_PROXY_ALGORITHM"] == RAW_PROXY_ALGORITHM
+        assert result.tags()["RAW_TO_MODEL_RESAMPLING_PASSES"] == "1"
+        assert result.transform.b == 0
+        assert result.transform.d == 0
+        assert result.transform.a == 10
+        assert result.transform.e == -10
+        assert np.any(result.read(1) > 0)
+        assert np.any(result.read(1) == 0)
+    assert report["output"]["grid_orientation"] == "north_up"
+    assert report["output"]["raw_to_model_resampling_passes"] == 1
+    assert report["output"]["cloud_input_spatial_detail_restoration"]["amount"] == 4.0
     calibration = json.loads(
         output.with_name("proxy.crop_calibration.json").read_text(encoding="utf-8")
     )
     assert calibration["experimental_raw_proxy"]["status"] == ("UNQUALIFIED_ENGINEERING_EXPERIMENT")
-    assert calibration["experimental_raw_proxy"]["crop_probability_threshold"] == 0.55
-    assert calibration["experimental_raw_proxy"]["health_analysis_crop_threshold"] == 0.65
+    assert calibration["experimental_raw_proxy"]["crop_probability_threshold"] == 0.3
+    assert calibration["experimental_raw_proxy"]["health_analysis_crop_threshold"] == 0.3
+    assert (
+        calibration["experimental_raw_proxy"]["cloud_spatial_detail_restoration"]["amount"]
+        == 4.0
+    )
+    assert (
+        calibration["experimental_raw_proxy"]["crop_spatial_detail_restoration"][
+            "amount"
+        ]
+        == 1.75
+    )
+
+
+def test_cross_scene_crop_fallback_uses_conservative_threshold(tmp_path: Path) -> None:
+    parent = tmp_path / "parent.json"
+    parent.write_text(
+        json.dumps(
+            {
+                "experimental_cross_scene_fallback": {
+                    "status": "UNQUALIFIED_ENGINEERING_FALLBACK"
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    output = tmp_path / "proxy.tif"
+    output.write_bytes(b"proxy")
+    report = tmp_path / "proxy.raw_proxy.json"
+    report.write_text("{}", encoding="utf-8")
+    alignment = tmp_path / "proxy.alignment.json"
+    alignment.write_text("{}", encoding="utf-8")
+
+    calibration_path = _write_proxy_calibration(
+        parent,
+        output,
+        raw_source=tmp_path / "raw.tif",
+        alignment_report=alignment,
+        proxy_report=report,
+    )
+    calibration = json.loads(calibration_path.read_text(encoding="utf-8"))
+    experimental = calibration["experimental_raw_proxy"]
+    assert experimental["crop_probability_threshold"] == 0.5
+    assert experimental["health_analysis_crop_threshold"] == 0.5

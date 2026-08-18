@@ -257,6 +257,16 @@ def run_scene(
                         if isinstance(calibration_source_path, str)
                         else None
                     ),
+                    spatial_detail_restoration=(
+                        spectral_adapter.get("experimental_raw_proxy", {}).get(
+                            "crop_spatial_detail_restoration"
+                        )
+                        if isinstance(spectral_adapter, dict)
+                        and isinstance(
+                            spectral_adapter.get("experimental_raw_proxy"), dict
+                        )
+                        else None
+                    ),
                 )
 
             compact_crop_preparer = launch_crop_preparation
