@@ -179,3 +179,22 @@ def test_raw_compose_cannot_replace_operational_payload() -> None:
     assert "$OPERATIONAL_ROOT/runtime/raw-payload" in runner
     assert "docker compose down" not in runner
     assert "docker compose stop" not in runner
+
+
+def test_warm_raw_service_is_separate_and_uses_read_only_operational_assets() -> None:
+    project = Path(__file__).resolve().parents[1]
+    compose = yaml.safe_load(
+        (project / "deploy" / "compose.payload.raw-service.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    service = compose["services"]["raw-payload"]
+
+    assert compose["name"] == "vita-payload-raw-service"
+    assert service["restart"] == "unless-stopped"
+    assert service["ports"] == ["127.0.0.1:${VITA_RAW_PAYLOAD_PORT:-8091}:8091"]
+    assert any(volume.endswith(":/data:ro") for volume in service["volumes"])
+    assert any(volume.endswith(":/models:ro") for volume in service["volumes"])
+    assert any(volume.endswith(":/engine-cache:ro") for volume in service["volumes"])
+    assert service["environment"]["VITA_CROP_BACKEND"] == "tensorrt"
+    assert service["environment"]["VITA_CLOUD_BACKEND"] == "tensorrt"

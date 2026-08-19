@@ -251,6 +251,7 @@
             <select id="analysis-sensor" name="sensor">
               <option value="sentinel-2">Sentinel-2</option>
               <option value="balkan-1">Balkan-1</option>
+              <option value="balkan-1-raw">Balkan-1 raw</option>
             </select>
           </label>
           <label>
@@ -259,9 +260,9 @@
             <small>Use letters, numbers, dashes or underscores.</small>
           </label>
           <label>
-            <span>Payload input path <em>optional</em></span>
+            <span id="analysis-input-label">Payload input path <em>optional</em></span>
             <input id="analysis-input" name="input_path" maxlength="512" placeholder="sentinel2">
-            <small>Relative to the payload data folder. Leave blank for the demo input.</small>
+            <small id="analysis-input-help">Relative to the payload data folder. Leave blank for the demo input.</small>
           </label>
           <label id="image-field">
             <span>Image filename <em>optional</em></span>
@@ -288,6 +289,6 @@
     </dialog>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="/static/app.js?v=seasonal-baseline-1" defer></script>
+    <script src="/static/app.js?v=raw-analysis-1" defer></script>
   </body>
 </html>

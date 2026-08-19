@@ -38,8 +38,8 @@ class PipelineLaunch:
             raise PipelineLaunchError("The analysis request contains unsupported fields.")
 
         sensor = payload.get("sensor")
-        if sensor not in {"sentinel-2", "balkan-1"}:
-            raise PipelineLaunchError("Choose Sentinel-2 or Balkan-1.")
+        if sensor not in {"sentinel-2", "balkan-1", "balkan-1-raw"}:
+            raise PipelineLaunchError("Choose Sentinel-2, Balkan-1, or Balkan-1 raw.")
         region_id = payload.get("region_id")
         if not isinstance(region_id, str) or not SAFE_ID.fullmatch(region_id):
             raise PipelineLaunchError(
@@ -48,8 +48,10 @@ class PipelineLaunch:
 
         input_path = _optional_relative_path(payload.get("input_path"), name="Input path")
         image = _optional_relative_path(payload.get("image"), name="Image", filename_only=True)
-        if sensor == "balkan-1" and image:
+        if sensor != "sentinel-2" and image:
             raise PipelineLaunchError("A separate image file is only used with Sentinel-2 folders.")
+        if sensor == "balkan-1-raw" and input_path and not SAFE_ID.fullmatch(input_path):
+            raise PipelineLaunchError("Balkan-1 raw input must be a scene ID such as 3408.")
         return cls(sensor=sensor, region_id=region_id, input_path=input_path, image=image)
 
 
@@ -103,10 +105,25 @@ class PipelineRunManager:
                 "available": False,
                 "reason": "PowerShell is unavailable in this dashboard environment.",
             }
+        sensors = ["sentinel-2", "balkan-1"]
+        raw_target = os.environ.get("VITA_RAW_SSH_TARGET", "").strip()
+        raw_available = bool(
+            re.fullmatch(r"[A-Za-z0-9._-]+@[A-Za-z0-9._-]+", raw_target)
+        )
+        if raw_available:
+            sensors.append("balkan-1-raw")
         return {
             "available": True,
             "reason": None,
-            "sensors": ["sentinel-2", "balkan-1"],
+            "sensors": sensors,
+            "raw": {
+                "available": raw_available,
+                "reason": (
+                    None
+                    if raw_available
+                    else "Set VITA_RAW_SSH_TARGET to enable warm Jetson raw analysis."
+                ),
+            },
         }
 
     def current(self) -> dict[str, Any] | None:
@@ -117,11 +134,20 @@ class PipelineRunManager:
         capability = self.capability()
         if not capability["available"]:
             raise PipelineLaunchError(str(capability["reason"]))
+        if launch.sensor not in capability.get("sensors", []):
+            raw = capability.get("raw", {})
+            raise PipelineLaunchError(
+                str(raw.get("reason") or "The selected sensor is unavailable.")
+            )
 
         with self._lock:
             if self._current and self._current["status"] in {"queued", "running"}:
                 raise PipelineLaunchError("An analysis is already running. Please let it finish.")
-            prefix = "sentinel" if launch.sensor == "sentinel-2" else "balkan"
+            prefix = {
+                "sentinel-2": "sentinel",
+                "balkan-1": "balkan",
+                "balkan-1-raw": "raw",
+            }[launch.sensor]
             run_id = (
                 f"web-{prefix}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-"
                 f"{uuid.uuid4().hex[:8]}"
@@ -158,7 +184,11 @@ class PipelineRunManager:
         executable = self._powershell_executable()
         if executable is None:
             raise PipelineLaunchError("PowerShell is unavailable in this dashboard environment.")
-        command = "sentinel" if launch.sensor == "sentinel-2" else "balkan"
+        command = {
+            "sentinel-2": "sentinel",
+            "balkan-1": "balkan",
+            "balkan-1-raw": "raw",
+        }[launch.sensor]
         arguments = [
             executable,
             "-NoLogo",

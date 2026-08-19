@@ -47,7 +47,8 @@ def test_web_application_exposes_client_dashboard_and_safe_run_api(tmp_path: Pat
     assert "Run crop analysis" in page.text
     assert 'id="theme-toggle"' in page.text
     assert 'src="/static/theme-init.js"' in page.text
-    assert 'src="/static/app.js?v=seasonal-baseline-1"' in page.text
+    assert '<option value="balkan-1-raw">Balkan-1 raw</option>' in page.text
+    assert 'src="/static/app.js?v=raw-analysis-1"' in page.text
     assert (
         '<link rel="icon" type="image/png" '
         'href="/static/ViTA_satellite_icon.png?v=2">'
@@ -67,7 +68,7 @@ def test_web_application_exposes_client_dashboard_and_safe_run_api(tmp_path: Pat
     assert icon.status_code == 200
     assert icon.headers["content-type"] == "image/png"
 
-    app_script = client.get("/static/app.js?v=seasonal-baseline-1")
+    app_script = client.get("/static/app.js?v=raw-analysis-1")
     assert app_script.status_code == 200
     assert "isBaselineVigorScore" in app_script.text
     assert "another season is needed" in app_script.text
@@ -121,6 +122,8 @@ def test_web_run_api_reports_invalid_launch_as_unprocessable(tmp_path: Path) -> 
         {"sensor": "sentinel-2", "region_id": "field-1", "input_path": "../secret"},
         {"sensor": "sentinel-2", "region_id": "field-1", "image": "folder/scene.tif"},
         {"sensor": "balkan-1", "region_id": "field-1", "image": "scene.tif"},
+        {"sensor": "balkan-1-raw", "region_id": "field-1", "input_path": "raw/3408"},
+        {"sensor": "balkan-1-raw", "region_id": "field-1", "image": "scene.tif"},
     ],
 )
 def test_pipeline_launch_rejects_unsafe_or_incompatible_input(payload) -> None:
@@ -174,3 +177,27 @@ def test_pipeline_manager_invokes_existing_entry_point_without_a_shell(
         "-Image",
         "scene.tif",
     ]
+
+
+def test_raw_pipeline_launch_uses_separate_command_when_jetson_is_configured(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    script = tmp_path / "vita.ps1"
+    script.write_text("# test entry point\n", encoding="utf-8")
+    manager = PipelineRunManager(tmp_path)
+    monkeypatch.setattr(manager, "_powershell_executable", lambda: "powershell.exe")
+    monkeypatch.setenv("VITA_RAW_SSH_TARGET", "payload@jetson.local")
+
+    launch = PipelineLaunch.from_payload(
+        {
+            "sensor": "balkan-1-raw",
+            "region_id": "raw-field",
+            "input_path": "3408",
+        }
+    )
+    command = manager._command("web-raw-test", launch)
+
+    assert "balkan-1-raw" in manager.capability()["sensors"]
+    assert command[command.index(str(script.resolve())) + 1] == "raw"
+    assert command[-2:] == ["-InputPath", "3408"]

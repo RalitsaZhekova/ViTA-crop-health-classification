@@ -19,7 +19,8 @@ const elementIds = [
   "history-strip", "evidence-score", "evidence-progress", "analysis-coverage",
   "analysis-progress", "usable-coverage", "usable-progress", "quality-list", "metric-grid",
   "scientific-claim", "manifest-link", "analysis-dialog", "analysis-form", "close-analysis",
-  "analysis-fields", "analysis-sensor", "analysis-region", "analysis-input", "image-field",
+  "analysis-fields", "analysis-sensor", "analysis-region", "analysis-input-label",
+  "analysis-input", "analysis-input-help", "image-field",
   "analysis-image", "analysis-capability", "start-analysis", "analysis-progress-panel",
   "run-visual", "run-status-kicker", "run-status-title", "run-status-message", "run-elapsed",
   "run-payload-time", "view-result", "retry-analysis", "theme-color", "toast",
@@ -402,6 +403,7 @@ function renderManifest(manifest, links) {
 function sensorLabel(sensor) {
   if (sensor === "sentinel-2") return "Sentinel-2";
   if (sensor === "balkan-1") return "Balkan-1";
+  if (sensor === "balkan-1-raw") return "Balkan-1 raw";
   return humanizeIdentifier(sensor);
 }
 
@@ -1153,11 +1155,16 @@ async function loadPipelineCapability() {
   try {
     state.pipelineCapability = await apiFetch(`${API}/pipeline-runs/capability`);
     const capability = state.pipelineCapability;
+    const rawOption = elements["analysis-sensor"].querySelector('option[value="balkan-1-raw"]');
+    const rawAvailable = capability.sensors?.includes("balkan-1-raw");
+    if (rawOption) rawOption.disabled = !rawAvailable;
     elements["analysis-capability"].classList.toggle("unavailable", !capability.available);
     setText(
       "analysis-capability",
       capability.available
-        ? "Ready to run one observation at a time through the current accelerated payload pipeline."
+        ? rawAvailable
+          ? "Ready for Sentinel-2, Balkan-1, and warm Jetson raw analysis."
+          : "Ready for Sentinel-2 and Balkan-1. Warm Jetson raw analysis is not configured."
         : capability.reason
     );
     elements["start-analysis"].disabled = !capability.available;
@@ -1194,9 +1201,20 @@ function showRunPanel() {
 }
 
 function updateImageField() {
-  const sentinel = elements["analysis-sensor"].value === "sentinel-2";
+  const sensor = elements["analysis-sensor"].value;
+  const sentinel = sensor === "sentinel-2";
+  const raw = sensor === "balkan-1-raw";
   elements["image-field"].classList.toggle("hidden", !sentinel);
   if (!sentinel) elements["analysis-image"].value = "";
+  if (raw) {
+    elements["analysis-input-label"].innerHTML = "Raw scene ID <em>optional</em>";
+    elements["analysis-input"].placeholder = "3408";
+    setText("analysis-input-help", "Use 3408 or 3370. Leave blank to use raw scene 3408.");
+  } else {
+    elements["analysis-input-label"].innerHTML = "Payload input path <em>optional</em>";
+    elements["analysis-input"].placeholder = sentinel ? "sentinel2" : "balkan1/preprocessed/3408_L1ORT.tif";
+    setText("analysis-input-help", "Relative to the payload data folder. Leave blank for the demo input.");
+  }
 }
 
 async function startAnalysis(event) {
