@@ -160,6 +160,9 @@ def run_raw_payload_job(
     warp_tile_size: int = 2048,
     compression: str = "zstd",
     condition_tile_size: int = 4096,
+    preloaded_cloud: Any | None = None,
+    preloaded_crop: PayloadCropModel | None = None,
+    preloaded_acceleration: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create one isolated raw-derived downlink bundle without touching service state."""
 
@@ -169,6 +172,12 @@ def run_raw_payload_job(
         raise ValueError("band_start_axis must be row or column")
     if condition_tile_size < 1:
         raise ValueError("condition_tile_size must be positive")
+    preloaded_values = (preloaded_cloud, preloaded_crop, preloaded_acceleration)
+    models_preloaded = all(value is not None for value in preloaded_values)
+    if any(value is not None for value in preloaded_values) and not models_preloaded:
+        raise ValueError(
+            "preloaded_cloud, preloaded_crop and preloaded_acceleration must be supplied together"
+        )
     inputs = {
         "raw": _require_file(raw_path, label="Raw TIFF"),
         "metadata": _require_file(metadata_path, label="L0 metadata"),
@@ -271,9 +280,16 @@ def run_raw_payload_job(
                 "timing_seconds": dict(timings),
             },
         )
-        stage_started = time.perf_counter()
-        cloud, crop, acceleration = _load_warm_accelerated_models()
-        timings["model_load_and_warmup_seconds"] = time.perf_counter() - stage_started
+        if models_preloaded:
+            cloud = preloaded_cloud
+            crop = preloaded_crop
+            acceleration = dict(preloaded_acceleration or {})
+            timings["model_load_and_warmup_seconds"] = 0.0
+        else:
+            stage_started = time.perf_counter()
+            cloud, crop, acceleration = _load_warm_accelerated_models()
+            timings["model_load_and_warmup_seconds"] = time.perf_counter() - stage_started
+        acceleration["models_preloaded"] = models_preloaded
 
         _write_json(
             status_path,

@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('sentinel', 'balkan', 'web', 'health', 'stop', 'help')]
+    [ValidateSet('sentinel', 'balkan', 'raw', 'web', 'health', 'stop', 'help')]
     [string]$Command = 'help',
 
     [string]$InputPath,
@@ -9,6 +9,8 @@ param(
     [string]$RegionId,
     [string]$JobId,
     [int]$PayloadPort = 8090,
+    [int]$RawPayloadPort = 8091,
+    [int]$RawTunnelPort = 18091,
     [int]$WebPort = 8000,
     [switch]$NoBrowser
 )
@@ -350,6 +352,39 @@ function Invoke-StableJetsonPipeline([string]$SensorName) {
     if ($LASTEXITCODE -ne 0) { throw "The stable Jetson $SensorName analysis failed." }
 }
 
+function Invoke-RemoteRawPipeline {
+    if ($Image) { throw '-Image is not used for Balkan-1 raw scenes.' }
+    $sshTarget = Get-EnvironmentDefault 'VITA_RAW_SSH_TARGET' ''
+    if ([string]::IsNullOrWhiteSpace($sshTarget)) {
+        throw 'Set VITA_RAW_SSH_TARGET=user@jetson before launching Balkan-1 raw analysis.'
+    }
+    $sceneId = if ($InputPath) { $InputPath } else { '3408' }
+    $resolvedRegionId = if ($RegionId) { $RegionId } else { "balkan-raw-$sceneId" }
+    $resolvedJobId = if ($JobId) {
+        $JobId
+    } else {
+        'raw-{0}-{1}-{2}' -f `
+            $sceneId,
+            (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ'),
+            ([guid]::NewGuid().ToString('N').Substring(0, 8))
+    }
+    $remoteProjectRoot = Get-EnvironmentDefault 'VITA_RAW_REMOTE_PROJECT_ROOT' '/data/code/VITA'
+    $invoke = Join-Path $repositoryRoot 'scripts\ground\Invoke-VitaPayload.ps1'
+    & $invoke `
+        -SshTarget $sshTarget `
+        -Sensor 'balkan-1-raw' `
+        -PayloadInput $sceneId `
+        -RegionId $resolvedRegionId `
+        -JobId $resolvedJobId `
+        -RemoteProjectRoot $remoteProjectRoot `
+        -RemoteRuntimeRoot 'runtime/raw-payload' `
+        -RemotePayloadPort $RawPayloadPort `
+        -LocalTunnelPort $RawTunnelPort `
+        -GroundStore $groundStore `
+        -SkipDashboard
+    if ($LASTEXITCODE -ne 0) { throw 'The remote Balkan-1 raw analysis failed.' }
+}
+
 function Start-LocalWeb {
     $webRuntime = Join-Path $runtimeRoot 'web'
     foreach ($directory in @($groundStore, $webRuntime)) {
@@ -436,6 +471,7 @@ switch ($Command) {
         if (Get-JetsonSshTarget) { Invoke-StableJetsonPipeline 'balkan-1' }
         else { Invoke-LocalPipeline 'balkan-1' }
     }
+    'raw' { Invoke-RemoteRawPipeline }
     'web' { Start-LocalWeb }
     'health' {
         $health = Get-Health
@@ -449,12 +485,14 @@ ViTA local MVP
 
   .\vita.ps1 sentinel   Run Sentinel-2, print timings, and ingest for the web app
   .\vita.ps1 balkan     Run Balkan-1, print timings, and ingest for the web app
+  .\vita.ps1 raw        Run a warm Jetson Balkan-1 raw scene and ingest it
   .\vita.ps1 web        Start the web app and open it in the browser
   .\vita.ps1 health     Show the warm payload acceleration state
   .\vita.ps1 stop       Stop local services started by this script
 
-Optional overrides: -InputPath, -Image, -RegionId, -JobId, -PayloadPort, -WebPort
+Optional overrides: -InputPath, -Image, -RegionId, -JobId, -PayloadPort, -RawPayloadPort, -RawTunnelPort, -WebPort
 Set VITA_JETSON_SSH_TARGET=user@jetson to use the stable Jetson service on port 8090.
+Set VITA_RAW_SSH_TARGET=user@jetson to use the isolated warm raw service on port 8091.
 '@
     }
 }

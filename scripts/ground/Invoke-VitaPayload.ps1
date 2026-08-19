@@ -5,7 +5,7 @@ param(
     [string]$SshTarget,
 
     [Parameter(Mandatory = $true)]
-    [ValidateSet('sentinel-2', 'balkan-1')]
+    [ValidateSet('sentinel-2', 'balkan-1', 'balkan-1-raw')]
     [string]$Sensor,
 
     [Parameter(Mandatory = $true)]
@@ -23,6 +23,7 @@ param(
     [int]$SshPort = 22,
     [string]$IdentityFile,
     [string]$RemoteProjectRoot = '/data/code/VITA',
+    [string]$RemoteRuntimeRoot = 'runtime/payload',
     [int]$RemotePayloadPort = 8090,
     [int]$LocalTunnelPort = 18090,
     [string]$GroundStore = 'runtime\ground',
@@ -72,11 +73,15 @@ if ($CropCalibration) { Assert-SafeRelativePath 'CropCalibration' $CropCalibrati
 if ($Sensor -eq 'sentinel-2' -and -not $Image -and $PayloadInput -notmatch '\.(tif|tiff)$') {
     throw 'Image is required when the Sentinel Input is a folder.'
 }
-if ($Sensor -eq 'balkan-1' -and $Image) {
+if ($Sensor -ne 'sentinel-2' -and $Image) {
     throw 'Image is only valid for Sentinel folder inputs.'
 }
 if (-not $JobId) {
-    $prefix = if ($Sensor -eq 'sentinel-2') { 'sentinel' } else { 'balkan' }
+    $prefix = switch ($Sensor) {
+        'sentinel-2' { 'sentinel' }
+        'balkan-1-raw' { 'raw' }
+        default { 'balkan' }
+    }
     $JobId = '{0}-{1}-{2}' -f $prefix, (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ'), ([guid]::NewGuid().ToString('N').Substring(0, 8))
 }
 Assert-SafeId 'JobId' $JobId
@@ -85,6 +90,9 @@ if ($SshPort -lt 1 -or $SshPort -gt 65535 -or $LocalTunnelPort -lt 1 -or $LocalT
 }
 if ($RemoteProjectRoot -notmatch '^/[A-Za-z0-9._/-]+$' -or $RemoteProjectRoot.Contains('..')) {
     throw 'RemoteProjectRoot must be a safe absolute POSIX path.'
+}
+if ($RemoteRuntimeRoot -notmatch '^[A-Za-z0-9][A-Za-z0-9._/-]*$' -or $RemoteRuntimeRoot.Contains('..')) {
+    throw 'RemoteRuntimeRoot must be a safe relative POSIX path.'
 }
 if ($IdentityFile) {
     $IdentityFile = (Resolve-Path -LiteralPath $IdentityFile).Path
@@ -168,7 +176,7 @@ if ($response.status -ne 'DOWNLINK_READY' -or $response.job_id -ne $JobId) {
 New-Item -ItemType Directory -Path $downlinkRoot | Out-Null
 $scpArgs = @('-P', $SshPort, '-o', 'BatchMode=yes')
 if ($IdentityFile) { $scpArgs += @('-i', $IdentityFile) }
-$remoteBundle = "$RemoteProjectRoot/runtime/payload/$($response.bundle_relative)"
+$remoteBundle = "$RemoteProjectRoot/$RemoteRuntimeRoot/$($response.bundle_relative)"
 foreach ($fileName in @('scene.json', 'scene.webp', 'condition.png')) {
     $remoteFile = "${SshTarget}:${remoteBundle}/${fileName}"
     & scp @scpArgs $remoteFile $downlinkRoot
@@ -193,6 +201,8 @@ $ingest = $ingestOutput | ConvertFrom-Json
 if (-not $SkipDashboard) {
     & (Join-Path $PSScriptRoot 'Start-VitaDashboard.ps1')
 }
+
+Write-Host ('PAYLOAD TOTAL {0:N4} s' -f [double]$response.payload_seconds)
 
 [ordered]@{
     status = 'MVP_READY'
