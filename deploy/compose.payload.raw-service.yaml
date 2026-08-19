@@ -30,6 +30,7 @@ services:
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
       VITA_INPUT_ROOT: /data
+      VITA_PROCESSED_INPUT_ROOT: /operational-data
       VITA_OUTPUT_ROOT: /runtime/runs
       PRITHVI_MODEL_DIR: /models
       OMNICLOUDMASK_MODEL_DIR: /models/omnicloudmask
@@ -64,6 +65,7 @@ services:
       PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
     volumes:
       - ${VITA_RAW_DATA_HOST:?set VITA_RAW_DATA_HOST}:/data:ro
+      - ${VITA_PROCESSED_DATA_HOST:?set VITA_PROCESSED_DATA_HOST}:/operational-data:ro
       - ${VITA_RAW_MODEL_ASSETS_HOST:?set VITA_RAW_MODEL_ASSETS_HOST}:/models:ro
       - ${VITA_RAW_OUTPUT_HOST:?set VITA_RAW_OUTPUT_HOST}:/runtime
       - ${VITA_RAW_ENGINE_CACHE_HOST:?set VITA_RAW_ENGINE_CACHE_HOST}:/engine-cache:ro

@@ -106,7 +106,10 @@ class PipelineRunManager:
                 "reason": "PowerShell is unavailable in this dashboard environment.",
             }
         sensors = ["sentinel-2", "balkan-1"]
-        raw_target = os.environ.get("VITA_RAW_SSH_TARGET", "").strip()
+        raw_target = (
+            os.environ.get("VITA_JETSON_SSH_TARGET", "").strip()
+            or os.environ.get("VITA_RAW_SSH_TARGET", "").strip()
+        )
         raw_available = bool(
             re.fullmatch(r"[A-Za-z0-9._-]+@[A-Za-z0-9._-]+", raw_target)
         )
@@ -121,7 +124,7 @@ class PipelineRunManager:
                 "reason": (
                     None
                     if raw_available
-                    else "Set VITA_RAW_SSH_TARGET to enable warm Jetson raw analysis."
+                    else "Set VITA_JETSON_SSH_TARGET to enable warm Jetson analysis."
                 ),
             },
         }

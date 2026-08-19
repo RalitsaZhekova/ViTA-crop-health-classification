@@ -194,6 +194,7 @@ def test_warm_raw_service_is_separate_and_uses_read_only_operational_assets() ->
     assert service["restart"] == "unless-stopped"
     assert service["ports"] == ["127.0.0.1:${VITA_RAW_PAYLOAD_PORT:-8091}:8091"]
     assert any(volume.endswith(":/data:ro") for volume in service["volumes"])
+    assert any(volume.endswith(":/operational-data:ro") for volume in service["volumes"])
     assert any(volume.endswith(":/models:ro") for volume in service["volumes"])
     assert any(volume.endswith(":/engine-cache:ro") for volume in service["volumes"])
     assert service["environment"]["VITA_CROP_BACKEND"] == "tensorrt"

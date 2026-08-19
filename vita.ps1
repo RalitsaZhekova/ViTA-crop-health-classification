@@ -63,6 +63,14 @@ function Get-EnvironmentDefault([string]$Name, [string]$Default) {
     return $value
 }
 
+function Get-JetsonSshTarget {
+    $target = Get-EnvironmentDefault 'VITA_JETSON_SSH_TARGET' ''
+    if ([string]::IsNullOrWhiteSpace($target)) {
+        $target = Get-EnvironmentDefault 'VITA_RAW_SSH_TARGET' ''
+    }
+    return $target
+}
+
 function Get-ListeningProcessId([int]$Port) {
     $connection = Get-NetTCPConnection `
         -LocalPort $Port `
@@ -293,37 +301,78 @@ function Invoke-LocalPipeline([string]$SensorName) {
     Write-Host 'Visualize it with: .\vita.ps1 web'
 }
 
-function Invoke-RemoteRawPipeline {
-    if ($Image) { throw '-Image is not used for Balkan-1 raw scenes.' }
-    $sshTarget = Get-EnvironmentDefault 'VITA_RAW_SSH_TARGET' ''
-    if ([string]::IsNullOrWhiteSpace($sshTarget)) {
-        throw 'Set VITA_RAW_SSH_TARGET=user@jetson before launching Balkan-1 raw analysis.'
+function Invoke-RemoteJetsonPipeline([string]$SensorName) {
+    if ($SensorName -ne 'sentinel-2' -and $Image) {
+        throw '-Image is only valid for Sentinel-2.'
     }
-    $sceneId = if ($InputPath) { $InputPath } else { '3408' }
-    $resolvedRegionId = if ($RegionId) { $RegionId } else { "balkan-raw-$sceneId" }
+    $sshTarget = Get-JetsonSshTarget
+    if ([string]::IsNullOrWhiteSpace($sshTarget)) {
+        throw 'Set VITA_JETSON_SSH_TARGET=user@jetson before launching Jetson analysis.'
+    }
+    $payloadInput = switch ($SensorName) {
+        'sentinel-2' { if ($InputPath) { $InputPath } else { 'sentinel2' } }
+        'balkan-1' {
+            if ($InputPath) { $InputPath } else { 'balkan1/preprocessed/3408_L1ORT.tif' }
+        }
+        'balkan-1-raw' { if ($InputPath) { $InputPath } else { '3408' } }
+        default { throw "Unsupported Jetson sensor: $SensorName" }
+    }
+    $resolvedImage = if ($SensorName -eq 'sentinel-2') {
+        if ($Image) { $Image } else { 'S2_20260712T170851_T14TPL_cloudy.tif' }
+    } else {
+        $null
+    }
+    $prefix = switch ($SensorName) {
+        'sentinel-2' { 'sentinel' }
+        'balkan-1' { 'balkan' }
+        default { 'raw' }
+    }
+    $resolvedRegionId = if ($RegionId) {
+        $RegionId
+    } elseif ($SensorName -eq 'sentinel-2') {
+        'sentinel-local-cloudy'
+    } elseif ($SensorName -eq 'balkan-1') {
+        'balkan-test-3408'
+    } else {
+        "balkan-raw-$payloadInput"
+    }
     $resolvedJobId = if ($JobId) {
         $JobId
     } else {
-        'raw-{0}-{1}-{2}' -f `
-            $sceneId,
+        '{0}-{1}-{2}' -f `
+            $prefix,
             (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ'),
             ([guid]::NewGuid().ToString('N').Substring(0, 8))
     }
-    $remoteProjectRoot = Get-EnvironmentDefault 'VITA_RAW_REMOTE_PROJECT_ROOT' '/data/code/VITA'
+    $remoteProjectRoot = Get-EnvironmentDefault 'VITA_JETSON_REMOTE_PROJECT_ROOT' ''
+    if ([string]::IsNullOrWhiteSpace($remoteProjectRoot)) {
+        $remoteProjectRoot = Get-EnvironmentDefault `
+            'VITA_RAW_REMOTE_PROJECT_ROOT' `
+            '/data/code/VITA'
+    }
+    $usesOperationalService = $SensorName -eq 'sentinel-2'
+    $remoteRuntimeRoot = if ($usesOperationalService) {
+        'runtime/payload'
+    } else {
+        'runtime/raw-payload'
+    }
+    $remotePayloadPort = if ($usesOperationalService) { $PayloadPort } else { $RawPayloadPort }
+    $localTunnelPort = if ($usesOperationalService) { 18090 } else { $RawTunnelPort }
     $invoke = Join-Path $repositoryRoot 'scripts\ground\Invoke-VitaPayload.ps1'
     & $invoke `
         -SshTarget $sshTarget `
-        -Sensor 'balkan-1-raw' `
-        -PayloadInput $sceneId `
+        -Sensor $SensorName `
+        -PayloadInput $payloadInput `
+        -Image $resolvedImage `
         -RegionId $resolvedRegionId `
         -JobId $resolvedJobId `
         -RemoteProjectRoot $remoteProjectRoot `
-        -RemoteRuntimeRoot 'runtime/raw-payload' `
-        -RemotePayloadPort $RawPayloadPort `
-        -LocalTunnelPort $RawTunnelPort `
+        -RemoteRuntimeRoot $remoteRuntimeRoot `
+        -RemotePayloadPort $remotePayloadPort `
+        -LocalTunnelPort $localTunnelPort `
         -GroundStore $groundStore `
         -SkipDashboard
-    if ($LASTEXITCODE -ne 0) { throw 'The remote Balkan-1 raw analysis failed.' }
+    if ($LASTEXITCODE -ne 0) { throw "The remote $SensorName analysis failed." }
 }
 
 function Start-LocalWeb {
@@ -404,9 +453,15 @@ function Stop-LocalServices {
 }
 
 switch ($Command) {
-    'sentinel' { Invoke-LocalPipeline 'sentinel-2' }
-    'balkan' { Invoke-LocalPipeline 'balkan-1' }
-    'raw' { Invoke-RemoteRawPipeline }
+    'sentinel' {
+        if (Get-JetsonSshTarget) { Invoke-RemoteJetsonPipeline 'sentinel-2' }
+        else { Invoke-LocalPipeline 'sentinel-2' }
+    }
+    'balkan' {
+        if (Get-JetsonSshTarget) { Invoke-RemoteJetsonPipeline 'balkan-1' }
+        else { Invoke-LocalPipeline 'balkan-1' }
+    }
+    'raw' { Invoke-RemoteJetsonPipeline 'balkan-1-raw' }
     'web' { Start-LocalWeb }
     'health' {
         $health = Get-Health
@@ -426,6 +481,7 @@ ViTA local MVP
   .\vita.ps1 stop       Stop local services started by this script
 
 Optional overrides: -InputPath, -Image, -RegionId, -JobId, -PayloadPort, -RawPayloadPort, -WebPort
+Set VITA_JETSON_SSH_TARGET=user@jetson to run all dashboard analyses on the Jetson.
 '@
     }
 }

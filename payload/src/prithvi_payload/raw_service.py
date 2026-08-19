@@ -7,7 +7,7 @@ import json
 import os
 import threading
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Any, Literal
 
@@ -16,26 +16,33 @@ import numpy as np
 import torch
 import torch.nn.functional as functional
 from fastapi import FastAPI, HTTPException
+from prithvi_shared.files import sha256_file
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
 from prithvi_payload.balkan_alignment import _batch_cross_correlate_shift_cuda
+from prithvi_payload.pipeline import run_scene
 from prithvi_payload.raw_payload_workload import (
     SAFE_ID,
     _load_warm_accelerated_models,
     run_raw_payload_job,
 )
 from prithvi_payload.runtime_config import environment_flag
-from prithvi_payload.service import _pipeline_timings, _preload_pipeline_modules
+from prithvi_payload.service import (
+    BALKAN_BAND_ORDER,
+    _pipeline_timings,
+    _preload_pipeline_modules,
+    _safe_relative,
+)
 
 
 class RawJobRequest(BaseModel):
-    """Select one payload-local raw scene; no source pixels cross the uplink."""
+    """Select one payload-local Balkan scene; no source pixels cross the uplink."""
 
     model_config = ConfigDict(extra="forbid")
 
-    sensor: Literal["balkan-1-raw"]
-    input: str = Field(min_length=1, max_length=80)
+    sensor: Literal["balkan-1", "balkan-1-raw"]
+    input: str = Field(min_length=1, max_length=512)
     region_id: str = Field(min_length=1, max_length=80)
     job_id: str = Field(min_length=1, max_length=80)
 
@@ -80,9 +87,16 @@ class RawPayloadRuntime:
         if not torch.cuda.is_available():
             raise RuntimeError("The warm raw payload service requires CUDA")
         self.input_root = Path(os.environ.get("VITA_INPUT_ROOT", "/data")).resolve()
+        self.processed_input_root = Path(
+            os.environ.get("VITA_PROCESSED_INPUT_ROOT", "/operational-data")
+        ).resolve()
         self.output_root = Path(os.environ.get("VITA_OUTPUT_ROOT", "/runtime/runs")).resolve()
         if not self.input_root.is_dir():
             raise RuntimeError(f"Raw payload data root does not exist: {self.input_root}")
+        if not self.processed_input_root.is_dir():
+            raise RuntimeError(
+                f"Processed payload data root does not exist: {self.processed_input_root}"
+            )
         self.output_root.mkdir(parents=True, exist_ok=True)
         self.job_lock = threading.Lock()
 
@@ -109,7 +123,7 @@ class RawPayloadRuntime:
         torch.cuda.synchronize()
         return {
             "status": "ready",
-            "service": "vita-raw-payload",
+            "service": "vita-balkan-payload",
             "cuda_probe": {"status": "ready", "device": probe.device.type},
             "acceleration": self.acceleration,
             "startup_timing_seconds": self.startup_timing,
@@ -146,11 +160,87 @@ class RawPayloadRuntime:
             raise ValueError(f"Raw scene {scene_id} is incomplete: missing {missing}")
         return paths
 
-    def run(self, request: RawJobRequest) -> dict[str, Any]:
-        if not SAFE_ID.fullmatch(request.job_id):
-            raise ValueError("job_id must contain only letters, digits, dot, underscore or dash")
-        if not SAFE_ID.fullmatch(request.region_id):
-            raise ValueError("region_id must contain only letters, digits, dot, underscore or dash")
+    @contextmanager
+    def _processed_cloud_profile_selection(self):
+        """Use reviewed dynamic Balkan profiles while the serialized job runs."""
+
+        backend = self.cloud.backend
+        fixed_patch_size = getattr(backend, "raw_fixed_patch_size", None)
+        if fixed_patch_size != backend.patch_size:
+            raise RuntimeError("The raw cloud TensorRT profile is not active")
+        backend.raw_fixed_patch_size = None
+        try:
+            yield
+        finally:
+            backend.raw_fixed_patch_size = fixed_patch_size
+
+    def _run_processed(self, request: RawJobRequest) -> dict[str, Any]:
+        source = _safe_relative(self.processed_input_root, request.input, name="input")
+        if not source.is_file():
+            raise ValueError(f"Balkan input GeoTIFF does not exist: {source}")
+        calibration = source.with_name(f"{source.stem}.crop_calibration.json")
+        if not calibration.is_file():
+            raise ValueError(f"Balkan crop calibration does not exist: {calibration}")
+        calibration_record = json.loads(calibration.read_text(encoding="utf-8"))
+        acquired_at = calibration_record.get("acquired_at")
+        if not isinstance(acquired_at, str) or not acquired_at:
+            raise ValueError("Balkan acquisition time is missing")
+        output = self.output_root / request.job_id
+        if output.exists():
+            raise FileExistsError(f"Balkan payload job already exists: {request.job_id}")
+        progress: list[str] = []
+        started = time.perf_counter()
+        with self._processed_cloud_profile_selection():
+            result = run_scene(
+                source,
+                sensor="balkan-1",
+                output_root=output,
+                acquired_at=acquired_at,
+                scene_id=request.job_id,
+                band_order=BALKAN_BAND_ORDER,
+                crop_calibration_path=calibration,
+                stop_after="downlink",
+                region_id=request.region_id,
+                cloud_backend=self.cloud.backend,
+                cloud_config=self.cloud.config,
+                crop_model=self.crop,
+                condition_tile_size=int(
+                    os.environ.get("VITA_CONDITION_TILE_SIZE", "4096")
+                ),
+                progress_callback=progress.append,
+            )
+        payload_seconds = time.perf_counter() - started
+        if result.get("status") != "DOWNLINK_READY":
+            raise RuntimeError(f"Pipeline stopped with status {result.get('status')}")
+        bundle = output / "downlink"
+        files = {
+            name: {
+                "bytes": (bundle / name).stat().st_size,
+                "sha256": sha256_file(bundle / name),
+            }
+            for name in ("scene.json", "scene.webp", "condition.png")
+        }
+        return {
+            "schema_version": "1.0",
+            "status": "DOWNLINK_READY",
+            "job_id": request.job_id,
+            "scene_id": result["scene_id"],
+            "sensor": "balkan-1",
+            "bundle_relative": f"runs/{request.job_id}/downlink",
+            "files": files,
+            "payload_seconds": payload_seconds,
+            "under_two_seconds": payload_seconds < 2.0,
+            "under_five_seconds": payload_seconds < 5.0,
+            "pipeline_timing_seconds": _pipeline_timings(
+                result,
+                payload_seconds=payload_seconds,
+            ),
+            "summary": result.get("summary", {}),
+            "progress": progress,
+            "stack": self.acceleration,
+        }
+
+    def _run_raw(self, request: RawJobRequest) -> dict[str, Any]:
         response = run_raw_payload_job(
             **self._paths(request.input),
             output_root=self.output_root,
@@ -195,6 +285,15 @@ class RawPayloadRuntime:
                 "downlink_ready",
             ],
         }
+
+    def run(self, request: RawJobRequest) -> dict[str, Any]:
+        if not SAFE_ID.fullmatch(request.job_id):
+            raise ValueError("job_id must contain only letters, digits, dot, underscore or dash")
+        if not SAFE_ID.fullmatch(request.region_id):
+            raise ValueError("region_id must contain only letters, digits, dot, underscore or dash")
+        if request.sensor == "balkan-1-raw":
+            return self._run_raw(request)
+        return self._run_processed(request)
 
 
 @asynccontextmanager
@@ -244,7 +343,7 @@ async def run_job(request: RawJobRequest) -> dict[str, Any]:
 def main() -> None:
     import uvicorn
 
-    parser = argparse.ArgumentParser(description="Run the warm Balkan-1 raw payload service.")
+    parser = argparse.ArgumentParser(description="Run the warm Balkan-1 payload service.")
     parser.add_argument("--host", default=os.environ.get("VITA_RAW_PAYLOAD_HOST", "0.0.0.0"))
     parser.add_argument(
         "--port",
