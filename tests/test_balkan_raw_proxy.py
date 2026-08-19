@@ -194,8 +194,8 @@ def test_build_raw_model_proxy_marks_every_approximation(
         output.with_name("proxy.crop_calibration.json").read_text(encoding="utf-8")
     )
     assert calibration["experimental_raw_proxy"]["status"] == ("UNQUALIFIED_ENGINEERING_EXPERIMENT")
-    assert calibration["experimental_raw_proxy"]["crop_probability_threshold"] == 0.3
-    assert calibration["experimental_raw_proxy"]["health_analysis_crop_threshold"] == 0.3
+    assert calibration["experimental_raw_proxy"]["crop_probability_threshold"] == 0.49
+    assert calibration["experimental_raw_proxy"]["health_analysis_crop_threshold"] == 0.645
     assert (
         calibration["experimental_raw_proxy"]["cloud_spatial_detail_restoration"]["amount"]
         == 4.0
@@ -227,7 +227,7 @@ def test_build_raw_model_proxy_marks_every_approximation(
     assert serial_report["execution"]["band_workers"] == 1
 
 
-def test_cross_scene_crop_fallback_uses_conservative_threshold(tmp_path: Path) -> None:
+def test_cross_scene_crop_fallback_uses_strict_balkan_threshold(tmp_path: Path) -> None:
     parent = tmp_path / "parent.json"
     parent.write_text(
         json.dumps(
@@ -255,5 +255,5 @@ def test_cross_scene_crop_fallback_uses_conservative_threshold(tmp_path: Path) -
     )
     calibration = json.loads(calibration_path.read_text(encoding="utf-8"))
     experimental = calibration["experimental_raw_proxy"]
-    assert experimental["crop_probability_threshold"] == 0.5
-    assert experimental["health_analysis_crop_threshold"] == 0.5
+    assert experimental["crop_probability_threshold"] == 0.49
+    assert experimental["health_analysis_crop_threshold"] == 0.645

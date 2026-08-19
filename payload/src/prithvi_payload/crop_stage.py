@@ -184,14 +184,14 @@ def build_crop_stage_plan(
     if calibrated_balkan:
         if experimental_thresholds is not None:
             crop_probability_threshold, health_analysis_crop_threshold = experimental_thresholds
-            threshold_source = "balkan_1_experimental_raw_proxy_scene_parity"
+            threshold_source = "balkan_1_raw_strict_sensor_policy"
         else:
             crop_probability_threshold = BALKAN_CROP_CLASSIFICATION_THRESHOLD
             health_analysis_crop_threshold = BALKAN_HEALTH_ANALYSIS_CROP_THRESHOLD
             threshold_source = (
                 "balkan_1_experimental_raw_proxy_invalid_fallback"
                 if spectral_adapter.get("validation_status") == "EXPERIMENTAL_RAW_PROXY"
-                else "balkan_1_operational_calibration"
+                else "balkan_1_strict_sensor_policy"
             )
     else:
         crop_probability_threshold = CROP_CLASSIFICATION_THRESHOLD

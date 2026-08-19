@@ -31,14 +31,18 @@ from rasterio.warp import reproject
 from rasterio.windows import Window
 
 from prithvi_payload.balkan_alignment import ALIGNMENT_ALGORITHM, resolve_band_indices
-from prithvi_payload.balkan_crop_calibration import sha256_file
+from prithvi_payload.balkan_crop_calibration import (
+    BALKAN_CROP_CLASSIFICATION_THRESHOLD,
+    BALKAN_HEALTH_ANALYSIS_CROP_THRESHOLD,
+    sha256_file,
+)
 
 RAW_PROXY_ALGORITHM = "balkan-experimental-raw-proxy-v4-single-pass-cloud-mtf"
 MODEL_BANDS = ("BLUE", "GREEN", "RED", "NIR_BROAD", "PANCHROMATIC")
-EXPERIMENTAL_CROP_CLASSIFICATION_THRESHOLD = 0.3
-EXPERIMENTAL_HEALTH_ANALYSIS_CROP_THRESHOLD = 0.3
-EXPERIMENTAL_FALLBACK_CROP_THRESHOLD = 0.5
-EXPERIMENTAL_FALLBACK_HEALTH_THRESHOLD = 0.5
+EXPERIMENTAL_CROP_CLASSIFICATION_THRESHOLD = BALKAN_CROP_CLASSIFICATION_THRESHOLD
+EXPERIMENTAL_HEALTH_ANALYSIS_CROP_THRESHOLD = BALKAN_HEALTH_ANALYSIS_CROP_THRESHOLD
+EXPERIMENTAL_FALLBACK_CROP_THRESHOLD = BALKAN_CROP_CLASSIFICATION_THRESHOLD
+EXPERIMENTAL_FALLBACK_HEALTH_THRESHOLD = BALKAN_HEALTH_ANALYSIS_CROP_THRESHOLD
 SPATIAL_DETAIL_SIGMA_PIXELS = 1.2
 SPATIAL_DETAIL_AMOUNT = 4.0
 CROP_SPATIAL_DETAIL_AMOUNT = 1.75
@@ -485,9 +489,9 @@ def _write_proxy_calibration(
             "bands": ["BLUE", "GREEN", "RED", "NIR_BROAD"],
         },
         "threshold_basis": (
-            "conservative 0.5 threshold for an unqualified cross-scene crop adapter"
+            "strict Balkan-1 sensor policy applied to an unqualified cross-scene adapter"
             if uses_cross_scene_fallback
-            else "the operational Balkan threshold is retained after model-input-only "
+            else "strict Balkan-1 sensor thresholds are applied after model-input-only "
             "spatial-detail restoration; raw-proxy parity remains experimental"
         ),
         "warning": (
