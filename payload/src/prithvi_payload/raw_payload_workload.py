@@ -295,6 +295,7 @@ def run_raw_payload_job(
             scene_id=job_id,
             band_order=BALKAN_RAW_BAND_ORDER,
             crop_calibration_path=proxy_calibration,
+            reflectance_scale=1.0,
             stop_after="downlink",
             region_id=region_id,
             condition_tile_size=condition_tile_size,
