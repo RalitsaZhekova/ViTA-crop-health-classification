@@ -16,7 +16,19 @@ export VITA_PAYLOAD_GID="${VITA_PAYLOAD_GID:-$(id -g)}"
 payload_image="${VITA_PAYLOAD_IMAGE:-vita-payload:1.0.0}"
 export VITA_NSYS_IMAGE="${VITA_NSYS_IMAGE:-vita-payload:nsight}"
 
-nsys_host_bin="${VITA_NSYS_BIN:-$(command -v nsys || true)}"
+nsys_host_bin="${VITA_NSYS_BIN:-}"
+if [ -z "$nsys_host_bin" ] && [ -d /opt/nvidia/nsight-systems ]; then
+    # CUDA toolkit launchers can exist without exposing the profiler payload
+    # inside a container. Prefer the newest directly installed Nsight CLI.
+    nsys_host_bin="$(
+        find /opt/nvidia/nsight-systems \
+            -mindepth 3 -maxdepth 3 -path '*/bin/nsys' -executable \
+            -print 2>/dev/null | sort -V | tail -n 1
+    )"
+fi
+if [ -z "$nsys_host_bin" ]; then
+    nsys_host_bin="$(command -v nsys || true)"
+fi
 if [ -z "$nsys_host_bin" ]; then
     echo "ERROR: nsys is not installed on the Jetson host or is not on PATH." >&2
     exit 1
@@ -43,6 +55,8 @@ nsys_container_bin="$nsys_host_bin"
 
 report_root="$PROJECT_ROOT/runtime/nsight"
 mkdir -p "$report_root"
+runs_root="$PROJECT_ROOT/runtime/payload/runs"
+mkdir -p "$runs_root"
 run_stamp="${VITA_NSYS_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
 report_base="vita-four-scenes-${run_stamp}"
 report_path="$report_root/$report_base.nsys-rep"
@@ -76,13 +90,30 @@ service_was_running=0
 if [ -n "$(docker compose "${base_compose[@]}" ps --status running -q payload)" ]; then
     service_was_running=1
 fi
-restore_service() {
+report_root_mode="$(stat -c '%a' "$report_root")"
+runs_root_mode="$(stat -c '%a' "$runs_root")"
+permissions_relaxed=0
+restore_state() {
+    if [ "$permissions_relaxed" -eq 1 ]; then
+        chmod "$report_root_mode" "$report_root" || true
+        chmod "$runs_root_mode" "$runs_root" || true
+    fi
     if [ "$service_was_running" -eq 1 ]; then
         echo "Restoring the operational payload service."
         docker compose "${base_compose[@]}" start payload >/dev/null
     fi
 }
-trap restore_service EXIT
+trap restore_state EXIT
+
+# The privileged profiler container can use a different host UID when Docker
+# user namespaces are enabled. Open only the two disposable output directories
+# for the capture and restore their exact original modes on exit.
+permissions_relaxed=1
+if ! chmod o+rwx "$report_root" "$runs_root"; then
+    echo "ERROR: cannot make the Nsight output directories container-writable." >&2
+    echo "Ensure the current user owns $report_root and $runs_root." >&2
+    exit 1
+fi
 
 if [ "$service_was_running" -eq 1 ]; then
     echo "Stopping the operational payload service to avoid GPU contention during capture."
@@ -92,6 +123,16 @@ fi
 echo "Checking profiler access from the isolated profiling container."
 docker compose "${profile_compose[@]}" run --rm --no-deps \
     --entrypoint "$nsys_container_bin" payload status --environment
+docker compose "${profile_compose[@]}" run --rm --no-deps \
+    --entrypoint /bin/bash payload -c '
+        set -e
+        profile_marker=/profiles/.vita-nsys-write-test-$$
+        runtime_marker=/runtime/runs/.vita-nsys-write-test-$$
+        : > "$profile_marker"
+        mkdir "$runtime_marker"
+        rm "$profile_marker"
+        rmdir "$runtime_marker"
+    '
 
 profile_help="$($nsys_host_bin profile --help 2>&1)"
 require_option() {
@@ -104,10 +145,7 @@ for option in \
     --capture-range \
     --capture-range-end \
     --cpuctxsw \
-    --gpuctxsw \
-    --process-scope \
-    --sampling-trigger \
-    --soc-metrics; do
+    --sampling-trigger; do
     require_option "$option"
 done
 
@@ -119,11 +157,8 @@ nsys_options=(
     --capture-range=cudaProfilerApi
     --capture-range-end=stop
     --sample=process-tree
-    --sampling-trigger=perf
+    --sampling-trigger=cuda
     --cpuctxsw=process-tree
-    --process-scope=process-tree
-    --gpuctxsw=true
-    --soc-metrics=true
     --show-output=true
 )
 if grep -q -- "--accelerator-trace" <<<"$profile_help"; then
@@ -136,7 +171,7 @@ if grep -q -- "--osrt-file-access" <<<"$profile_help"; then
     nsys_options+=(--osrt-file-access=true)
 fi
 if grep -q -- "--cuda-event-trace" <<<"$profile_help"; then
-    nsys_options+=(--cuda-event-trace=true)
+    nsys_options+=(--cuda-event-trace=false)
 fi
 
 echo "Capturing one warm pass over two Sentinel and two Balkan scenes."

@@ -82,3 +82,17 @@ def test_nvtx_annotation_is_a_noop_when_disabled(monkeypatch) -> None:
         return left + right
 
     assert add(2, 3) == 5
+
+
+def test_jetson_profile_uses_supported_embedded_cli_contract() -> None:
+    script = (
+        Path(__file__).parents[1] / "deploy" / "payload" / "profile-nsys.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "--sampling-trigger=cuda" in script
+    assert "--cuda-event-trace=false" in script
+    assert "--process-scope" not in script
+    assert "--gpuctxsw" not in script
+    assert "--soc-metrics" not in script
+    assert "find /opt/nvidia/nsight-systems" in script
+    assert "chmod o+rwx" in script
