@@ -55,7 +55,12 @@ def test_low_pairwise_radiometric_correlation_uses_conservative_detail() -> None
     assert _detail_restoration_amounts(0.79) == (5.0, 0.0)
 
 
-def test_build_raw_model_proxy_marks_every_approximation(tmp_path: Path) -> None:
+def test_build_raw_model_proxy_marks_every_approximation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("VITA_CPU_THREADS", "4")
+    monkeypatch.setenv("VITA_RAW_PROXY_BAND_WORKERS", "2")
     source = tmp_path / "raw-aligned.tif"
     width = height = 64
     values = np.empty((5, height, width), dtype=np.uint16)
@@ -174,6 +179,17 @@ def test_build_raw_model_proxy_marks_every_approximation(tmp_path: Path) -> None
     assert report["output"]["grid_orientation"] == "north_up"
     assert report["output"]["raw_to_model_resampling_passes"] == 1
     assert report["output"]["cloud_input_spatial_detail_restoration"]["amount"] == 4.0
+    assert report["execution"] == {
+        "reconstruction_backend": "gdal-average-band-parallel",
+        "band_workers": 2,
+        "gdal_warp_threads_per_band": 2,
+        "cpu_thread_budget": 4,
+        "single_native_to_model_warp": True,
+    }
+    assert report["timing"]["reconstruction_seconds"] >= 0
+    assert report["timing"]["runtime_seconds"] >= report["timing"][
+        "reconstruction_seconds"
+    ]
     calibration = json.loads(
         output.with_name("proxy.crop_calibration.json").read_text(encoding="utf-8")
     )
@@ -190,6 +206,25 @@ def test_build_raw_model_proxy_marks_every_approximation(tmp_path: Path) -> None
         ]
         == 1.75
     )
+
+    monkeypatch.setenv("VITA_RAW_PROXY_BAND_WORKERS", "1")
+    serial_output = tmp_path / "proxy-serial.tif"
+    serial_report = build_raw_model_proxy(
+        source,
+        serial_output,
+        alignment_report_path=alignment,
+        radiometric_diagnostics_path=diagnostics,
+        position_path=position,
+        attitude_path=attitude,
+        parent_calibration_path=parent_calibration,
+        raw_pixel_size_m=1.5,
+        output_pixel_size_m=10.0,
+        inactive_border_pixels=2,
+        dark_reference_pixels=1,
+    )
+    with rasterio.open(output) as parallel, rasterio.open(serial_output) as serial:
+        np.testing.assert_array_equal(parallel.read(), serial.read())
+    assert serial_report["execution"]["band_workers"] == 1
 
 
 def test_cross_scene_crop_fallback_uses_conservative_threshold(tmp_path: Path) -> None:

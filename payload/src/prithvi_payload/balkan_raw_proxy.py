@@ -14,6 +14,8 @@ import csv
 import json
 import math
 import os
+import time
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -348,6 +350,89 @@ def _warp_threads() -> int:
     return max(1, min(requested, os.cpu_count() or 1))
 
 
+def _band_workers() -> int:
+    raw = os.environ.get("VITA_RAW_PROXY_BAND_WORKERS", "1")
+    try:
+        requested = int(raw)
+    except ValueError as error:
+        raise RawProxyError("VITA_RAW_PROXY_BAND_WORKERS must be an integer") from error
+    return max(1, min(requested, len(MODEL_BANDS), os.cpu_count() or 1))
+
+
+def _reconstruct_proxy_band(
+    *,
+    source_path: Path,
+    raw_parent_path: Path,
+    band: str,
+    destination_index: int,
+    source_index: int,
+    raw_source_index: int,
+    active_width: int,
+    output_width: int,
+    output_height: int,
+    inactive_border_pixels: int,
+    dark_reference_pixels: int,
+    slope: float,
+    intercept: float,
+    sensor_grid: TelemetryGrid,
+    output_transform: Affine,
+    warp_threads: int,
+) -> tuple[int, str, np.ndarray]:
+    """Correct and average-warp one band using independent GDAL handles."""
+
+    with rasterio.open(source_path) as source, rasterio.open(raw_parent_path) as raw_parent:
+        active_window = Window(
+            inactive_border_pixels,
+            0,
+            active_width,
+            source.height,
+        )
+        values = source.read(
+            source_index,
+            window=active_window,
+            out_dtype="float32",
+        )
+        left, right = _black_reference(
+            raw_parent,
+            raw_source_index,
+            output_height=source.height,
+            dark_pixels=dark_reference_pixels,
+        )
+    values[values <= 0] = np.nan
+    difference = right - left
+    correction_chunk_width = 512
+    denominator = max(active_width - 1, 1)
+    for column_start in range(0, active_width, correction_chunk_width):
+        column_stop = min(active_width, column_start + correction_chunk_width)
+        fraction = (
+            np.arange(column_start, column_stop, dtype=np.float32)
+            / np.float32(denominator)
+        )
+        values[:, column_start:column_stop] -= (
+            left[:, None] + difference[:, None] * fraction[None, :]
+        )
+    values *= np.float32(slope)
+    values += np.float32(intercept)
+    np.clip(values, 0.0, 1.5, out=values)
+    reflectance = np.zeros((output_height, output_width), dtype=np.float32)
+    reproject(
+        source=values,
+        destination=reflectance,
+        src_transform=sensor_grid.transform,
+        src_crs=sensor_grid.crs,
+        src_nodata=np.nan,
+        dst_transform=output_transform,
+        dst_crs=sensor_grid.crs,
+        dst_nodata=0.0,
+        resampling=Resampling.average,
+        init_dest_nodata=True,
+        num_threads=warp_threads,
+        warp_mem_limit=1024,
+    )
+    reflectance[~np.isfinite(reflectance)] = 0.0
+    return destination_index, band, reflectance
+
+
 def _write_proxy_calibration(
     parent_path: str | Path,
     output_path: Path,
@@ -439,6 +524,7 @@ def build_raw_model_proxy(
     directly instead of averaging the 10 m pixels a second time.
     """
     started = datetime.now(UTC)
+    runtime_started = time.perf_counter()
     source_path = Path(aligned_raw_path).resolve()
     output_path = Path(output_path).resolve()
     alignment_path = Path(alignment_report_path).resolve()
@@ -510,6 +596,10 @@ def build_raw_model_proxy(
             "predictor": 3,
             "BIGTIFF": "IF_SAFER",
         }
+        total_warp_threads = _warp_threads()
+        band_workers = _band_workers()
+        warp_threads_per_band = max(1, total_warp_threads // band_workers)
+        reconstruction_started = time.perf_counter()
         try:
             with rasterio.open(partial_path, "w", **profile) as destination:
                 destination.update_tags(
@@ -526,63 +616,38 @@ def build_raw_model_proxy(
                     REFLECTANCE_SCALE="1.0",
                     RAW_TO_MODEL_RESAMPLING_PASSES="1",
                 )
-                active_window = Window(
-                    inactive_border_pixels,
-                    0,
-                    active_width,
-                    source.height,
-                )
-                for destination_index, band in enumerate(MODEL_BANDS, start=1):
-                    source_index = band_indices[band]
-                    values = source.read(
-                        source_index,
-                        window=active_window,
-                        out_dtype="float32",
-                    )
-                    left, right = _black_reference(
-                        raw_parent,
-                        raw_band_indices[band],
-                        output_height=source.height,
-                        dark_pixels=dark_reference_pixels,
-                    )
-                    values[values <= 0] = np.nan
-                    difference = right - left
-                    correction_chunk_width = 512
-                    denominator = max(active_width - 1, 1)
-                    for column_start in range(0, active_width, correction_chunk_width):
-                        column_stop = min(
-                            active_width,
-                            column_start + correction_chunk_width,
+                with ThreadPoolExecutor(
+                    max_workers=band_workers,
+                    thread_name_prefix="raw-proxy-band",
+                ) as pool:
+                    futures = []
+                    for destination_index, band in enumerate(MODEL_BANDS, start=1):
+                        slope, intercept = coefficients[band]
+                        futures.append(
+                            pool.submit(
+                                _reconstruct_proxy_band,
+                                source_path=source_path,
+                                raw_parent_path=raw_parent_path,
+                                band=band,
+                                destination_index=destination_index,
+                                source_index=band_indices[band],
+                                raw_source_index=raw_band_indices[band],
+                                active_width=active_width,
+                                output_width=width,
+                                output_height=height,
+                                inactive_border_pixels=inactive_border_pixels,
+                                dark_reference_pixels=dark_reference_pixels,
+                                slope=slope,
+                                intercept=intercept,
+                                sensor_grid=sensor_grid,
+                                output_transform=output_transform,
+                                warp_threads=warp_threads_per_band,
+                            )
                         )
-                        fraction = (
-                            np.arange(column_start, column_stop, dtype=np.float32)
-                            / np.float32(denominator)
-                        )
-                        values[:, column_start:column_stop] -= (
-                            left[:, None] + difference[:, None] * fraction[None, :]
-                        )
-                    slope, intercept = coefficients[band]
-                    values *= np.float32(slope)
-                    values += np.float32(intercept)
-                    np.clip(values, 0.0, 1.5, out=values)
-                    reflectance = np.zeros((height, width), dtype=np.float32)
-                    reproject(
-                        source=values,
-                        destination=reflectance,
-                        src_transform=sensor_grid.transform,
-                        src_crs=sensor_grid.crs,
-                        src_nodata=np.nan,
-                        dst_transform=output_transform,
-                        dst_crs=sensor_grid.crs,
-                        dst_nodata=0.0,
-                        resampling=Resampling.average,
-                        init_dest_nodata=True,
-                        num_threads=_warp_threads(),
-                        warp_mem_limit=1024,
-                    )
-                    reflectance[~np.isfinite(reflectance)] = 0.0
-                    destination.write(reflectance, destination_index)
-                    destination.set_band_description(destination_index, band)
+                    for future in futures:
+                        destination_index, band, reflectance = future.result()
+                        destination.write(reflectance, destination_index)
+                        destination.set_band_description(destination_index, band)
                 factors = [factor for factor in (2, 4, 8) if min(width, height) // factor >= 128]
                 if factors:
                     destination.build_overviews(factors, Resampling.average)
@@ -591,6 +656,7 @@ def build_raw_model_proxy(
         except Exception:
             partial_path.unlink(missing_ok=True)
             raise
+        reconstruction_seconds = time.perf_counter() - reconstruction_started
 
     proxy_report: dict[str, Any] = {
         "schema_version": 1,
@@ -628,6 +694,17 @@ def build_raw_model_proxy(
                 "application": "cloud model input only; source/display reflectance is unchanged",
             },
             "radiometric_pairwise_minimum_correlation": minimum_radiometric_correlation,
+        },
+        "execution": {
+            "reconstruction_backend": "gdal-average-band-parallel",
+            "band_workers": band_workers,
+            "gdal_warp_threads_per_band": warp_threads_per_band,
+            "cpu_thread_budget": total_warp_threads,
+            "single_native_to_model_warp": True,
+        },
+        "timing": {
+            "reconstruction_seconds": reconstruction_seconds,
+            "runtime_seconds_before_output_hash": time.perf_counter() - runtime_started,
         },
         "radiometry": {
             "dark_reference": (
@@ -692,6 +769,7 @@ def build_raw_model_proxy(
         crop_detail_amount=crop_detail_amount,
     )
     proxy_report["output"]["crop_calibration"] = calibration_path.name
+    proxy_report["timing"]["runtime_seconds"] = time.perf_counter() - runtime_started
     proxy_report_path.write_text(
         json.dumps(proxy_report, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",

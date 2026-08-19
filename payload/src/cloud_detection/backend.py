@@ -24,6 +24,19 @@ OMNICLOUDMASK_ENSEMBLE_SHA256 = "ab8f039866d6714b249f850779b9523b5f6afb55ee89107
 DEFAULT_WEIGHTS_FOLDER = Path(__file__).resolve().parents[2] / "models" / "omnicloudmask"
 
 
+def _replace_zero_nodata_for_fixed_patch(image: np.ndarray) -> np.ndarray:
+    """Keep raw-proxy nodata inert without triggering upstream patch resizing."""
+
+    if not np.any(image == 0.0):
+        return image
+    prepared = image.copy()
+    prepared[prepared == 0.0] = np.nextafter(
+        np.float32(0.0),
+        np.float32(1.0),
+    )
+    return prepared
+
+
 class BackendError(RuntimeError):
     """Raised when the pretrained model cannot be loaded or executed."""
 
@@ -131,6 +144,17 @@ class OmniCloudMaskBackend:
         if requested_backend not in {"pytorch", "tensorrt"}:
             raise BackendError("VITA_CLOUD_BACKEND must be pytorch or tensorrt")
         self.execution_backend = requested_backend
+        fixed_patch_raw = os.environ.get("VITA_RAW_CLOUD_FIXED_PATCH_SIZE", "").strip()
+        try:
+            self.raw_fixed_patch_size = int(fixed_patch_raw) if fixed_patch_raw else None
+        except ValueError as error:
+            raise BackendError("VITA_RAW_CLOUD_FIXED_PATCH_SIZE must be an integer") from error
+        if self.raw_fixed_patch_size is not None and (
+            requested_backend != "tensorrt" or self.raw_fixed_patch_size != self.patch_size
+        ):
+            raise BackendError(
+                "The raw fixed cloud patch must use the configured TensorRT base patch size"
+            )
 
         actual_ensemble_sha256 = ensemble_sha256(self.weights_folder)
         if expected_sha256 is not None and actual_ensemble_sha256 != expected_sha256:
@@ -211,12 +235,17 @@ class OmniCloudMaskBackend:
         *,
         export_confidence: bool,
     ) -> np.ndarray:
+        model_input = (
+            _replace_zero_nodata_for_fixed_patch(image_rgn)
+            if self.raw_fixed_patch_size is not None
+            else image_rgn
+        )
         try:
             # inference_mode removes autograd view/version bookkeeping in addition
             # to the no_grad guards used inside OmniCloudMask.
             with self.torch.inference_mode():
                 prediction = self._predict_from_array(
-                    image_rgn,
+                    model_input,
                     patch_size=min(self.patch_size, *image_rgn.shape[1:]),
                     patch_overlap=min(
                         self.patch_overlap,

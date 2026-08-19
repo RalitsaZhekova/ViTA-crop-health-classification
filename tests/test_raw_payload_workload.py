@@ -1,0 +1,177 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+import yaml
+from prithvi_payload import raw_payload_workload
+
+
+def _input_files(root: Path) -> dict[str, Path]:
+    paths = {
+        "raw_path": root / "3408_Raw.tif",
+        "metadata_path": root / "3408_L0R_manifest.json",
+        "radiometric_diagnostics_path": root / "3408_L1A_reference_validation.json",
+        "position_path": root / "position.csv",
+        "attitude_path": root / "attitude.csv",
+        "parent_calibration_path": root / "3408_L1ORT.crop_calibration.json",
+    }
+    for path in paths.values():
+        path.write_text("input", encoding="utf-8")
+    return paths
+
+
+def test_isolated_raw_job_creates_normal_downlink_bundle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inputs = _input_files(tmp_path)
+    observed: dict[str, object] = {}
+
+    def fake_align(source: Path, output: Path, **kwargs):
+        observed["alignment"] = kwargs
+        output.write_bytes(b"aligned")
+        report = {
+            "source": {"sha256": "raw-sha"},
+            "execution": {
+                "resolved_device": "cuda",
+                "cuda_batched_phase_correlation": True,
+                "cuda_fused_four_band_warp": True,
+            },
+        }
+        output.with_suffix(".alignment.json").write_text(
+            json.dumps(report),
+            encoding="utf-8",
+        )
+        return report
+
+    def fake_proxy(aligned: Path, output: Path, **kwargs):
+        observed["proxy"] = kwargs
+        output.write_bytes(b"proxy")
+        output.with_suffix(".raw_proxy.json").write_text("{}", encoding="utf-8")
+        output.with_name(f"{output.stem}.crop_calibration.json").write_text(
+            json.dumps({"acquired_at": "2026-06-16T12:00:00+00:00"}),
+            encoding="utf-8",
+        )
+        return {
+            "execution": {
+                "reconstruction_backend": "gdal-average-band-parallel",
+                "band_workers": 4,
+                "cpu_thread_budget": 8,
+            }
+        }
+
+    fake_cloud = SimpleNamespace(backend=object(), config={})
+    fake_crop = object()
+
+    def fake_models():
+        return fake_cloud, fake_crop, {
+            "cloud_backend": "tensorrt",
+            "crop_backend": "tensorrt",
+        }
+
+    def fake_pipeline(source: Path, **kwargs):
+        observed["pipeline_source"] = source
+        observed["pipeline"] = kwargs
+        bundle = kwargs["output_root"] / "downlink"
+        bundle.mkdir()
+        for name in raw_payload_workload.DOWNLINK_FILES:
+            (bundle / name).write_bytes(name.encode("ascii"))
+        return {
+            "status": "DOWNLINK_READY",
+            "scene_id": kwargs["scene_id"],
+            "summary": {"crop": {"status": "ready"}},
+        }
+
+    monkeypatch.setattr(raw_payload_workload, "align_balkan_geotiff", fake_align)
+    monkeypatch.setattr(raw_payload_workload, "build_raw_model_proxy", fake_proxy)
+    monkeypatch.setattr(
+        raw_payload_workload,
+        "_load_warm_accelerated_models",
+        fake_models,
+    )
+    monkeypatch.setattr(raw_payload_workload, "run_scene", fake_pipeline)
+    monkeypatch.setattr(raw_payload_workload, "_synchronize_cuda", lambda: None)
+
+    output_root = tmp_path / "isolated-runtime" / "runs"
+    response = raw_payload_workload.run_raw_payload_job(
+        **inputs,
+        output_root=output_root,
+        job_id="raw-3408-test",
+        region_id="balkan-raw-3408",
+    )
+
+    assert response["status"] == "DOWNLINK_READY"
+    assert response["bundle_relative"] == "runs/raw-3408-test/downlink"
+    assert response["acceleration"]["alignment_device"] == "cuda"
+    assert response["acceleration"]["cloud_backend"] == "tensorrt"
+    assert response["acceleration"]["crop_backend"] == "tensorrt"
+    assert response["acceleration"]["raw_model_reconstruction_band_workers"] == 4
+    assert observed["alignment"]["config"].device == "cuda"
+    assert observed["alignment"]["config"].build_overviews is False
+    assert observed["alignment"]["require_georeferencing"] is False
+    assert observed["pipeline"]["allow_experimental_raw_proxy"] is True
+    assert observed["pipeline"]["stop_after"] == "downlink"
+    assert (output_root / "raw-3408-test" / "downlink" / "scene.json").is_file()
+    status = json.loads(
+        (output_root / "raw-3408-test" / "raw-job.json").read_text(encoding="utf-8")
+    )
+    assert status["status"] == "DOWNLINK_READY"
+
+    with pytest.raises(FileExistsError, match="use a new job ID"):
+        raw_payload_workload.run_raw_payload_job(
+            **inputs,
+            output_root=output_root,
+            job_id="raw-3408-test",
+            region_id="balkan-raw-3408",
+        )
+
+
+def test_cuda_alignment_contract_fails_closed() -> None:
+    with pytest.raises(RuntimeError, match="required CUDA execution contract"):
+        raw_payload_workload._assert_cuda_alignment(
+            {
+                "execution": {
+                    "resolved_device": "cpu",
+                    "cuda_batched_phase_correlation": False,
+                    "cuda_fused_four_band_warp": False,
+                }
+            }
+        )
+
+
+def test_raw_compose_cannot_replace_operational_payload() -> None:
+    project = Path(__file__).resolve().parents[1]
+    raw_compose = yaml.safe_load(
+        (project / "deploy" / "compose.payload.raw.yaml").read_text(encoding="utf-8")
+    )
+    operational_text = (project / "deploy" / "compose.payload.yaml").read_text(
+        encoding="utf-8"
+    )
+    raw_text = (project / "deploy" / "compose.payload.raw.yaml").read_text(
+        encoding="utf-8"
+    )
+    runner = (project / "deploy" / "payload" / "run-raw.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert raw_compose["name"] == "vita-payload-raw"
+    service = raw_compose["services"]["raw-payload"]
+    assert "ports" not in service
+    assert service["restart"] == "no"
+    assert any("VITA_RAW_OUTPUT_HOST" in volume for volume in service["volumes"])
+    assert any(
+        "VITA_RAW_ENGINE_CACHE_HOST" in volume and volume.endswith(":/engine-cache:ro")
+        for volume in service["volumes"]
+    )
+    assert any(
+        "VITA_RAW_DATA_HOST" in volume and volume.endswith(":/data:ro")
+        for volume in service["volumes"]
+    )
+    assert "../runtime/payload:/runtime" not in raw_text
+    assert "vita-payload:1.0.0" in raw_text
+    assert "runtime/raw-payload" not in operational_text
+    assert "docker compose down" not in runner
+    assert "docker compose stop" not in runner

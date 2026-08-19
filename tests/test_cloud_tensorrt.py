@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import threading
 
+import numpy as np
 import pytest
 import torch
+from cloud_detection.backend import _replace_zero_nodata_for_fixed_patch
 from cloud_detection.tensorrt_backend import (
     CLOUD_MAX_AGGREGATE_CLASS_MISMATCH,
     CLOUD_MAX_SCENE_CLASS_MISMATCH,
@@ -72,6 +74,18 @@ def test_cloud_tensorrt_wrapper_preserves_mean_logit_ensemble() -> None:
     image = torch.ones((1, 3, 8, 8), dtype=torch.float32)
 
     torch.testing.assert_close(ensemble(image), image * 3.0)
+
+
+def test_raw_fixed_cloud_patch_keeps_nodata_inert_without_exact_zeros() -> None:
+    image = np.ones((3, 40, 50), dtype=np.float32)
+    image[:, :20] = 0.0
+
+    prepared = _replace_zero_nodata_for_fixed_patch(image)
+
+    assert np.count_nonzero(prepared == 0.0) == 0
+    assert np.all(prepared[:, :20] > 0.0)
+    np.testing.assert_array_equal(prepared[:, 20:], image[:, 20:])
+    assert np.all(image[:, :20] == 0.0)
 
 
 def test_cloud_tensorrt_removes_exact_zero_channel_cat_noop() -> None:
