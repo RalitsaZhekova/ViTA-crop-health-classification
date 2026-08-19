@@ -173,5 +173,8 @@ def test_raw_compose_cannot_replace_operational_payload() -> None:
     assert "../runtime/payload:/runtime" not in raw_text
     assert "vita-payload:1.0.0" in raw_text
     assert "runtime/raw-payload" not in operational_text
+    assert "$OPERATIONAL_ROOT/runtime/worktrees/raw-band-jetson-isolated" in runner
+    assert "$OPERATIONAL_ROOT/data/raw-inputs" in runner
+    assert "$OPERATIONAL_ROOT/runtime/raw-payload" in runner
     assert "docker compose down" not in runner
     assert "docker compose stop" not in runner

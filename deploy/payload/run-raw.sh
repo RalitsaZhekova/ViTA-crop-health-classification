@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT_ROOT="${VITA_RAW_PROJECT_ROOT:-/data/code/VITA-raw}"
 OPERATIONAL_ROOT="${VITA_OPERATIONAL_PROJECT_ROOT:-/data/code/VITA}"
+PROJECT_ROOT="${VITA_RAW_PROJECT_ROOT:-$OPERATIONAL_ROOT/runtime/worktrees/raw-band-jetson-isolated}"
 COMPOSE_FILE="$PROJECT_ROOT/deploy/compose.payload.raw.yaml"
 RAW_IMAGE="${VITA_RAW_PAYLOAD_IMAGE:-vita-payload:raw-band}"
 BASE_IMAGE="${VITA_RAW_PAYLOAD_BASE_IMAGE:-vita-payload:1.0.0}"
@@ -51,15 +51,15 @@ export VITA_RAW_HOST_UID="${VITA_RAW_HOST_UID:-$(id -u)}"
 export VITA_RAW_HOST_GID="${VITA_RAW_HOST_GID:-$(id -g)}"
 export VITA_RAW_PAYLOAD_IMAGE="$RAW_IMAGE"
 export VITA_RAW_PAYLOAD_BASE_IMAGE="$BASE_IMAGE"
-export VITA_RAW_DATA_HOST="${VITA_RAW_DATA_HOST:-$OPERATIONAL_ROOT/data}"
+export VITA_RAW_DATA_HOST="${VITA_RAW_DATA_HOST:-$OPERATIONAL_ROOT/data/raw-inputs}"
 export VITA_RAW_MODEL_ASSETS_HOST="${VITA_RAW_MODEL_ASSETS_HOST:-$OPERATIONAL_ROOT/payload/models}"
 export VITA_RAW_ENGINE_CACHE_HOST="${VITA_RAW_ENGINE_CACHE_HOST:-$OPERATIONAL_ROOT/runtime/engines}"
-export VITA_RAW_OUTPUT_HOST="${VITA_RAW_OUTPUT_HOST:-$PROJECT_ROOT/runtime/raw-payload}"
-project_runtime="$(realpath -m "$PROJECT_ROOT/runtime")"
+export VITA_RAW_OUTPUT_HOST="${VITA_RAW_OUTPUT_HOST:-$OPERATIONAL_ROOT/runtime/raw-payload}"
+raw_output_root="$(realpath -m "$OPERATIONAL_ROOT/runtime/raw-payload")"
 resolved_output="$(realpath -m "$VITA_RAW_OUTPUT_HOST")"
 case "$resolved_output/" in
-    "$project_runtime"/*) ;;
-    *) echo "ERROR: raw output must remain below $project_runtime" >&2; exit 1 ;;
+    "$raw_output_root"/|"$raw_output_root"/*) ;;
+    *) echo "ERROR: raw output must remain below $raw_output_root" >&2; exit 1 ;;
 esac
 export VITA_RAW_OUTPUT_HOST="$resolved_output"
 
