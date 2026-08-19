@@ -113,6 +113,7 @@ def test_isolated_raw_job_creates_normal_downlink_bundle(
     assert observed["alignment"]["config"].build_overviews is False
     assert observed["alignment"]["require_georeferencing"] is False
     assert observed["pipeline"]["allow_experimental_raw_proxy"] is True
+    assert observed["pipeline"]["reflectance_scale"] == 1.0
     assert observed["pipeline"]["stop_after"] == "downlink"
     assert (output_root / "raw-3408-test" / "downlink" / "scene.json").is_file()
     status = json.loads(
