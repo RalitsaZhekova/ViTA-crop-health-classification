@@ -61,6 +61,10 @@ function Get-EnvironmentDefault([string]$Name, [string]$Default) {
     return $value
 }
 
+function Get-JetsonSshTarget {
+    return Get-EnvironmentDefault 'VITA_JETSON_SSH_TARGET' ''
+}
+
 function Get-ListeningProcessId([int]$Port) {
     $connection = Get-NetTCPConnection `
         -LocalPort $Port `
@@ -291,6 +295,61 @@ function Invoke-LocalPipeline([string]$SensorName) {
     Write-Host 'Visualize it with: .\vita.ps1 web'
 }
 
+function Invoke-StableJetsonPipeline([string]$SensorName) {
+    $sshTarget = Get-JetsonSshTarget
+    if ([string]::IsNullOrWhiteSpace($sshTarget)) {
+        throw 'Set VITA_JETSON_SSH_TARGET=user@jetson before launching Jetson analysis.'
+    }
+    if ($SensorName -ne 'sentinel-2' -and $Image) {
+        throw '-Image is only valid for Sentinel-2.'
+    }
+    $payloadInput = if ($InputPath) {
+        $InputPath
+    } elseif ($SensorName -eq 'sentinel-2') {
+        'sentinel2'
+    } else {
+        'balkan1/preprocessed/3408_L1ORT.tif'
+    }
+    $resolvedImage = if ($SensorName -eq 'sentinel-2') {
+        if ($Image) { $Image } else { 'S2_20260712T170851_T14TPL_cloudy.tif' }
+    } else {
+        $null
+    }
+    $prefix = if ($SensorName -eq 'sentinel-2') { 'sentinel' } else { 'balkan' }
+    $resolvedRegionId = if ($RegionId) {
+        $RegionId
+    } elseif ($SensorName -eq 'sentinel-2') {
+        'sentinel-local-cloudy'
+    } else {
+        'balkan-test-3408'
+    }
+    $resolvedJobId = if ($JobId) {
+        $JobId
+    } else {
+        '{0}-{1}-{2}' -f `
+            $prefix,
+            (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ'),
+            ([guid]::NewGuid().ToString('N').Substring(0, 8))
+    }
+    $remoteProjectRoot = Get-EnvironmentDefault `
+        'VITA_JETSON_REMOTE_PROJECT_ROOT' `
+        '/data/code/VITA'
+    $invoke = Join-Path $repositoryRoot 'scripts\ground\Invoke-VitaPayload.ps1'
+    & $invoke `
+        -SshTarget $sshTarget `
+        -Sensor $SensorName `
+        -PayloadInput $payloadInput `
+        -Image $resolvedImage `
+        -RegionId $resolvedRegionId `
+        -JobId $resolvedJobId `
+        -RemoteProjectRoot $remoteProjectRoot `
+        -RemotePayloadPort $PayloadPort `
+        -LocalTunnelPort 18090 `
+        -GroundStore $groundStore `
+        -SkipDashboard
+    if ($LASTEXITCODE -ne 0) { throw "The stable Jetson $SensorName analysis failed." }
+}
+
 function Start-LocalWeb {
     $webRuntime = Join-Path $runtimeRoot 'web'
     foreach ($directory in @($groundStore, $webRuntime)) {
@@ -369,8 +428,14 @@ function Stop-LocalServices {
 }
 
 switch ($Command) {
-    'sentinel' { Invoke-LocalPipeline 'sentinel-2' }
-    'balkan' { Invoke-LocalPipeline 'balkan-1' }
+    'sentinel' {
+        if (Get-JetsonSshTarget) { Invoke-StableJetsonPipeline 'sentinel-2' }
+        else { Invoke-LocalPipeline 'sentinel-2' }
+    }
+    'balkan' {
+        if (Get-JetsonSshTarget) { Invoke-StableJetsonPipeline 'balkan-1' }
+        else { Invoke-LocalPipeline 'balkan-1' }
+    }
     'web' { Start-LocalWeb }
     'health' {
         $health = Get-Health
@@ -389,6 +454,7 @@ ViTA local MVP
   .\vita.ps1 stop       Stop local services started by this script
 
 Optional overrides: -InputPath, -Image, -RegionId, -JobId, -PayloadPort, -WebPort
+Set VITA_JETSON_SSH_TARGET=user@jetson to use the stable Jetson service on port 8090.
 '@
     }
 }
