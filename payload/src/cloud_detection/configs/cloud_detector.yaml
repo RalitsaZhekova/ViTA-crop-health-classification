@@ -13,6 +13,7 @@ model:
   # Batch 2 is 17% faster than batch 1 on the 6 GB development GPU and remains
   # comfortably below its measured memory limit. Override only after benchmarking.
   batch_size: 2
+  # TensorRT runs currently override this with VITA_CLOUD_BATCH_SIZE=4.
 
 input:
   processing_level: MULTISENSOR_REFLECTANCE
@@ -50,7 +51,7 @@ postprocessing:
 # Decisions are based on all unusable pixels after post-processing, not only clouds.
 decision:
   process_max_unusable_percentage: 30.0
-  reject_min_unusable_percentage: 80.0
+  reject_min_unusable_percentage: 60.0
 
 output:
   # The pipeline consumes class IDs only; avoid copying four float confidence
