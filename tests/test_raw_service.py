@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from prithvi_payload import raw_service
 
@@ -86,3 +87,65 @@ def test_warm_raw_runtime_reuses_preloaded_models(tmp_path: Path, monkeypatch) -
     assert captured["preloaded_crop"] is crop
     assert captured["preloaded_acceleration"] is acceleration
     assert captured["raw_path"] == input_root / "balkan1" / "raw" / "3408" / "3408_Raw.tif"
+
+
+def test_warm_runtime_runs_processed_balkan_with_dynamic_accepted_profile(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    processed_root = tmp_path / "operational-data"
+    source = processed_root / "balkan1" / "preprocessed" / "3408_L1ORT.tif"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"processed scene")
+    calibration = source.with_name("3408_L1ORT.crop_calibration.json")
+    calibration.write_text(
+        json.dumps({"acquired_at": "2026-06-16T18:40:43.523000+00:00"}),
+        encoding="utf-8",
+    )
+    output_root = tmp_path / "runtime" / "runs"
+    output_root.mkdir(parents=True)
+    backend = SimpleNamespace(patch_size=1000, raw_fixed_patch_size=1000)
+    cloud = SimpleNamespace(backend=backend, config=object())
+    crop = object()
+    runtime = raw_service.RawPayloadRuntime.__new__(raw_service.RawPayloadRuntime)
+    runtime.processed_input_root = processed_root
+    runtime.output_root = output_root
+    runtime.cloud = cloud
+    runtime.crop = crop
+    runtime.acceleration = {"cloud_backend": "tensorrt", "crop_backend": "tensorrt"}
+    captured = {}
+
+    def fake_run_scene(input_path, **kwargs):
+        captured["input"] = input_path
+        captured.update(kwargs)
+        assert backend.raw_fixed_patch_size is None
+        bundle = kwargs["output_root"] / "downlink"
+        bundle.mkdir(parents=True)
+        for name in ("scene.json", "scene.webp", "condition.png"):
+            (bundle / name).write_bytes(name.encode("utf-8"))
+        return {
+            "status": "DOWNLINK_READY",
+            "scene_id": kwargs["scene_id"],
+            "summary": {"crop": {"decision": "CLASSIFIED"}},
+            "stage_metadata": {},
+            "timing": {},
+        }
+
+    monkeypatch.setattr(raw_service, "run_scene", fake_run_scene)
+    response = runtime.run(
+        raw_service.RawJobRequest(
+            sensor="balkan-1",
+            input="balkan1/preprocessed/3408_L1ORT.tif",
+            region_id="balkan-field",
+            job_id="web-balkan-test",
+        )
+    )
+
+    assert response["status"] == "DOWNLINK_READY"
+    assert response["sensor"] == "balkan-1"
+    assert captured["input"] == source
+    assert captured["sensor"] == "balkan-1"
+    assert captured["cloud_backend"] is backend
+    assert captured["crop_model"] is crop
+    assert backend.raw_fixed_patch_size == 1000
+    assert set(response["files"]) == {"scene.json", "scene.webp", "condition.png"}

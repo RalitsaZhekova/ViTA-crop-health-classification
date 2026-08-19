@@ -12,6 +12,7 @@ export VITA_RAW_PAYLOAD_IMAGE="${VITA_RAW_PAYLOAD_IMAGE:-vita-payload:raw-band}"
 export VITA_RAW_PAYLOAD_BASE_IMAGE="$BASE_IMAGE"
 export VITA_RAW_PAYLOAD_PORT="${VITA_RAW_PAYLOAD_PORT:-8091}"
 export VITA_RAW_DATA_HOST="${VITA_RAW_DATA_HOST:-$OPERATIONAL_ROOT/data/raw-inputs}"
+export VITA_PROCESSED_DATA_HOST="${VITA_PROCESSED_DATA_HOST:-$OPERATIONAL_ROOT/data}"
 export VITA_RAW_MODEL_ASSETS_HOST="${VITA_RAW_MODEL_ASSETS_HOST:-$OPERATIONAL_ROOT/payload/models}"
 export VITA_RAW_ENGINE_CACHE_HOST="${VITA_RAW_ENGINE_CACHE_HOST:-$OPERATIONAL_ROOT/runtime/engines}"
 export VITA_RAW_OUTPUT_HOST="${VITA_RAW_OUTPUT_HOST:-$OPERATIONAL_ROOT/runtime/raw-payload}"
@@ -22,6 +23,10 @@ docker image inspect "$BASE_IMAGE" >/dev/null || {
     exit 1
 }
 test -d "$VITA_RAW_DATA_HOST" || { echo "ERROR: missing raw data: $VITA_RAW_DATA_HOST" >&2; exit 1; }
+test -d "$VITA_PROCESSED_DATA_HOST/balkan1/preprocessed" || {
+    echo "ERROR: missing processed Balkan data: $VITA_PROCESSED_DATA_HOST/balkan1/preprocessed" >&2
+    exit 1
+}
 test -d "$VITA_RAW_MODEL_ASSETS_HOST" || { echo "ERROR: missing models: $VITA_RAW_MODEL_ASSETS_HOST" >&2; exit 1; }
 test -f "$VITA_RAW_ENGINE_CACHE_HOST/tensorrt/direct/accepted.json" || {
     echo "ERROR: accepted TensorRT manifest is missing" >&2
