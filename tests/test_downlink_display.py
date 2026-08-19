@@ -166,6 +166,7 @@ def test_experimental_raw_preview_uses_neutral_per_channel_stretch(
     )
 
     assert preview["experimental_raw_display"] is True
+    assert preview["calibrated_balkan_display"] is False
     pixels = preview["pixels"].astype(np.int16)
     assert np.max(np.ptp(pixels, axis=-1)) <= 1
 

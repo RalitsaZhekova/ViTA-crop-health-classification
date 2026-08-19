@@ -286,7 +286,7 @@ def prepare_rgb_preview(
         "pixels": preview,
         "width": width,
         "height": height,
-        "calibrated_balkan_display": calibrated_balkan,
+        "calibrated_balkan_display": calibrated_balkan and not experimental_raw_display,
         "experimental_raw_display": experimental_raw_display,
         "read_seconds": read_seconds,
         "stretch_seconds": time.perf_counter() - stretch_started,
