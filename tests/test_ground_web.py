@@ -48,7 +48,7 @@ def test_web_application_exposes_client_dashboard_and_safe_run_api(tmp_path: Pat
     assert 'id="theme-toggle"' in page.text
     assert 'src="/static/theme-init.js"' in page.text
     assert 'href="/static/styles.css?v=region-listbox-1"' in page.text
-    assert 'src="/static/app.js?v=eight-image-demo-1"' in page.text
+    assert 'src="/static/app.js?v=eight-image-demo-2"' in page.text
     assert 'id="region-trigger" class="region-trigger"' in page.text
     assert 'id="region-menu" class="region-menu hidden" role="listbox"' in page.text
     assert 'class="history-card history-panel card"' in page.text
@@ -62,6 +62,7 @@ def test_web_application_exposes_client_dashboard_and_safe_run_api(tmp_path: Pat
         'class="history-insights"'
     )
     assert '<option value="balkan-1-raw">Balkan-1 raw</option>' in page.text
+    assert "Reuse a region name to append history" in page.text
     assert (
         '<link rel="icon" type="image/png" '
         'href="/static/ViTA_satellite_icon.png?v=2">'
@@ -87,7 +88,7 @@ def test_web_application_exposes_client_dashboard_and_safe_run_api(tmp_path: Pat
     assert "background: #0c1a14" in styles.text
     assert 'html[data-theme="dark"] .region-option.selected' in styles.text
 
-    app_script = client.get("/static/app.js?v=eight-image-demo-1")
+    app_script = client.get("/static/app.js?v=eight-image-demo-2")
     assert app_script.status_code == 200
     assert "isBaselineVigorScore" in app_script.text
     assert "first eligible" in app_script.text
@@ -101,6 +102,9 @@ def test_web_application_exposes_client_dashboard_and_safe_run_api(tmp_path: Pat
     assert 'sensor === "balkan-1-raw"' in app_script.text
     assert "Raw detector imagery" in app_script.text
     assert "Pixel ${Math.round(point.x)}" in app_script.text
+    assert "Use 3370, 3408, or 3458" in app_script.text
+    assert "balkan1/preprocessed/3370_L1ORT.tif" in app_script.text
+    assert "Leave blank for Flevoland" in app_script.text
 
     response = client.post(
         "/api/v1/pipeline-runs",

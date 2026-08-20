@@ -257,7 +257,7 @@ function Invoke-LocalPipeline([string]$SensorName) {
         region_id = if ($RegionId) {
             $RegionId
         } elseif ($SensorName -eq 'sentinel-2') {
-            'sentinel-local-cloudy'
+            'flevoland-history'
         } else {
             'balkan-test-3408'
         }
@@ -268,7 +268,7 @@ function Invoke-LocalPipeline([string]$SensorName) {
         $request.image = if ($Image) {
             $Image
         } else {
-            'S2_20260712T170851_T14TPL_cloudy.tif'
+            'S2_20260814T104624_T31UFU_flevoland-latest-2026.tif'
         }
     } else {
         if ($Image) { throw '-Image is only valid for Sentinel-2.' }
@@ -318,7 +318,7 @@ function Invoke-RemoteJetsonPipeline([string]$SensorName) {
         default { throw "Unsupported Jetson sensor: $SensorName" }
     }
     $resolvedImage = if ($SensorName -eq 'sentinel-2') {
-        if ($Image) { $Image } else { 'S2_20260712T170851_T14TPL_cloudy.tif' }
+        if ($Image) { $Image } else { 'S2_20260814T104624_T31UFU_flevoland-latest-2026.tif' }
     } else {
         $null
     }
@@ -330,7 +330,7 @@ function Invoke-RemoteJetsonPipeline([string]$SensorName) {
     $resolvedRegionId = if ($RegionId) {
         $RegionId
     } elseif ($SensorName -eq 'sentinel-2') {
-        'sentinel-local-cloudy'
+        'flevoland-history'
     } elseif ($SensorName -eq 'balkan-1') {
         'balkan-test-3408'
     } else {

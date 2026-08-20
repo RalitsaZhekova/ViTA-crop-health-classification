@@ -1384,11 +1384,25 @@ function updateImageField() {
   if (raw) {
     elements["analysis-input-label"].innerHTML = "Raw scene ID <em>optional</em>";
     elements["analysis-input"].placeholder = "3408";
-    setText("analysis-input-help", "Use 3408 or 3370. Leave blank to use raw scene 3408.");
+    setText(
+      "analysis-input-help",
+      "Use 3370, 3408, or 3458. Raw images have no map location, so keep them in a dedicated raw region."
+    );
   } else {
     elements["analysis-input-label"].innerHTML = "Payload input path <em>optional</em>";
     elements["analysis-input"].placeholder = sentinel ? "sentinel2" : "balkan1/preprocessed/3408_L1ORT.tif";
-    setText("analysis-input-help", "Relative to the payload data folder. Leave blank for the demo input.");
+    setText(
+      "analysis-input-help",
+      sentinel
+        ? "Use the sentinel2 folder and enter one of the two demo filenames below."
+        : "Use balkan1/preprocessed/3370_L1ORT.tif, 3408_L1ORT.tif, or 3458_L1ORT.tif."
+    );
+  }
+  const imageHelp = elements["image-field"].querySelector("small");
+  if (imageHelp) {
+    imageHelp.textContent = sentinel
+      ? "Demo files: Beauce 2026 or Flevoland 2026. Leave blank for Flevoland."
+      : "Needed only when the Sentinel input is a folder.";
   }
 }
 
