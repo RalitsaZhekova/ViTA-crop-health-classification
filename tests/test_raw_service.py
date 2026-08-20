@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from prithvi_payload import raw_service
 
 
-def _raw_scene(root: Path, scene_id: str) -> None:
+def _raw_scene(root: Path, processed_root: Path, scene_id: str) -> None:
     paths = (
         root / "balkan1" / "raw" / scene_id / f"{scene_id}_Raw.tif",
         root / "balkan1" / "raw" / scene_id / "position.csv",
@@ -18,7 +18,10 @@ def _raw_scene(root: Path, scene_id: str) -> None:
         / "derived"
         / "l1a"
         / f"{scene_id}_L1A_reference_validation.json",
-        root / "balkan1" / "preprocessed" / f"{scene_id}_L1ORT.crop_calibration.json",
+        processed_root
+        / "balkan1"
+        / "preprocessed"
+        / f"{scene_id}_L1ORT.crop_calibration.json",
     )
     for path in paths:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -28,8 +31,9 @@ def _raw_scene(root: Path, scene_id: str) -> None:
 def test_warm_raw_runtime_reuses_preloaded_models(tmp_path: Path, monkeypatch) -> None:
     scene_id = "3408"
     input_root = tmp_path / "data"
+    processed_root = tmp_path / "operational-data"
     output_root = tmp_path / "runtime" / "runs"
-    _raw_scene(input_root, scene_id)
+    _raw_scene(input_root, processed_root, scene_id)
     output_root.mkdir(parents=True)
     pipeline_path = output_root / "web-raw-test" / "result.json"
     pipeline_path.parent.mkdir()
@@ -42,6 +46,7 @@ def test_warm_raw_runtime_reuses_preloaded_models(tmp_path: Path, monkeypatch) -
     acceleration = {"cloud_backend": "tensorrt", "crop_backend": "tensorrt"}
     runtime = raw_service.RawPayloadRuntime.__new__(raw_service.RawPayloadRuntime)
     runtime.input_root = input_root
+    runtime.processed_input_root = processed_root
     runtime.output_root = output_root
     runtime.cloud = cloud
     runtime.crop = crop
@@ -87,6 +92,9 @@ def test_warm_raw_runtime_reuses_preloaded_models(tmp_path: Path, monkeypatch) -
     assert captured["preloaded_crop"] is crop
     assert captured["preloaded_acceleration"] is acceleration
     assert captured["raw_path"] == input_root / "balkan1" / "raw" / "3408" / "3408_Raw.tif"
+    assert captured["parent_calibration_path"] == (
+        processed_root / "balkan1" / "preprocessed" / "3408_L1ORT.crop_calibration.json"
+    )
 
 
 def test_warm_runtime_runs_processed_balkan_with_dynamic_accepted_profile(

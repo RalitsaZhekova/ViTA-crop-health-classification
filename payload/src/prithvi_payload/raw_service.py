@@ -149,7 +149,7 @@ class RawPayloadRuntime:
             "position_path": self.input_root / "balkan1" / "raw" / scene_id / "position.csv",
             "attitude_path": self.input_root / "balkan1" / "raw" / scene_id / "attitude.csv",
             "parent_calibration_path": (
-                self.input_root
+                self.processed_input_root
                 / "balkan1"
                 / "preprocessed"
                 / f"{scene_id}_L1ORT.crop_calibration.json"
