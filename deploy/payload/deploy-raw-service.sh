@@ -14,7 +14,14 @@ export VITA_RAW_PAYLOAD_PORT="${VITA_RAW_PAYLOAD_PORT:-8091}"
 export VITA_RAW_DATA_HOST="${VITA_RAW_DATA_HOST:-$OPERATIONAL_ROOT/data/raw-inputs}"
 export VITA_PROCESSED_DATA_HOST="${VITA_PROCESSED_DATA_HOST:-$OPERATIONAL_ROOT/data}"
 export VITA_RAW_MODEL_ASSETS_HOST="${VITA_RAW_MODEL_ASSETS_HOST:-$OPERATIONAL_ROOT/payload/models}"
-export VITA_RAW_ENGINE_CACHE_HOST="${VITA_RAW_ENGINE_CACHE_HOST:-$OPERATIONAL_ROOT/runtime/engines}"
+if [ -z "${VITA_RAW_ENGINE_CACHE_HOST:-}" ]; then
+    if [ -f "$OPERATIONAL_ROOT/runtime/raw-engines/tensorrt/direct/accepted.json" ]; then
+        VITA_RAW_ENGINE_CACHE_HOST="$OPERATIONAL_ROOT/runtime/raw-engines"
+    else
+        VITA_RAW_ENGINE_CACHE_HOST="$OPERATIONAL_ROOT/runtime/engines"
+    fi
+fi
+export VITA_RAW_ENGINE_CACHE_HOST
 export VITA_RAW_OUTPUT_HOST="${VITA_RAW_OUTPUT_HOST:-$OPERATIONAL_ROOT/runtime/raw-payload}"
 
 test -f "$COMPOSE_FILE" || { echo "ERROR: missing $COMPOSE_FILE" >&2; exit 1; }

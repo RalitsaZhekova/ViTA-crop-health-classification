@@ -1,0 +1,4 @@
+services:
+  raw-payload:
+    volumes:
+      - ${VITA_RAW_ENGINE_CACHE_HOST:?set VITA_RAW_ENGINE_CACHE_HOST}:/engine-cache

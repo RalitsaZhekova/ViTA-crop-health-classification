@@ -177,7 +177,9 @@ if [ "$crop_backend" = "tensorrt" ]; then
         replace_direct_vita_tensorrt_artifacts
     fi
     echo "Building and accepting direct TensorRT plans offline before service startup."
+    cloud_profile_inputs="${VITA_BALKAN_CLOUD_PROFILE_INPUTS:-balkan1/preprocessed/3458_L1ORT.tif}"
     docker compose "${compose_args[@]}" run --rm --no-deps \
+        -e "VITA_BALKAN_CLOUD_PROFILE_INPUTS=$cloud_profile_inputs" \
         --entrypoint python payload -m prithvi_payload.tensorrt_builder
 fi
 docker compose "${compose_args[@]}" up -d

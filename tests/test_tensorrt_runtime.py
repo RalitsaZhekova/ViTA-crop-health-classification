@@ -102,6 +102,7 @@ def test_direct_tensorrt_discovers_every_reviewed_scene_patch(
         "sentinel-b": 1000,
         "balkan-3370": 891,
         "balkan-3408": 869,
+        "balkan-3458": 845,
     }
     profiles = [
         {"input": scene_input, "marker": marker}
@@ -184,7 +185,12 @@ def test_direct_tensorrt_reuses_only_checksum_bound_matching_cloud_profiles(
         manifest_path,
         target=target,
         source_precision="fp16",
-        profiles=[(869, 4, "fp16"), (891, 4, "fp16"), (1000, 1, "fp32")],
+        profiles=[
+            (845, 4, "fp16"),
+            (869, 4, "fp16"),
+            (891, 4, "fp16"),
+            (1000, 1, "fp32"),
+        ],
     )
 
     assert reusable == {869: record}

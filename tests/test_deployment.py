@@ -9,6 +9,7 @@ from prithvi_payload.deployment_check import _paths_from_environment
 from prithvi_payload.inference import _environment_flag
 from prithvi_payload.service import (
     JobRequest,
+    _balkan_cloud_profile_inputs,
     _balkan_prepare_inputs,
     _pipeline_timings,
     _safe_relative,
@@ -112,6 +113,31 @@ def test_balkan_startup_rejects_duplicate_inputs(monkeypatch: pytest.MonkeyPatch
         _balkan_prepare_inputs()
 
 
+def test_balkan_cloud_qualification_input_is_separate_from_crop_parity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "VITA_BALKAN_PREPARE_INPUTS",
+        "balkan1/preprocessed/3370_L1ORT.tif,balkan1/preprocessed/3408_L1ORT.tif",
+    )
+    monkeypatch.setenv(
+        "VITA_BALKAN_CLOUD_PROFILE_INPUTS",
+        "balkan1/preprocessed/3458_L1ORT.tif",
+    )
+    assert _balkan_cloud_profile_inputs() == (
+        "balkan1/preprocessed/3458_L1ORT.tif",
+    )
+
+
+def test_balkan_cloud_qualification_rejects_crop_parity_duplicate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VITA_BALKAN_PREPARE_INPUTS", "same.tif")
+    monkeypatch.setenv("VITA_BALKAN_CLOUD_PROFILE_INPUTS", "same.tif")
+    with pytest.raises(RuntimeError, match="must not duplicate"):
+        _balkan_cloud_profile_inputs()
+
+
 def test_deployment_requires_exactly_two_distinct_sensor_inputs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -208,7 +234,7 @@ def test_payload_env_matches_the_production_crop_acceleration_contract() -> None
     assert environment["VITA_CLOUD_TRT_PRECISION"] == "fp16"
     assert environment["VITA_CLOUD_SENTINEL_TRT_PRECISION"] == "fp32"
     assert environment["VITA_TRT_BUILDER_OPTIMIZATION_LEVEL"] == "5"
-    assert environment["VITA_CLOUD_WARMUP_PATCH_SIZES"] == "869,891,1000"
+    assert environment["VITA_CLOUD_WARMUP_PATCH_SIZES"] == "845,869,891,1000"
     assert environment["VITA_SKIP_PERFORMANCE_ACCEPTANCE"] == "0"
     compose = (
         Path(__file__).resolve().parents[1] / "deploy/compose.payload.yaml"

@@ -204,6 +204,22 @@ def _balkan_prepare_inputs() -> tuple[str, ...]:
     return values
 
 
+def _balkan_cloud_profile_inputs() -> tuple[str, ...]:
+    """Return additional Balkan scenes used only for cloud-engine qualification."""
+
+    raw = os.environ.get("VITA_BALKAN_CLOUD_PROFILE_INPUTS", "")
+    values = tuple(value.strip() for value in raw.split(",") if value.strip())
+    if len(values) != len(set(values)):
+        raise RuntimeError("Configured Balkan cloud profile inputs must be distinct")
+    overlap = set(values) & set(_balkan_prepare_inputs())
+    if overlap:
+        raise RuntimeError(
+            "Balkan cloud-only inputs must not duplicate prepared pipeline inputs: "
+            f"{sorted(overlap)}"
+        )
+    return values
+
+
 def _sentinel_demo_inputs() -> tuple[str, ...]:
     raw = os.environ.get("VITA_DEMO_SENTINEL_IMAGES", "")
     values = tuple(value.strip() for value in raw.split(",") if value.strip())
@@ -281,16 +297,35 @@ class PayloadRuntime:
         self.stack = self._stack_record()
 
     def _prepare_balkan_analysis_caches(self) -> list[dict[str, Any]]:
-        return [
-            self._prepare_balkan_analysis_cache(relative_input, index=index)
-            for index, relative_input in enumerate(_balkan_prepare_inputs(), start=1)
+        prepared_inputs = _balkan_prepare_inputs()
+        cloud_only_inputs = _balkan_cloud_profile_inputs()
+        caches = [
+            self._prepare_balkan_analysis_cache(
+                relative_input,
+                index=index,
+                include_crop_parity=True,
+            )
+            for index, relative_input in enumerate(prepared_inputs, start=1)
         ]
+        caches.extend(
+            self._prepare_balkan_analysis_cache(
+                relative_input,
+                index=index,
+                include_crop_parity=False,
+            )
+            for index, relative_input in enumerate(
+                cloud_only_inputs,
+                start=len(prepared_inputs) + 1,
+            )
+        )
+        return caches
 
     def _prepare_balkan_analysis_cache(
         self,
         relative_input: str,
         *,
         index: int,
+        include_crop_parity: bool,
     ) -> dict[str, Any]:
         source = _safe_relative(self.input_root, relative_input, name="Balkan prepare input")
         calibration = source.with_name(f"{source.stem}.crop_calibration.json")
@@ -333,23 +368,26 @@ class PayloadRuntime:
                 "input": relative_input.replace("\\", "/"),
             }
         )
-        crop_adapter = intake["model_band_routes"]["crop_classification"][
-            "spectral_adapter"
-        ]
-        self._crop_parity_profiles.append(
-            {
-                "sensor": "balkan-1",
-                "input": relative_input.replace("\\", "/"),
-                "source_path": analysis["source_path"],
-                "source_band_indices": analysis["model_band_routes"]["crop_classification"][
-                    "source_band_indices"
-                ],
-                "training_scale_multiplier": crop_adapter["source_scale_to_model_units"],
-                "calibration_path": crop_adapter["calibration_path"],
-                "calibration_source_path": intake["source_path"],
-                "acquired_at": intake["acquired_at"],
-            }
-        )
+        if include_crop_parity:
+            crop_adapter = intake["model_band_routes"]["crop_classification"][
+                "spectral_adapter"
+            ]
+            self._crop_parity_profiles.append(
+                {
+                    "sensor": "balkan-1",
+                    "input": relative_input.replace("\\", "/"),
+                    "source_path": analysis["source_path"],
+                    "source_band_indices": analysis["model_band_routes"][
+                        "crop_classification"
+                    ]["source_band_indices"],
+                    "training_scale_multiplier": crop_adapter[
+                        "source_scale_to_model_units"
+                    ],
+                    "calibration_path": crop_adapter["calibration_path"],
+                    "calibration_source_path": intake["source_path"],
+                    "acquired_at": intake["acquired_at"],
+                }
+            )
         return {
             "input": relative_input.replace("\\", "/"),
             "cache_hit": bool(analysis["runtime"].get("cache_hit")),
@@ -359,6 +397,7 @@ class PayloadRuntime:
             "height": int(analysis["raster"]["height"]),
             "preprocessing_mode": analysis.get("preprocessing", {}).get("mode"),
             "overview_factor": analysis.get("preprocessing", {}).get("overview_factor"),
+            "cloud_only_qualification": not include_crop_parity,
         }
 
     def _prepare_sentinel_cloud_warmups(self) -> None:
@@ -463,7 +502,7 @@ class PayloadRuntime:
         else:
             raw_patch_sizes = os.environ.get(
                 "VITA_CLOUD_WARMUP_PATCH_SIZES",
-                "869,891,1000",
+                "845,869,891,1000",
             )
             try:
                 patch_sizes = tuple(

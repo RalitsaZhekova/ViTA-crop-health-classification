@@ -23,6 +23,7 @@ from cloud_detection.tensorrt_backend import (
     CLOUD_MAX_AGGREGATE_CLASS_MISMATCH,
     CLOUD_MAX_SCENE_CLASS_MISMATCH,
     REVIEWED_CLOUD_BASE_PATCH_SIZE,
+    REVIEWED_CLOUD_QUALIFICATION_SCENE_COUNT,
     REVIEWED_CLOUD_SCENE_BATCH_SIZES,
     REVIEWED_CLOUD_SCENE_PATCH_SIZES,
     REVIEWED_CLOUD_SCENE_PRECISIONS,
@@ -1711,9 +1712,12 @@ def _discover_cloud_scene_patch_sizes(runtime: Any) -> dict[str, int]:
 
     observed = set(scene_patch_sizes.values())
     expected = set(REVIEWED_CLOUD_SCENE_PATCH_SIZES)
-    if observed != expected or len(scene_patch_sizes) != 4:
+    if (
+        observed != expected
+        or len(scene_patch_sizes) != REVIEWED_CLOUD_QUALIFICATION_SCENE_COUNT
+    ):
         raise TensorRTBuildError(
-            "Cloud scene patch sizes do not match the reviewed four-scene contract: "
+            "Cloud scene patch sizes do not match the reviewed qualification contract: "
             f"observed={scene_patch_sizes}, expected_sizes={sorted(expected)}"
         )
     print(
@@ -1827,9 +1831,11 @@ def _validate_cloud_parity(
         backend.models = []
         del source, runtime
         _release_cuda_memory()
-    if len(scene_results) != 4:
+    if len(scene_results) != REVIEWED_CLOUD_QUALIFICATION_SCENE_COUNT:
         raise TensorRTBuildError(
-            f"Cloud parity evaluated {len(scene_results)} scenes instead of four"
+            "Cloud parity evaluated "
+            f"{len(scene_results)} scenes instead of "
+            f"{REVIEWED_CLOUD_QUALIFICATION_SCENE_COUNT}"
         )
     aggregate = total_mismatches / total_pixels
     worst_scene = max(
@@ -1863,7 +1869,7 @@ def _validate_cloud_parity(
             flush=True,
         )
         raise TensorRTBuildError(
-            "Cloud direct TensorRT parity failed after all four scenes: "
+            "Cloud direct TensorRT parity failed across the qualification scenes: "
             f"aggregate={aggregate:.8f}/"
             f"{CLOUD_MAX_AGGREGATE_CLASS_MISMATCH:.8f}, "
             f"worst_scene={worst_scene['input']}="
@@ -1897,9 +1903,11 @@ def build(manifest_path: Path = DEFAULT_MANIFEST_PATH) -> dict[str, Any]:
     if (
         any(
             reviewed_precisions[patch_size] != cloud_precision
-            for patch_size in (869, 891)
+            for patch_size in reviewed_precisions
+            if patch_size != REVIEWED_CLOUD_BASE_PATCH_SIZE
         )
-        or reviewed_precisions[1000] != sentinel_cloud_precision
+        or reviewed_precisions[REVIEWED_CLOUD_BASE_PATCH_SIZE]
+        != sentinel_cloud_precision
     ):
         raise TensorRTBuildError(
             "Cloud TensorRT precision settings do not match the reviewed "
@@ -2079,7 +2087,7 @@ def build(manifest_path: Path = DEFAULT_MANIFEST_PATH) -> dict[str, Any]:
         )
     cloud_records.sort(key=lambda record: int(record["patch_size"]))
 
-    print("[parity] validating cloud plans on all four complete scenes", flush=True)
+    print("[parity] validating cloud plans on all qualification scenes", flush=True)
     cloud_parity = _validate_cloud_parity(
         cloud_records,
         manifest_path=manifest_path,

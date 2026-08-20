@@ -181,8 +181,14 @@ def test_cloud_tensorrt_router_promotes_only_the_selected_profile() -> None:
 
 
 def test_reviewed_cloud_batches_match_operational_payload_tiles() -> None:
-    assert dict(REVIEWED_CLOUD_SCENE_BATCH_SIZES) == {869: 4, 891: 4, 1000: 1}
+    assert dict(REVIEWED_CLOUD_SCENE_BATCH_SIZES) == {
+        845: 4,
+        869: 4,
+        891: 4,
+        1000: 1,
+    }
     assert dict(REVIEWED_CLOUD_SCENE_PRECISIONS) == {
+        845: "fp16",
         869: "fp16",
         891: "fp16",
         1000: "fp32",

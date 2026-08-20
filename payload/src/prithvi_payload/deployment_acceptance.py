@@ -12,6 +12,7 @@ from cloud_detection.tensorrt_backend import (
     CLOUD_MAX_AGGREGATE_CLASS_MISMATCH,
     CLOUD_MAX_SCENE_CLASS_MISMATCH,
     REVIEWED_CLOUD_BASE_PATCH_SIZE,
+    REVIEWED_CLOUD_QUALIFICATION_SCENE_COUNT,
     REVIEWED_CLOUD_SCENE_BATCH_SIZES,
     REVIEWED_CLOUD_SCENE_PATCH_SIZES,
     REVIEWED_CLOUD_SCENE_PRECISIONS,
@@ -125,8 +126,13 @@ def validate_health(health: dict[str, Any]) -> dict[str, Any]:
         ) > CLOUD_MAX_AGGREGATE_CLASS_MISMATCH:
             raise RuntimeError("Direct cloud TensorRT exceeds the class parity gate")
         scenes = cloud_parity.get("scenes")
-        if not isinstance(scenes, list) or len(scenes) != 4:
-            raise RuntimeError("Direct cloud TensorRT was not accepted on four scenes")
+        if (
+            not isinstance(scenes, list)
+            or len(scenes) != REVIEWED_CLOUD_QUALIFICATION_SCENE_COUNT
+        ):
+            raise RuntimeError(
+                "Direct cloud TensorRT was not accepted across every qualification scene"
+            )
         if any(
             not isinstance(scene, dict)
             or float(scene.get("class_mismatch_fraction", 1.0))

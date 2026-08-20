@@ -199,3 +199,40 @@ def test_warm_raw_service_is_separate_and_uses_read_only_operational_assets() ->
     assert any(volume.endswith(":/engine-cache:ro") for volume in service["volumes"])
     assert service["environment"]["VITA_CROP_BACKEND"] == "tensorrt"
     assert service["environment"]["VITA_CLOUD_BACKEND"] == "tensorrt"
+
+
+def test_raw_engine_builder_isolated_from_operational_service() -> None:
+    project = Path(__file__).resolve().parents[1]
+    builder = (project / "deploy" / "payload" / "build-raw-service-engines.sh")
+    builder_text = builder.read_text(encoding="utf-8")
+    build_override = yaml.safe_load(
+        (project / "deploy" / "compose.payload.raw-engine-build.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    deploy_text = (project / "deploy" / "payload" / "deploy-raw-service.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert builder.is_file()
+    assert (
+        'RAW_ENGINE_CACHE="${VITA_RAW_ENGINE_CACHE_HOST:-'
+        '$OPERATIONAL_ROOT/runtime/raw-engines}"' in builder_text
+    )
+    assert 'cp -a "$STABLE_ENGINE_CACHE" "$resolved_raw_cache"' in builder_text
+    assert (
+        "VITA_BALKAN_CLOUD_PROFILE_INPUTS="
+        "balkan1/preprocessed/3458_L1ORT.tif" in builder_text
+    )
+    assert "VITA_RAW_CLOUD_FIXED_PATCH_SIZE=" in builder_text
+    assert 'BUILD_COMPOSE_FILE="$PROJECT_ROOT/deploy/' in builder_text
+    assert '--file "$BUILD_COMPOSE_FILE" run' in builder_text
+    assert "stop raw-payload" in builder_text
+    assert "stop payload" not in builder_text
+    assert "docker compose down" not in builder_text
+    assert "stable TensorRT manifest changed" in builder_text
+    assert "stable payload container stopped" in builder_text
+    assert "runtime/raw-engines/tensorrt/direct/accepted.json" in deploy_text
+    assert build_override["services"]["raw-payload"]["volumes"] == [
+        "${VITA_RAW_ENGINE_CACHE_HOST:?set VITA_RAW_ENGINE_CACHE_HOST}:/engine-cache"
+    ]

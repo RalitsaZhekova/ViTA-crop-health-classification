@@ -14,8 +14,8 @@ REVIEWED_CLOUD_BASE_PATCH_SIZE = 1000
 # Each complete 700 px Sentinel source is reflect-padded by the operational
 # cloud executor into one 1000 px tile with a 150 px halo. Building that engine
 # at the global batch size would execute three padded copies for every request.
-# The two Balkan profiles produce multiple patches and retain batch four.
-REVIEWED_CLOUD_SCENE_BATCH_SIZES = ((869, 4), (891, 4), (1000, 1))
+# The three Balkan profiles produce multiple patches and retain batch four.
+REVIEWED_CLOUD_SCENE_BATCH_SIZES = ((845, 4), (869, 4), (891, 4), (1000, 1))
 REVIEWED_CLOUD_SCENE_PATCH_SIZES = tuple(
     patch_size for patch_size, _ in REVIEWED_CLOUD_SCENE_BATCH_SIZES
 )
@@ -23,8 +23,14 @@ REVIEWED_CLOUD_SCENE_PATCH_SIZES = tuple(
 # The Brazil Sentinel qualification scene crosses too many class boundaries in
 # strongly typed FP16, so its single 1000 px operational tile uses FP32. This is
 # a profile-local precision promotion, not a relaxed semantic acceptance gate.
-REVIEWED_CLOUD_SCENE_PRECISIONS = ((869, "fp16"), (891, "fp16"), (1000, "fp32"))
-# Semantic parity is measured across all four complete qualification scenes.
+REVIEWED_CLOUD_SCENE_PRECISIONS = (
+    (845, "fp16"),
+    (869, "fp16"),
+    (891, "fp16"),
+    (1000, "fp32"),
+)
+REVIEWED_CLOUD_QUALIFICATION_SCENE_COUNT = 5
+# Semantic parity is measured across all five complete qualification scenes.
 # Preserve the original 0.1% aggregate science budget while allowing any one
 # scene at most 0.2%; scene composition changes how many pixels lie directly on
 # a class boundary, so applying the aggregate limit to every scene is unsound.
