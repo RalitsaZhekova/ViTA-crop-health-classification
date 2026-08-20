@@ -147,9 +147,28 @@ def test_candidate_image_mosaics_every_granule_in_the_datatake(monkeypatch) -> N
             calls.append(("select", selectors, names))
             return self
 
+        def map(self, function):
+            calls.append(("map",))
+            function(Image())
+            return self
+
         def mosaic(self):
             calls.append(("mosaic",))
             return "mosaic-image"
+
+    class ValidMask:
+        def gt(self, value):
+            calls.append(("gt", value))
+            return "valid-mask"
+
+    class Image:
+        def reduce(self, reducer):
+            calls.append(("reduce", reducer))
+            return ValidMask()
+
+        def updateMask(self, mask):
+            calls.append(("updateMask", mask))
+            return self
 
     collection = Collection()
     fake_ee = SimpleNamespace(
@@ -157,6 +176,7 @@ def test_candidate_image_mosaics_every_granule_in_the_datatake(monkeypatch) -> N
             Rectangle=lambda bounds, geodesic: ("rectangle", bounds, geodesic)
         ),
         Filter=SimpleNamespace(eq=lambda name, value: ("eq", name, value)),
+        Reducer=SimpleNamespace(max=lambda: "max-reducer"),
         ImageCollection=lambda name: (
             calls.append(("collection", name)) or collection
         ),
@@ -177,10 +197,11 @@ def test_candidate_image_mosaics_every_granule_in_the_datatake(monkeypatch) -> N
 
     assert image == "mosaic-image"
     assert ("filter", ("eq", "DATATAKE_IDENTIFIER", "take-1")) in calls
-    assert calls[-2:] == [
-        ("select", ["B2", "B3", "B4", "B8", "B8A"], list(EARTH_ENGINE_BANDS)),
-        ("mosaic",),
-    ]
+    assert ("select", ["B2", "B3", "B4", "B8", "B8A"], list(EARTH_ENGINE_BANDS)) in calls
+    assert ("reduce", "max-reducer") in calls
+    assert ("gt", 0) in calls
+    assert ("updateMask", "valid-mask") in calls
+    assert calls[-1] == ("mosaic",)
 
 
 def test_download_parameters_pin_the_qualified_grid() -> None:

@@ -394,13 +394,22 @@ class PipelineRunManager:
 def _last_output_line(value: str | None) -> str | None:
     if not value:
         return None
-    lines = [line.strip() for line in value.splitlines() if line.strip()]
+    marker = "Payload request failed:"
+    normalised = value.replace("\r\n", "\n")
+    marker_position = normalised.rfind(marker)
+    if marker_position >= 0:
+        detail = normalised[marker_position:]
+        footer_positions = [
+            position
+            for footer in ("\nAt ", "\n    + CategoryInfo", "\n    + FullyQualifiedErrorId")
+            if (position := detail.find(footer)) >= 0
+        ]
+        if footer_positions:
+            detail = detail[: min(footer_positions)]
+        return re.sub(r"\s+", " ", detail).strip()[:300]
+    lines = [line.strip() for line in normalised.splitlines() if line.strip()]
     if not lines:
         return None
-    for line in reversed(lines):
-        marker = "Payload request failed:"
-        if marker in line:
-            return re.sub(r"\s+", " ", line[line.index(marker) :])[:220]
     line = lines[-1]
     line = re.sub(r"\s+", " ", line)
     return line[:220]

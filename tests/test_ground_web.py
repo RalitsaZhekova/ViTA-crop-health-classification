@@ -50,7 +50,8 @@ def test_pipeline_error_prefers_safe_payload_detail_over_powershell_footer() -> 
     output = "\n".join(
         (
             "Payload request failed: [EARTH_ENGINE_INCOMPLETE_COVERAGE] "
-            "The selected scene does not cover this area.",
+            "The selected Sentinel scene",
+            "does not sufficiently cover this area.",
             "At scripts\\ground\\Invoke-VitaPayload.ps1:1 char:1",
             "+ FullyQualifiedErrorId : WebCmdletWebResponseException,"
             "Microsoft.PowerShell.Commands.InvokeRestMethodCommand",
@@ -59,8 +60,9 @@ def test_pipeline_error_prefers_safe_payload_detail_over_powershell_footer() -> 
 
     assert _last_output_line(output) == (
         "Payload request failed: [EARTH_ENGINE_INCOMPLETE_COVERAGE] "
-        "The selected scene does not cover this area."
+        "The selected Sentinel scene does not sufficiently cover this area."
     )
+
 
 def test_web_application_exposes_client_dashboard_and_safe_run_api(tmp_path: Path) -> None:
     manager = StubPipelineManager()

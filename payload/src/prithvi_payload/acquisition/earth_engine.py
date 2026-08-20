@@ -25,7 +25,7 @@ EARTH_ENGINE_SOURCE_BANDS = ("B2", "B3", "B4", "B8", "B8A")
 EARTH_ENGINE_BANDS = ("B02", "B03", "B04", "B08", "B8A")
 REFLECTANCE_SCALE = 10_000
 MAXIMUM_SEARCH_DAYS = 92
-MAXIMUM_CANDIDATES = 3
+MAXIMUM_CANDIDATES = 5
 MAXIMUM_DOWNLOAD_BYTES = 32 * 1024 * 1024
 MINIMUM_VALID_PIXEL_FRACTION = 0.8
 _SAFE_COMPONENT = re.compile(r"[^A-Za-z0-9_-]+")
@@ -292,7 +292,7 @@ class EarthEngineAcquisitionProvider:
         session: requests.Session | None = None,
     ) -> None:
         if not 1 <= max_candidates <= MAXIMUM_CANDIDATES:
-            raise ValueError("max_candidates must be within 1..3")
+            raise ValueError("max_candidates must be within 1..5")
         self.max_candidates = max_candidates
         self.max_download_bytes = max_download_bytes
         self.session = session or requests.Session()
@@ -379,9 +379,15 @@ class EarthEngineAcquisitionProvider:
                 (acquired - timedelta(minutes=30)).isoformat(),
                 (acquired + timedelta(minutes=30)).isoformat(),
             )
-        return collection.select(
+        selected = collection.select(
             list(EARTH_ENGINE_SOURCE_BANDS), list(EARTH_ENGINE_BANDS)
-        ).mosaic()
+        )
+
+        def mask_granule_padding(image: Any) -> Any:
+            valid = image.reduce(ee.Reducer.max()).gt(0)
+            return image.updateMask(valid)
+
+        return selected.map(mask_granule_padding).mosaic()
 
     def _download(self, image: Any, grid: TargetGrid, destination: Path) -> None:
         try:
@@ -515,6 +521,24 @@ class EarthEngineAcquisitionProvider:
             except AcquisitionError as error:
                 raw_path.unlink(missing_ok=True)
                 scene_path.unlink(missing_ok=True)
+                (candidate_root / "failure.json").write_text(
+                    json.dumps(
+                        {
+                            "status": "REJECTED",
+                            "provider_scene_id": candidate.system_index,
+                            "datatake_identifier": candidate.datatake_identifier,
+                            "acquired_at": candidate.acquired_at,
+                            "requested_bbox_wgs84": list(bbox_wgs84),
+                            "candidate_rank": candidate.rank,
+                            "candidate_attempt_count": attempt,
+                            "error": error.safe_record(),
+                        },
+                        indent=2,
+                        sort_keys=True,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
                 failures.append(error)
         raise failures[-1] if failures else AcquisitionError(
             "EARTH_ENGINE_ACQUISITION_FAILED",
