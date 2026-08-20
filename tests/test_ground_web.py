@@ -48,7 +48,7 @@ def test_web_application_exposes_client_dashboard_and_safe_run_api(tmp_path: Pat
     assert 'id="theme-toggle"' in page.text
     assert 'src="/static/theme-init.js"' in page.text
     assert 'href="/static/styles.css?v=region-listbox-1"' in page.text
-    assert 'src="/static/app.js?v=region-listbox-1"' in page.text
+    assert 'src="/static/app.js?v=raw-image-1"' in page.text
     assert 'id="region-trigger" class="region-trigger"' in page.text
     assert 'id="region-menu" class="region-menu hidden" role="listbox"' in page.text
     assert 'class="history-card history-panel card"' in page.text
@@ -86,7 +86,7 @@ def test_web_application_exposes_client_dashboard_and_safe_run_api(tmp_path: Pat
     assert "background: #0c1a14" in styles.text
     assert 'html[data-theme="dark"] .region-option.selected' in styles.text
 
-    app_script = client.get("/static/app.js?v=region-listbox-1")
+    app_script = client.get("/static/app.js?v=raw-image-1")
     assert app_script.status_code == 200
     assert "isBaselineVigorScore" in app_script.text
     assert "first eligible" in app_script.text
@@ -97,6 +97,9 @@ def test_web_application_exposes_client_dashboard_and_safe_run_api(tmp_path: Pat
     assert "Early review signal" in app_script.text
     assert "setRegionMenuOpen" in app_script.text
     assert 'event.key === "ArrowDown"' in app_script.text
+    assert 'sensor === "balkan-1-raw"' in app_script.text
+    assert "Raw detector imagery" in app_script.text
+    assert "Pixel ${Math.round(point.x)}" in app_script.text
 
     response = client.post(
         "/api/v1/pipeline-runs",

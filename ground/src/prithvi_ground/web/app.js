@@ -409,6 +409,12 @@ async function selectScene(sceneId, { updateHistory = true } = {}) {
 }
 
 function renderManifest(manifest, links) {
+  const geolocated = hasGeolocation(manifest);
+  if (!geolocated) {
+    state.selection = null;
+    state.draftPixels = null;
+    state.drawMode = false;
+  }
   elements["empty-state"].classList.add("hidden");
   elements.dashboard.classList.remove("hidden");
   setText("region-name", humanizeIdentifier(manifest.region_id));
@@ -416,6 +422,14 @@ function renderManifest(manifest, links) {
   setText(
     "scene-subtitle",
     `${sensorLabel(manifest.sensor)} · Captured ${dateLabel(manifest.acquired_at, { time: true })}`
+      + (geolocated ? "" : " · Image-only view")
+  );
+  elements["draw-area"].classList.toggle("hidden", !geolocated);
+  setText(
+    "viewer-hint",
+    geolocated
+      ? "Choose “Select area”, then drag a box for local results"
+      : "Raw detector imagery · geographic coordinates are unavailable"
   );
 
   const acquired = new Date(manifest.acquired_at);
@@ -433,7 +447,13 @@ function renderManifest(manifest, links) {
 function sensorLabel(sensor) {
   if (sensor === "sentinel-2") return "Sentinel-2";
   if (sensor === "balkan-1") return "Balkan-1";
+  if (sensor === "balkan-1-raw") return "Balkan-1 raw";
   return humanizeIdentifier(sensor);
+}
+
+function hasGeolocation(manifest = state.manifest) {
+  return manifest?.geospatial?.location_status !== "unavailable"
+    && validBounds(manifest?.geospatial?.bounds_wgs84);
 }
 
 function scoreFromManifest(manifest) {
@@ -468,10 +488,11 @@ function renderViewer(manifest, links) {
   renderVectorHeatmap(manifest);
   renderSelectionBox();
 
+  const geolocated = hasGeolocation(manifest);
   const resolution = manifest.geospatial?.resolution;
-  const sourceResolution = Array.isArray(resolution) && isNumber(resolution[0])
+  const sourceResolution = geolocated && Array.isArray(resolution) && isNumber(resolution[0])
     ? ` · ${formatNumber(Math.abs(resolution[0]), 0)} m source pixels`
-    : "";
+    : geolocated ? "" : " · image only · no geographic location";
   setText(
     "image-resolution",
     `${state.imageWidth.toLocaleString()} × ${state.imageHeight.toLocaleString()} display${sourceResolution}`
@@ -539,7 +560,10 @@ function renderAreaResult(manifest) {
     ? aggregateSelectedArea(manifest, state.selection.boundsWgs84)
     : wholeObservationResult(manifest);
   renderSummaryResult(result, selected);
-  setText("area-title", selected ? "Selected area" : "Whole observation");
+  setText(
+    "area-title",
+    selected ? "Selected area" : hasGeolocation(manifest) ? "Whole observation" : "Whole raw image"
+  );
   elements["clear-area"].classList.toggle("hidden", !selected);
   setText("area-score", isNumber(result.score) ? Math.round(result.score) : "—");
   setScoreRing(elements["area-score-ring"], result.score);
@@ -551,7 +575,11 @@ function renderAreaResult(manifest) {
   setText("area-callout-copy", copy.guidance);
   setText(
     "area-size",
-    selected ? formatAreaSize(geographicAreaHectares(state.selection.boundsWgs84)) : formatAreaSize(geographicAreaHectares(manifest.geospatial?.bounds_wgs84))
+    hasGeolocation(manifest)
+      ? selected
+        ? formatAreaSize(geographicAreaHectares(state.selection.boundsWgs84))
+        : formatAreaSize(geographicAreaHectares(manifest.geospatial?.bounds_wgs84))
+      : "Unlocated"
   );
   setText("area-coverage", formatPercent(result.coverage));
   setText("area-alert", formatPercent(result.alert));
@@ -841,8 +869,12 @@ function imagePointFromEvent(event) {
 function updateCursorCoordinate(event) {
   const point = imagePointFromEvent(event);
   const bounds = state.manifest?.geospatial?.bounds_wgs84;
-  if (!point || !validBounds(bounds)) {
+  if (!point) {
     setText("cursor-coordinate", "Outside image");
+    return;
+  }
+  if (!hasGeolocation()) {
+    setText("cursor-coordinate", `Pixel ${Math.round(point.x)}, ${Math.round(point.y)}`);
     return;
   }
   const longitude = bounds[0] + (point.x / state.imageWidth) * (bounds[2] - bounds[0]);
@@ -851,6 +883,7 @@ function updateCursorCoordinate(event) {
 }
 
 function setDrawMode(enabled) {
+  if (enabled && !hasGeolocation()) return;
   state.drawMode = enabled;
   elements["draw-area"].classList.toggle("active", enabled);
   elements["draw-area"].setAttribute("aria-pressed", enabled ? "true" : "false");
@@ -862,6 +895,7 @@ function setDrawMode(enabled) {
 }
 
 function finishAreaSelection(pixels) {
+  if (!hasGeolocation()) return;
   if (!pixels || pixels.x2 - pixels.x1 < 5 || pixels.y2 - pixels.y1 < 5) {
     renderSelectionBox();
     setDrawMode(false);
@@ -892,7 +926,9 @@ async function renderHistory() {
   const isAreaHistory = Boolean(state.selection);
   setText(
     "history-scope",
-    isAreaHistory
+    !hasGeolocation()
+      ? "Image-only raw observation; geographic comparison is unavailable."
+      : isAreaHistory
       ? "The same selected geographic area is compared across every available observation."
       : "Whole-region scores. Select an area on the map to follow that zone through time."
   );

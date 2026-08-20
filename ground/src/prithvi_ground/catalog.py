@@ -62,7 +62,7 @@ class ValidatedBundle:
     score: float | None
     evidence_quality_score: float
     analysis_percentage: float
-    bounds_wgs84: tuple[float, float, float, float]
+    bounds_wgs84: tuple[float, float, float, float] | None
 
 
 def _require_object(value: Any, *, name: str) -> dict[str, Any]:
@@ -115,7 +115,7 @@ def _validate_no_absolute_paths(manifest: dict[str, Any]) -> None:
 def _validate_source(value: Any) -> None:
     source = _require_object(value, name="source")
     provider = source.get("provider")
-    if provider not in {"local_file", "earth_engine"}:
+    if provider not in {"local_file", "earth_engine", "raw_local"}:
         raise BundleValidationError("source.provider is unsupported")
     for field in SOURCE_MEASUREMENT_FIELDS:
         _require_percentage(source.get(field), name=f"source.{field}")
@@ -123,6 +123,27 @@ def _validate_source(value: Any) -> None:
         allowed = {"provider", "acquired_at", *SOURCE_MEASUREMENT_FIELDS}
         if not set(source) <= allowed:
             raise BundleValidationError("Local-file source provenance contains unknown fields")
+        return
+    if provider == "raw_local":
+        required = {
+            "provider",
+            "raw_payload_job",
+            "raw_source_sha256",
+            "alignment_report",
+            "raw_proxy_report",
+            *SOURCE_MEASUREMENT_FIELDS,
+        }
+        if set(source) != required:
+            raise BundleValidationError("Raw-file source provenance is incomplete")
+        _require_identifier(source.get("raw_payload_job"), name="source.raw_payload_job")
+        if not isinstance(source.get("raw_source_sha256"), str) or not re.fullmatch(
+            r"[0-9a-f]{64}", source["raw_source_sha256"]
+        ):
+            raise BundleValidationError("source.raw_source_sha256 is invalid")
+        for field in ("alignment_report", "raw_proxy_report"):
+            value = source.get(field)
+            if not isinstance(value, str) or not value or Path(value).name != value:
+                raise BundleValidationError(f"source.{field} must be a filename")
         return
 
     required = {
@@ -295,7 +316,7 @@ def validate_bundle(bundle_root: str | Path) -> ValidatedBundle:
     scene_id = _require_identifier(manifest.get("scene_id"), name="scene_id")
     region_id = _require_identifier(manifest.get("region_id"), name="region_id")
     sensor = manifest.get("sensor")
-    if sensor not in {"sentinel-2", "balkan-1"}:
+    if sensor not in {"sentinel-2", "balkan-1", "balkan-1-raw"}:
         raise BundleValidationError("sensor is unsupported")
     acquired_at = _normalise_datetime(manifest.get("acquired_at"))
     status = manifest.get("status")
@@ -340,15 +361,30 @@ def validate_bundle(bundle_root: str | Path) -> ValidatedBundle:
 
     geospatial = _require_object(manifest.get("geospatial"), name="geospatial")
     bounds = geospatial.get("bounds_wgs84")
-    if (
-        not isinstance(bounds, list)
-        or len(bounds) != 4
-        or any(not isinstance(value, (int, float)) or not math.isfinite(value) for value in bounds)
-    ):
-        raise BundleValidationError("geospatial.bounds_wgs84 must contain four finite values")
-    west, south, east, north = (float(value) for value in bounds)
-    if not (-180 <= west < east <= 180 and -90 <= south < north <= 90):
-        raise BundleValidationError("geospatial.bounds_wgs84 is outside valid longitude/latitude")
+    if sensor == "balkan-1-raw":
+        if geospatial.get("location_status") != "unavailable" or bounds is not None:
+            raise BundleValidationError(
+                "Raw Balkan imagery must explicitly declare unavailable geolocation"
+            )
+        validated_bounds = None
+    else:
+        if (
+            not isinstance(bounds, list)
+            or len(bounds) != 4
+            or any(
+                not isinstance(value, (int, float)) or not math.isfinite(value)
+                for value in bounds
+            )
+        ):
+            raise BundleValidationError(
+                "geospatial.bounds_wgs84 must contain four finite values"
+            )
+        west, south, east, north = (float(value) for value in bounds)
+        if not (-180 <= west < east <= 180 and -90 <= south < north <= 90):
+            raise BundleValidationError(
+                "geospatial.bounds_wgs84 is outside valid longitude/latitude"
+            )
+        validated_bounds = (west, south, east, north)
 
     interaction = _require_object(manifest.get("interaction_grid"), name="interaction_grid")
     rows = interaction.get("rows")
@@ -395,7 +431,7 @@ def validate_bundle(bundle_root: str | Path) -> ValidatedBundle:
         score=float(score) if score is not None else None,
         evidence_quality_score=evidence_quality_score,
         analysis_percentage=analysis_percentage,
-        bounds_wgs84=(west, south, east, north),
+        bounds_wgs84=validated_bounds,
     )
 
 
@@ -434,10 +470,10 @@ class SceneCatalog:
                     condition_score REAL,
                     evidence_quality_score REAL NOT NULL,
                     analysis_percentage REAL NOT NULL,
-                    west REAL NOT NULL,
-                    south REAL NOT NULL,
-                    east REAL NOT NULL,
-                    north REAL NOT NULL,
+                    west REAL,
+                    south REAL,
+                    east REAL,
+                    north REAL,
                     manifest_sha256 TEXT NOT NULL,
                     relative_bundle_path TEXT NOT NULL,
                     ingested_at TEXT NOT NULL
@@ -459,6 +495,11 @@ class SceneCatalog:
 
     @staticmethod
     def _summary(row: sqlite3.Row) -> dict[str, Any]:
+        bounds = (
+            None
+            if row["west"] is None
+            else [row["west"], row["south"], row["east"], row["north"]]
+        )
         return {
             "scene_id": row["scene_id"],
             "region_id": row["region_id"],
@@ -471,7 +512,7 @@ class SceneCatalog:
                 "evidence_quality_score": row["evidence_quality_score"],
                 "analysis_percentage": row["analysis_percentage"],
             },
-            "bounds_wgs84": [row["west"], row["south"], row["east"], row["north"]],
+            "bounds_wgs84": bounds,
             "ingested_at": row["ingested_at"],
         }
 
@@ -524,7 +565,7 @@ class SceneCatalog:
                         bundle.score,
                         bundle.evidence_quality_score,
                         bundle.analysis_percentage,
-                        *bundle.bounds_wgs84,
+                        *(bundle.bounds_wgs84 or (None, None, None, None)),
                         bundle.manifest_sha256,
                         relative,
                         now,
