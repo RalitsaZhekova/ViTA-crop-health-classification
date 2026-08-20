@@ -193,11 +193,14 @@ html[data-theme="dark"] .brand-logo-dark {
 }
 
 .header-context {
+  position: relative;
   display: grid;
+  min-width: 0;
   gap: 4px;
 }
 
-.header-context label {
+.header-context label,
+.region-picker-label {
   color: var(--muted);
   font-size: 9px;
   font-weight: 750;
@@ -205,7 +208,6 @@ html[data-theme="dark"] .brand-logo-dark {
   text-transform: uppercase;
 }
 
-.header-context select,
 .analysis-fields select,
 .analysis-fields input {
   width: 100%;
@@ -218,22 +220,122 @@ html[data-theme="dark"] .brand-logo-dark {
   background: var(--control);
 }
 
-.header-context select {
+.region-trigger {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 39px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
   border: 0;
   padding: 0 28px 0 0;
+  color: var(--ink);
   font-size: 14px;
   font-weight: 700;
   background: transparent;
   cursor: pointer;
+  text-align: left;
 }
 
-html[data-theme="dark"] .header-context select {
-  color-scheme: dark;
+.region-trigger > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-html[data-theme="dark"] .header-context select option {
-  color: #edf5ef;
-  background-color: #13231c;
+.region-trigger svg {
+  width: 15px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+  transition: transform 160ms ease;
+}
+
+.region-picker.open .region-trigger svg {
+  transform: rotate(180deg);
+}
+
+.region-menu {
+  position: absolute;
+  z-index: 80;
+  top: calc(100% + 10px);
+  left: 50%;
+  display: grid;
+  width: min(390px, calc(100vw - 32px));
+  max-height: min(62vh, 440px);
+  gap: 3px;
+  padding: 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 13px;
+  background: var(--control);
+  box-shadow: var(--shadow-lg);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: var(--line-strong) transparent;
+  transform: translateX(-50%);
+}
+
+.region-option {
+  display: flex;
+  width: 100%;
+  min-height: 39px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 8px 11px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--ink);
+  background: transparent;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 650;
+  text-align: left;
+}
+
+.region-option:hover,
+.region-option:focus-visible {
+  color: var(--green-700);
+  background: var(--soft-green);
+  outline: 0;
+}
+
+.region-option.selected {
+  color: var(--green-700);
+  background: var(--soft-green-strong);
+}
+
+.region-option.selected::after {
+  flex: 0 0 auto;
+  content: "✓";
+  font-size: 12px;
+  font-weight: 900;
+}
+
+html[data-theme="dark"] .region-menu {
+  border-color: #365043;
+  background: #0c1a14;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.62);
+}
+
+html[data-theme="dark"] .region-option {
+  color: #dfece3;
+}
+
+html[data-theme="dark"] .region-option:hover,
+html[data-theme="dark"] .region-option:focus-visible {
+  color: #a9e9c5;
+  background: #183126;
+}
+
+html[data-theme="dark"] .region-option.selected {
+  color: #b7f0d0;
+  background: #16412e;
 }
 
 .header-actions {
@@ -1906,6 +2008,7 @@ html[data-theme="dark"] .condition-pill.no-score {
   }
 
   .header-context label,
+  .region-picker-label,
   .header-actions #refresh-scenes,
   .header-actions .primary-button svg {
     display: none;
@@ -1916,7 +2019,7 @@ html[data-theme="dark"] .condition-pill.no-score {
     max-height: 45px;
   }
 
-  .header-context select {
+  .region-trigger {
     font-size: 12px;
   }
 
@@ -2065,11 +2168,16 @@ html[data-theme="dark"] .condition-pill.no-score {
     display: block;
   }
 
-  .header-context select {
-    overflow: hidden;
+  .region-trigger {
     font-size: 11px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  }
+
+  .region-menu {
+    position: fixed;
+    top: 62px;
+    left: 50%;
+    width: calc(100vw - 24px);
+    max-height: min(68vh, 440px);
   }
 
   .overview-copy > p {

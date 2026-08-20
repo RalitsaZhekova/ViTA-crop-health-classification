@@ -9,7 +9,7 @@
     <link rel="icon" type="image/png" href="/static/ViTA_satellite_icon.png?v=2">
     <link rel="apple-touch-icon" href="/static/ViTA_satellite_icon.png?v=2">
     <script src="/static/theme-init.js"></script>
-    <link rel="stylesheet" href="/static/styles.css?v=dark-region-select-1">
+    <link rel="stylesheet" href="/static/styles.css?v=region-listbox-1">
   </head>
   <body>
     <a class="skip-link" href="#main-content">Skip to crop intelligence</a>
@@ -20,11 +20,13 @@
         <img class="brand-logo brand-logo-dark" src="/static/ViTA_logo_white.png" alt="" width="116" height="55">
       </a>
 
-      <div class="header-context">
-        <label for="region-select">Field or region</label>
-        <select id="region-select" aria-label="Choose a field or region">
-          <option>Loading regions…</option>
-        </select>
+      <div id="region-picker" class="header-context region-picker">
+        <span id="region-picker-label" class="region-picker-label">Field or region</span>
+        <button id="region-trigger" class="region-trigger" type="button" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="region-picker-label region-trigger-label">
+          <span id="region-trigger-label">Loading regions…</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 9 5 5 5-5"/></svg>
+        </button>
+        <div id="region-menu" class="region-menu hidden" role="listbox" aria-labelledby="region-picker-label"></div>
       </div>
 
       <div class="header-actions">
@@ -292,6 +294,6 @@
     </dialog>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="/static/app.js?v=history-workspace-4" defer></script>
+    <script src="/static/app.js?v=region-listbox-1" defer></script>
   </body>
 </html>

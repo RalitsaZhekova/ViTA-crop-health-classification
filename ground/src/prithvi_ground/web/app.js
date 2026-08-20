@@ -4,7 +4,8 @@ const API = "/api/v1";
 const SVG_NS = "http://www.w3.org/2000/svg";
 
 const elementIds = [
-  "service-indicator", "service-label", "region-select", "theme-toggle", "refresh-scenes", "new-analysis",
+  "service-indicator", "service-label", "region-picker", "region-trigger", "region-trigger-label",
+  "region-menu", "theme-toggle", "refresh-scenes", "new-analysis",
   "empty-new-analysis", "empty-state", "dashboard", "region-name", "scene-title",
   "scene-subtitle", "observation-month", "observation-day", "observation-year",
   "summary-score-ring", "summary-score", "summary-condition", "summary-headline",
@@ -305,21 +306,47 @@ async function loadScenes({ targetSceneId = null, preserveSelection = true } = {
   }
 }
 
+function regionOptions() {
+  return [...elements["region-menu"].querySelectorAll(".region-option")];
+}
+
+function setRegionMenuOpen(open, { focusOption = false } = {}) {
+  const expanded = Boolean(open) && !elements["region-trigger"].disabled;
+  elements["region-trigger"].setAttribute("aria-expanded", expanded ? "true" : "false");
+  elements["region-menu"].classList.toggle("hidden", !expanded);
+  elements["region-picker"].classList.toggle("open", expanded);
+  if (expanded && focusOption) {
+    window.requestAnimationFrame(() => {
+      const options = regionOptions();
+      const selected = options.find((option) => option.getAttribute("aria-selected") === "true");
+      (selected || options[0])?.focus();
+    });
+  }
+}
+
 function populateRegionSelect(regions) {
-  elements["region-select"].replaceChildren();
+  elements["region-menu"].replaceChildren();
   if (!regions.length) {
-    const option = document.createElement("option");
-    option.textContent = "No regions yet";
-    elements["region-select"].append(option);
-    elements["region-select"].disabled = true;
+    setText("region-trigger-label", "No regions yet");
+    elements["region-trigger"].disabled = true;
+    setRegionMenuOpen(false);
     return;
   }
-  elements["region-select"].disabled = false;
+  elements["region-trigger"].disabled = false;
   regions.forEach((regionId) => {
-    const option = document.createElement("option");
-    option.value = regionId;
+    const option = document.createElement("button");
+    option.type = "button";
+    option.className = "region-option";
+    option.dataset.regionId = regionId;
+    option.setAttribute("role", "option");
+    option.setAttribute("aria-selected", "false");
     option.textContent = humanizeIdentifier(regionId);
-    elements["region-select"].append(option);
+    option.addEventListener("click", () => {
+      setRegionMenuOpen(false);
+      elements["region-trigger"].focus();
+      selectRegion(regionId);
+    });
+    elements["region-menu"].append(option);
   });
 }
 
@@ -332,7 +359,12 @@ async function selectRegion(regionId, { targetSceneId = null } = {}) {
   if (!regionId) return;
   const regionChanged = state.activeRegionId !== regionId;
   state.activeRegionId = regionId;
-  elements["region-select"].value = regionId;
+  setText("region-trigger-label", humanizeIdentifier(regionId));
+  regionOptions().forEach((option) => {
+    const selected = option.dataset.regionId === regionId;
+    option.classList.toggle("selected", selected);
+    option.setAttribute("aria-selected", selected ? "true" : "false");
+  });
   if (regionChanged) state.selection = null;
   try {
     const response = await apiFetch(`${API}/regions/${encodeURIComponent(regionId)}/history`);
@@ -1421,7 +1453,42 @@ function retryAnalysis() {
   showAnalysisFields();
 }
 
-elements["region-select"].addEventListener("change", (event) => selectRegion(event.target.value));
+elements["region-trigger"].addEventListener("click", () => {
+  const open = elements["region-trigger"].getAttribute("aria-expanded") === "true";
+  setRegionMenuOpen(!open, { focusOption: !open });
+});
+elements["region-trigger"].addEventListener("keydown", (event) => {
+  if (!["ArrowDown", "ArrowUp"].includes(event.key)) return;
+  event.preventDefault();
+  setRegionMenuOpen(true, { focusOption: true });
+});
+elements["region-menu"].addEventListener("keydown", (event) => {
+  const options = regionOptions();
+  const current = options.indexOf(document.activeElement);
+  let next = null;
+  if (event.key === "ArrowDown") next = options[Math.min(options.length - 1, current + 1)];
+  if (event.key === "ArrowUp") next = options[Math.max(0, current - 1)];
+  if (event.key === "Home") next = options[0];
+  if (event.key === "End") next = options[options.length - 1];
+  if (event.key === "Escape") {
+    event.preventDefault();
+    setRegionMenuOpen(false);
+    elements["region-trigger"].focus();
+    return;
+  }
+  if (next) {
+    event.preventDefault();
+    next.focus();
+  }
+});
+elements["region-picker"].addEventListener("focusout", () => {
+  window.requestAnimationFrame(() => {
+    if (!elements["region-picker"].contains(document.activeElement)) setRegionMenuOpen(false);
+  });
+});
+document.addEventListener("pointerdown", (event) => {
+  if (!elements["region-picker"].contains(event.target)) setRegionMenuOpen(false);
+});
 elements["theme-toggle"].addEventListener("click", toggleTheme);
 elements["refresh-scenes"].addEventListener("click", () => loadScenes());
 elements["new-analysis"].addEventListener("click", openAnalysisDialog);
