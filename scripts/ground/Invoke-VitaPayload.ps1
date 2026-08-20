@@ -186,12 +186,33 @@ try {
     }
 
     Write-Host "Uplink: sending job metadata through the SSH tunnel (no image upload)."
-    $response = Invoke-RestMethod `
-        -Uri "$serviceUri/v1/jobs" `
-        -Method Post `
-        -ContentType 'application/json' `
-        -Body ($request | ConvertTo-Json -Compress) `
-        -TimeoutSec 1800
+    try {
+        $response = Invoke-RestMethod `
+            -Uri "$serviceUri/v1/jobs" `
+            -Method Post `
+            -ContentType 'application/json' `
+            -Body ($request | ConvertTo-Json -Compress) `
+            -TimeoutSec 1800
+    } catch {
+        $safeDetail = $null
+        if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+            try {
+                $errorBody = $_.ErrorDetails.Message | ConvertFrom-Json
+                if ($errorBody.detail -is [string]) {
+                    $safeDetail = $errorBody.detail
+                } elseif ($errorBody.detail.message) {
+                    $safeDetail = $errorBody.detail.message
+                    if ($errorBody.detail.code) {
+                        $safeDetail = "[$($errorBody.detail.code)] $safeDetail"
+                    }
+                }
+            } catch {
+                $safeDetail = $null
+            }
+        }
+        if (-not $safeDetail) { $safeDetail = $_.Exception.Message }
+        throw "Payload request failed: $safeDetail"
+    }
 } finally {
     if ($tunnel -and -not $tunnel.HasExited) {
         Stop-Process -Id $tunnel.Id

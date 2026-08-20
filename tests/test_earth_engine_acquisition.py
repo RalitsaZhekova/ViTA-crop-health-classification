@@ -8,12 +8,15 @@ import google.auth
 import numpy as np
 import pytest
 import rasterio
+from prithvi_ground.catalog import SOURCE_MEASUREMENT_FIELDS, _validate_source
 from prithvi_payload.acquisition.earth_engine import (
     EARTH_ENGINE_BANDS,
     AcquiredSentinelScene,
+    Candidate,
     EarthEngineAcquisitionProvider,
     _normalise_geotiff,
     _parse_candidates,
+    _unique_datatake_candidates,
     initialize_earth_engine,
 )
 from prithvi_payload.acquisition.errors import AcquisitionError
@@ -85,6 +88,7 @@ def test_candidates_are_ranked_by_cloud_then_recency() -> None:
                 "properties": {
                     "system:time_start": 1_700_000_000_000,
                     "CLOUDY_PIXEL_PERCENTAGE": 3.0,
+                    "DATATAKE_IDENTIFIER": "take-older",
                 },
             },
             {
@@ -92,6 +96,7 @@ def test_candidates_are_ranked_by_cloud_then_recency() -> None:
                 "properties": {
                     "system:time_start": 1_800_000_000_000,
                     "CLOUDY_PIXEL_PERCENTAGE": 20.0,
+                    "DATATAKE_IDENTIFIER": "take-cloudy",
                 },
             },
             {
@@ -99,6 +104,7 @@ def test_candidates_are_ranked_by_cloud_then_recency() -> None:
                 "properties": {
                     "system:time_start": 1_750_000_000_000,
                     "CLOUDY_PIXEL_PERCENTAGE": 3.0,
+                    "DATATAKE_IDENTIFIER": "take-newer",
                 },
             },
         ]
@@ -110,6 +116,71 @@ def test_candidates_are_ranked_by_cloud_then_recency() -> None:
         "cloudy",
     ]
     assert [candidate.rank for candidate in candidates] == [1, 2, 3]
+
+
+def test_candidates_are_limited_to_unique_datatakes() -> None:
+    candidates = [
+        Candidate("tile-a", "2026-06-01T10:00:00+00:00", 1, 1.0, None, "take-1"),
+        Candidate("tile-b", "2026-06-01T10:00:01+00:00", 2, 2.0, None, "take-1"),
+        Candidate("tile-c", "2026-06-06T10:00:00+00:00", 3, 3.0, None, "take-2"),
+    ]
+
+    selected = _unique_datatake_candidates(candidates, 2)
+
+    assert [candidate.system_index for candidate in selected] == ["tile-a", "tile-c"]
+    assert [candidate.rank for candidate in selected] == [1, 2]
+
+
+def test_candidate_image_mosaics_every_granule_in_the_datatake(monkeypatch) -> None:
+    calls: list[tuple[object, ...]] = []
+
+    class Collection:
+        def filterBounds(self, region):
+            calls.append(("filterBounds", region))
+            return self
+
+        def filter(self, condition):
+            calls.append(("filter", condition))
+            return self
+
+        def select(self, selectors, names):
+            calls.append(("select", selectors, names))
+            return self
+
+        def mosaic(self):
+            calls.append(("mosaic",))
+            return "mosaic-image"
+
+    collection = Collection()
+    fake_ee = SimpleNamespace(
+        Geometry=SimpleNamespace(
+            Rectangle=lambda bounds, geodesic: ("rectangle", bounds, geodesic)
+        ),
+        Filter=SimpleNamespace(eq=lambda name, value: ("eq", name, value)),
+        ImageCollection=lambda name: (
+            calls.append(("collection", name)) or collection
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "ee", fake_ee)
+    candidate = Candidate(
+        system_index="tile-a",
+        acquired_at="2026-06-01T10:00:00+00:00",
+        acquired_at_millis=1_780_307_200_000,
+        metadata_cloud_percentage=1.0,
+        product_id=None,
+        datatake_identifier="take-1",
+    )
+
+    image = EarthEngineAcquisitionProvider._candidate_image(
+        candidate, (5.43, 52.50, 5.49, 52.54)
+    )
+
+    assert image == "mosaic-image"
+    assert ("filter", ("eq", "DATATAKE_IDENTIFIER", "take-1")) in calls
+    assert calls[-2:] == [
+        ("select", ["B2", "B3", "B4", "B8", "B8A"], list(EARTH_ENGINE_BANDS)),
+        ("mosaic",),
+    ]
 
 
 def test_download_parameters_pin_the_qualified_grid() -> None:
@@ -185,6 +256,7 @@ def test_safe_provenance_contains_no_credentials_or_signed_urls(tmp_path: Path) 
         local_tiff_path=tmp_path / "scene.tif",
         provider_scene_id="scene-id",
         product_id=None,
+        datatake_identifier="take-id",
         acquired_at="2026-06-15T10:56:21+00:00",
         metadata_cloud_percentage=4.2,
         requested_bbox_wgs84=(5.43, 52.50, 5.49, 52.54),
@@ -201,6 +273,10 @@ def test_safe_provenance_contains_no_credentials_or_signed_urls(tmp_path: Path) 
 
     assert provenance["provider"] == "earth_engine"
     assert provenance["source_scale"] == 10_000
-    assert provenance["selection_policy"] == "least_cloudy"
+    assert provenance["selection_policy"] == "least_cloudy_acquisition_pass"
+    assert provenance["spatial_assembly"] == "same_acquisition_pass_mosaic"
     assert provenance["target_cloud_range"] is None
     assert not ({"credentials", "token", "url"} & set(provenance))
+
+    provenance.update({field: 0.0 for field in SOURCE_MEASUREMENT_FIELDS})
+    _validate_source(provenance)

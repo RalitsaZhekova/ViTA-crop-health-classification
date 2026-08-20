@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.concurrency import run_in_threadpool
 
 from prithvi_payload.acquisition import (
+    AcquisitionError,
     EarthEngineAcquisitionProvider,
     earth_engine_configuration,
 )
@@ -458,6 +459,8 @@ async def run_job(request: RawJobRequest) -> dict[str, Any]:
         return await run_in_threadpool(runtime.run, request)
     except FileExistsError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
+    except AcquisitionError as error:
+        raise HTTPException(status_code=422, detail=error.safe_record()) from error
     except (OSError, RuntimeError, ValueError) as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     finally:

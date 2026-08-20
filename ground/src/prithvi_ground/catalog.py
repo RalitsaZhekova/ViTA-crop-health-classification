@@ -147,6 +147,7 @@ def _validate_source(value: Any) -> None:
         return
 
     required = {
+        "provider",
         "collection",
         "provider_scene_id",
         "product_id",
@@ -163,11 +164,12 @@ def _validate_source(value: Any) -> None:
         "candidate_rank",
         "candidate_attempt_count",
         "resampling_policy",
+        *SOURCE_MEASUREMENT_FIELDS,
     }
     if not required <= set(source):
         raise BundleValidationError("Earth Engine source provenance is incomplete")
-    allowed = {"provider", *required, *SOURCE_MEASUREMENT_FIELDS}
-    if set(source) != allowed:
+    optional = {"datatake_identifier", "spatial_assembly"}
+    if not set(source) <= required | optional:
         raise BundleValidationError("Earth Engine source provenance contains unknown fields")
     if source.get("collection") != "COPERNICUS/S2_SR_HARMONIZED":
         raise BundleValidationError("source.collection is unsupported")
@@ -201,8 +203,22 @@ def _validate_source(value: Any) -> None:
         r"[0-9a-f]{64}", source["source_sha256"]
     ):
         raise BundleValidationError("source.source_sha256 is invalid")
-    if source.get("selection_policy") not in {"target_cloud_range", "least_cloudy"}:
+    if source.get("selection_policy") not in {
+        "target_cloud_range",
+        "least_cloudy",
+        "least_cloudy_acquisition_pass",
+    }:
         raise BundleValidationError("source.selection_policy is invalid")
+    datatake_identifier = source.get("datatake_identifier")
+    if datatake_identifier is not None and (
+        not isinstance(datatake_identifier, str) or not datatake_identifier
+    ):
+        raise BundleValidationError("source.datatake_identifier is invalid")
+    if source["selection_policy"] == "least_cloudy_acquisition_pass":
+        if source.get("spatial_assembly") != "same_acquisition_pass_mosaic":
+            raise BundleValidationError("source.spatial_assembly is invalid")
+    elif "spatial_assembly" in source:
+        raise BundleValidationError("source.spatial_assembly is unexpected")
     if (
         not isinstance(source.get("source_bytes"), int)
         or isinstance(source["source_bytes"], bool)

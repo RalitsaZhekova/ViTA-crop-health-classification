@@ -397,6 +397,10 @@ def _last_output_line(value: str | None) -> str | None:
     lines = [line.strip() for line in value.splitlines() if line.strip()]
     if not lines:
         return None
+    for line in reversed(lines):
+        marker = "Payload request failed:"
+        if marker in line:
+            return re.sub(r"\s+", " ", line[line.index(marker) :])[:220]
     line = lines[-1]
     line = re.sub(r"\s+", " ", line)
     return line[:220]

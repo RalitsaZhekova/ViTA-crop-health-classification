@@ -38,6 +38,7 @@ class Candidate:
     acquired_at_millis: int
     metadata_cloud_percentage: float | None
     product_id: str | None
+    datatake_identifier: str | None
     rank: int = 0
 
 
@@ -56,6 +57,7 @@ class AcquiredSentinelScene:
     candidate_rank: int
     candidate_attempt_count: int
     timing: dict[str, float]
+    datatake_identifier: str | None = None
 
     def safe_provenance(self) -> dict[str, Any]:
         return {
@@ -63,6 +65,7 @@ class AcquiredSentinelScene:
             "collection": EARTH_ENGINE_COLLECTION,
             "provider_scene_id": self.provider_scene_id,
             "product_id": self.product_id,
+            "datatake_identifier": self.datatake_identifier,
             "acquired_at": self.acquired_at,
             "requested_bbox_wgs84": list(self.requested_bbox_wgs84),
             "source_crs": self.output_crs,
@@ -70,11 +73,12 @@ class AcquiredSentinelScene:
             "source_scale": REFLECTANCE_SCALE,
             "source_sha256": self.sha256,
             "source_bytes": self.byte_size,
-            "selection_policy": "least_cloudy",
+            "selection_policy": "least_cloudy_acquisition_pass",
             "target_cloud_range": None,
             "earth_engine_metadata_cloud_percentage": self.metadata_cloud_percentage,
             "candidate_rank": self.candidate_rank,
             "candidate_attempt_count": self.candidate_attempt_count,
+            "spatial_assembly": "same_acquisition_pass_mosaic",
             "resampling_policy": "earth_engine_default_nearest",
         }
 
@@ -145,6 +149,7 @@ def _parse_candidates(features: list[dict[str, Any]]) -> list[Candidate]:
             continue
         milliseconds = int(timestamp)
         product_id = properties.get("PRODUCT_ID")
+        datatake_identifier = properties.get("DATATAKE_IDENTIFIER")
         candidates.append(
             Candidate(
                 system_index=system_index,
@@ -156,6 +161,9 @@ def _parse_candidates(features: list[dict[str, Any]]) -> list[Candidate]:
                     properties.get("CLOUDY_PIXEL_PERCENTAGE")
                 ),
                 product_id=product_id if isinstance(product_id, str) else None,
+                datatake_identifier=(
+                    datatake_identifier if isinstance(datatake_identifier, str) else None
+                ),
             )
         )
     candidates.sort(
@@ -169,6 +177,22 @@ def _parse_candidates(features: list[dict[str, Any]]) -> list[Candidate]:
         )
     )
     return [replace(candidate, rank=index) for index, candidate in enumerate(candidates, 1)]
+
+
+def _unique_datatake_candidates(
+    candidates: list[Candidate], limit: int
+) -> list[Candidate]:
+    selected: list[Candidate] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = candidate.datatake_identifier or candidate.system_index
+        if key in seen:
+            continue
+        seen.add(key)
+        selected.append(replace(candidate, rank=len(selected) + 1))
+        if len(selected) == limit:
+            break
+    return selected
 
 
 def _sha256(path: Path) -> str:
@@ -303,7 +327,7 @@ class EarthEngineAcquisitionProvider:
                 .filterDate(start_date.isoformat(), end_exclusive.isoformat())
                 .filter(ee.Filter.lte("CLOUDY_PIXEL_PERCENTAGE", 50))
                 .sort("CLOUDY_PIXEL_PERCENTAGE")
-                .limit(self.max_candidates)
+                .limit(self.max_candidates * 4)
                 .getInfo()
             )
         except Exception:
@@ -312,7 +336,10 @@ class EarthEngineAcquisitionProvider:
                 "Earth Engine could not search for Sentinel-2 scenes",
             ) from None
         features = response.get("features", []) if isinstance(response, dict) else []
-        candidates = _parse_candidates(features if isinstance(features, list) else [])
+        candidates = _unique_datatake_candidates(
+            _parse_candidates(features if isinstance(features, list) else []),
+            self.max_candidates,
+        )
         if not candidates:
             raise AcquisitionError(
                 "EARTH_ENGINE_NO_SCENE",
@@ -330,6 +357,31 @@ class EarthEngineAcquisitionProvider:
             "format": "GEO_TIFF",
             "filePerBand": False,
         }
+
+    @staticmethod
+    def _candidate_image(
+        candidate: Candidate,
+        bbox_wgs84: tuple[float, float, float, float],
+    ) -> Any:
+        import ee
+
+        region = ee.Geometry.Rectangle(list(bbox_wgs84), geodesic=False)
+        collection = ee.ImageCollection(EARTH_ENGINE_COLLECTION).filterBounds(region)
+        if candidate.datatake_identifier:
+            collection = collection.filter(
+                ee.Filter.eq("DATATAKE_IDENTIFIER", candidate.datatake_identifier)
+            )
+        else:
+            acquired = datetime.fromtimestamp(
+                candidate.acquired_at_millis / 1000.0, tz=timezone.utc
+            )
+            collection = collection.filterDate(
+                (acquired - timedelta(minutes=30)).isoformat(),
+                (acquired + timedelta(minutes=30)).isoformat(),
+            )
+        return collection.select(
+            list(EARTH_ENGINE_SOURCE_BANDS), list(EARTH_ENGINE_BANDS)
+        ).mosaic()
 
     def _download(self, image: Any, grid: TargetGrid, destination: Path) -> None:
         try:
@@ -398,11 +450,7 @@ class EarthEngineAcquisitionProvider:
             raw_path = candidate_root / "download.tif"
             scene_path = candidate_root / "scene.tif"
             try:
-                import ee
-
-                image = ee.Image(f"{EARTH_ENGINE_COLLECTION}/{candidate.system_index}").select(
-                    list(EARTH_ENGINE_SOURCE_BANDS), list(EARTH_ENGINE_BANDS)
-                )
+                image = self._candidate_image(candidate, bbox_wgs84)
                 download_started = time.perf_counter()
                 self._download(image, grid, raw_path)
                 download_seconds = time.perf_counter() - download_started
@@ -425,6 +473,7 @@ class EarthEngineAcquisitionProvider:
                     local_tiff_path=scene_path.resolve(),
                     provider_scene_id=candidate.system_index,
                     product_id=candidate.product_id,
+                    datatake_identifier=candidate.datatake_identifier,
                     acquired_at=candidate.acquired_at,
                     metadata_cloud_percentage=candidate.metadata_cloud_percentage,
                     requested_bbox_wgs84=bbox_wgs84,
@@ -441,6 +490,7 @@ class EarthEngineAcquisitionProvider:
                         {
                             "status": "ACQUIRED",
                             "provider_scene_id": acquired.provider_scene_id,
+                            "datatake_identifier": acquired.datatake_identifier,
                             "acquired_at": acquired.acquired_at,
                             "metadata_cloud_percentage": acquired.metadata_cloud_percentage,
                             "candidate_rank": acquired.candidate_rank,
