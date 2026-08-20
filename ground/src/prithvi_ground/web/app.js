@@ -15,7 +15,7 @@ const elementIds = [
   "area-coverage", "area-alert", "area-callout", "area-callout-copy", "area-ndvi",
   "area-gndvi", "area-evi", "area-savi", "area-method-note", "history-scope",
   "history-count", "history-latest", "history-latest-label", "history-change",
-  "history-change-label", "baseline-status", "baseline-message", "history-chart",
+  "history-change-label", "baseline-card", "baseline-status", "baseline-message", "history-chart",
   "history-strip", "evidence-score", "evidence-progress", "analysis-coverage",
   "analysis-progress", "usable-coverage", "usable-progress", "quality-list", "metric-grid",
   "scientific-claim", "manifest-link", "analysis-dialog", "analysis-form", "close-analysis",
@@ -393,9 +393,8 @@ function renderManifest(manifest, links) {
     setText("observation-year", new Intl.DateTimeFormat(undefined, { year: "numeric" }).format(acquired));
   }
 
-  renderSceneSummary(manifest);
-  renderViewer(manifest, links);
   renderAreaResult(manifest);
+  renderViewer(manifest, links);
   renderObservationDetails(manifest);
 }
 
@@ -409,18 +408,19 @@ function scoreFromManifest(manifest) {
   return manifest?.condition?.condition_score;
 }
 
-function renderSceneSummary(manifest) {
-  const condition = manifest.condition || {};
-  const score = condition.condition_score;
-  const copy = conditionCopy(score);
-  setText("summary-score", isNumber(score) ? Math.round(score) : "—");
-  setScoreRing(elements["summary-score-ring"], score);
-  setConditionPill(elements["summary-condition"], condition.label || labelForScore(score));
+function renderSummaryResult(result, selected) {
+  const copy = conditionCopy(result.score);
+  const evidenceMessage = selected
+    ? `Selected area · based on ${formatInteger(result.analysisPixels)} clear crop pixels in this observation.`
+    : `Based on ${formatInteger(result.analysisPixels)} clear crop pixels in this observation.`;
+  setText("summary-score", isNumber(result.score) ? Math.round(result.score) : "—");
+  setScoreRing(elements["summary-score-ring"], result.score);
+  setConditionPill(elements["summary-condition"], result.label);
   setText("summary-headline", copy.headline);
   setText(
     "summary-message",
-    isNumber(score)
-      ? `Based on ${formatInteger(condition.analysis_pixels)} clear crop pixels in this observation.`
+    isNumber(result.score)
+      ? evidenceMessage
       : copy.guidance
   );
 }
@@ -506,6 +506,7 @@ function renderAreaResult(manifest) {
   const result = selected
     ? aggregateSelectedArea(manifest, state.selection.boundsWgs84)
     : wholeObservationResult(manifest);
+  renderSummaryResult(result, selected);
   setText("area-title", selected ? "Selected area" : "Whole observation");
   elements["clear-area"].classList.toggle("hidden", !selected);
   setText("area-score", isNumber(result.score) ? Math.round(result.score) : "—");
@@ -861,7 +862,7 @@ async function renderHistory() {
     "history-scope",
     isAreaHistory
       ? "The same selected geographic area is compared across every available observation."
-      : "Whole-region scores. Select an area above to follow that same zone through time."
+      : "Whole-region scores. Select an area on the map to follow that zone through time."
   );
   setText("history-count", `${history.length} observation${history.length === 1 ? "" : "s"}`);
   if (!history.length) {
@@ -916,106 +917,194 @@ function renderHistoryInsights(points) {
   const scored = points.filter(
     (point) => isBaselineVigorScore(point.score) && !Number.isNaN(point.date.valueOf())
   );
+  const activePoint = points.find((point) => point.scene.scene_id === state.activeSceneId);
+
+  if (activePoint && !isBaselineVigorScore(activePoint.score)) {
+    setText("history-latest", "—");
+    setText(
+      "history-latest-label",
+      activePoint.score === 0 ? "Zero-vigor observation excluded" : "No eligible score for this observation"
+    );
+    setText("history-change", "—");
+    setText("history-change-label", "No comparable selected score");
+    setBaselineSignal({
+      status: "Not evaluated",
+      message: activePoint.score === 0
+        ? "An exact zero-vigor score is excluded from seasonal monitoring because it is likely non-crop evidence."
+        : "This observation does not contain enough eligible crop evidence for seasonal monitoring.",
+      tone: "signal-building",
+    });
+    return;
+  }
+
   if (!scored.length) {
     setText("history-latest", "—");
     setText("history-latest-label", "No scored observations");
     setText("history-change", "—");
     setText("history-change-label", "Requires comparable scores");
-    setText("baseline-status", "Building");
-    setText("baseline-message", "Clear crop evidence is needed before a baseline can form.");
+    setBaselineSignal({
+      status: "Baseline starting",
+      message: "Clear crop evidence is needed before a seasonal baseline can form.",
+      tone: "signal-building",
+    });
     return;
   }
 
-  const latest = scored[scored.length - 1];
-  setText("history-latest", `${Math.round(latest.score)}/100`);
+  const selected = activePoint && isBaselineVigorScore(activePoint.score)
+    ? activePoint
+    : scored[scored.length - 1];
+  setText("history-latest", `${Math.round(selected.score)}/100`);
   setText(
     "history-latest-label",
-    `${latest.label} · ${dateLabel(latest.date, { short: true, time: true })}`
+    `${selected.label} · ${dateLabel(selected.date, { short: true, time: true })}`
   );
-  const latestSeason = seasonForDate(latest.date);
-  const comparable = scored.filter((point) => seasonForDate(point.date) === latestSeason);
-  if (comparable.length >= 2) {
-    const first = comparable[0];
-    const change = latest.score - first.score;
+
+  // Reprocessed copies of one acquisition are not independent historical evidence.
+  const earlierByAcquisition = new Map();
+  scored
+    .filter((point) => point.date.valueOf() < selected.date.valueOf())
+    .sort((left, right) => left.date - right.date)
+    .forEach((point) => earlierByAcquisition.set(point.date.valueOf(), point));
+  const earlier = [...earlierByAcquisition.values()];
+  const selectedSeason = seasonForDate(selected.date);
+  const comparable = earlier.filter(
+    (point) => seasonForDate(point.date) === selectedSeason
+  );
+
+  if (comparable.length) {
+    const previous = comparable[comparable.length - 1];
+    const change = selected.score - previous.score;
     setText("history-change", `${change >= 0 ? "+" : ""}${change.toFixed(1)} pts`);
     setText(
       "history-change-label",
-      `Since comparable ${dateLabel(first.date, { short: true })}`
+      `Versus previous ${selectedSeason} · ${dateLabel(previous.date, { short: true })}`
     );
   } else {
     setText("history-change", "—");
-    setText("history-change-label", "Requires two observations in this season");
+    setText("history-change-label", `First eligible ${selectedSeason || "seasonal"} observation`);
   }
 
-  if (comparable.length < 3) {
-    setText("baseline-status", "Building");
-    const remaining = 3 - comparable.length;
-    setText(
-      "baseline-message",
-      `${remaining} more ${latestSeason || "seasonally"} comparable observation${remaining === 1 ? "" : "s"} will establish an initial range.`
-    );
-    return;
+  setBaselineSignal(baselineSignalFor(selected, comparable, selectedSeason));
+}
+
+function setBaselineSignal(signal) {
+  setText("baseline-status", signal.status);
+  setText("baseline-message", signal.message);
+  elements["baseline-card"].className = `baseline-card ${signal.tone}`;
+}
+
+function baselineSignalFor(selected, priorComparable, season) {
+  const seasonLabel = season || "seasonal";
+  const severity = slug(selected.label);
+  const absoluteConditionSignal = (baselineState) => {
+    if (severity === "high-anomaly") {
+      return {
+        status: baselineState === "starting" ? "Low condition · no baseline" : "Persistently low condition",
+        message: baselineState === "starting"
+          ? `The selected score is low, but this is the first eligible ${seasonLabel} observation in the timeline. Confirm conditions before action.`
+          : `The selected condition remains low without an unusual change from the available ${seasonLabel} comparison. Confirm conditions in the field.`,
+        tone: "signal-review",
+      };
+    }
+    if (["moderate-anomaly", "watch"].includes(severity)) {
+      return {
+        status: "Condition watch",
+        message: baselineState === "starting"
+          ? `The selected score is below nominal, but no earlier ${seasonLabel} observation is available for a trend comparison.`
+          : `The selected condition is below nominal and remains close to the available ${seasonLabel} comparison. Continue monitoring.`,
+        tone: "signal-watch",
+      };
+    }
+    return null;
+  };
+
+  if (!priorComparable.length) {
+    return absoluteConditionSignal("starting") || {
+      status: "Baseline starting",
+      message: `This is the first eligible ${seasonLabel} observation in the timeline. A later ${seasonLabel} image can establish a comparison.`,
+      tone: "signal-building",
+    };
   }
 
-  const seasons = new Set(scored.map((point) => seasonForDate(point.date)).filter(Boolean));
-  if (seasons.size < 2) {
-    setText("baseline-status", "Preliminary");
-    setText(
-      "baseline-message",
-      "The current season has a trend range; another season is needed to establish seasonal coverage."
-    );
-    return;
-  }
-
-  const previous = comparable.slice(0, -1).map((point) => point.score);
-  const average = previous.reduce((total, value) => total + value, 0) / previous.length;
+  const previousScores = priorComparable.map((point) => point.score);
+  const average = previousScores.reduce((total, value) => total + value, 0) / previousScores.length;
   const deviation = Math.sqrt(
-    previous.reduce((total, value) => total + ((value - average) ** 2), 0) / previous.length
+    previousScores.reduce((total, value) => total + ((value - average) ** 2), 0) / previousScores.length
   );
-  const lowerBoundary = average - Math.max(8, deviation * 2);
-  if (latest.score < lowerBoundary) {
-    setText("baseline-status", "Review signal");
-    setText(
-      "baseline-message",
-      `The latest score is below this region’s comparable ${latestSeason} range. Confirm conditions on the ground.`
-    );
-  } else {
-    setText("baseline-status", "Within recent range");
-    setText(
-      "baseline-message",
-      `No unusual drop is visible against the comparable ${latestSeason} observations.`
-    );
+  const difference = selected.score - average;
+  const reviewMargin = Math.max(8, deviation * 2);
+  const watchMargin = Math.max(4, deviation);
+  const comparisonStrength = priorComparable.length === 1 ? "early" : "established";
+
+  if (difference <= -reviewMargin) {
+    return {
+      status: comparisonStrength === "early" ? "Early review signal" : "Review signal",
+      message: `The selected score is ${Math.abs(difference).toFixed(1)} points below the prior ${seasonLabel} mean. Confirm the change in the field.`,
+      tone: "signal-review",
+    };
   }
+  if (difference <= -watchMargin) {
+    return {
+      status: comparisonStrength === "early" ? "Early watch signal" : "Watch signal",
+      message: `The selected score is ${Math.abs(difference).toFixed(1)} points below the prior ${seasonLabel} mean. Increase monitoring frequency.`,
+      tone: "signal-watch",
+    };
+  }
+  if (difference >= reviewMargin) {
+    return {
+      status: priorComparable.length === 1 ? "Early improvement" : "Strong improvement",
+      message: `The selected score is ${difference.toFixed(1)} points above the prior ${seasonLabel} mean. This is an encouraging relative signal.`,
+      tone: "signal-improving",
+    };
+  }
+  if (difference >= watchMargin) {
+    return {
+      status: "Improving signal",
+      message: `The selected score is ${difference.toFixed(1)} points above the prior ${seasonLabel} mean. Continue monitoring to confirm the trend.`,
+      tone: "signal-improving",
+    };
+  }
+
+  return absoluteConditionSignal("available") || {
+    status: priorComparable.length === 1 ? "Preliminary range" : "Within seasonal range",
+    message: `The selected score remains close to the prior ${seasonLabel} observations; no unusual change is visible.`,
+    tone: "signal-stable",
+  };
 }
 
 function drawHistory(points) {
   const container = elements["history-chart"];
   container.replaceChildren();
-  const scored = points.filter(
+  const allScored = points.filter(
     (point) => isBaselineVigorScore(point.score) && !Number.isNaN(point.date.valueOf())
   );
-  if (!scored.length) {
+  if (!allScored.length) {
     container.append(historyMessage("No comparable scored observations are available yet."));
     return;
   }
 
-  const width = 1100;
-  const height = 250;
-  const padding = { left: 42, right: 22, top: 22, bottom: 38 };
+  const scored = allScored.slice(-12);
+  const width = 430;
+  const rowGap = 64;
+  const padding = { left: 98, right: 30, top: 40, bottom: 24 };
+  const height = Math.max(286, padding.top + padding.bottom + ((scored.length - 1) * rowGap));
   const plotWidth = width - padding.left - padding.right;
   const plotHeight = height - padding.top - padding.bottom;
   const svg = document.createElementNS(SVG_NS, "svg");
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
   svg.setAttribute("role", "img");
-  svg.setAttribute("aria-label", "Crop-condition history from zero to one hundred");
+  svg.setAttribute(
+    "aria-label",
+    `Crop-condition trajectory from earlier to later observations, scored from zero to one hundred${allScored.length > scored.length ? "; latest twelve shown" : ""}`
+  );
 
   const defs = document.createElementNS(SVG_NS, "defs");
   const gradient = document.createElementNS(SVG_NS, "linearGradient");
   gradient.id = "historyArea";
   gradient.setAttribute("x1", "0");
   gradient.setAttribute("y1", "0");
-  gradient.setAttribute("x2", "0");
-  gradient.setAttribute("y2", "1");
+  gradient.setAttribute("x2", "1");
+  gradient.setAttribute("y2", "0");
   [["0%", "#58ad7c", "0.32"], ["100%", "#58ad7c", "0"]].forEach(([offset, color, opacity]) => {
     const stop = document.createElementNS(SVG_NS, "stop");
     stop.setAttribute("offset", offset);
@@ -1026,33 +1115,37 @@ function drawHistory(points) {
   defs.append(gradient);
   svg.append(defs);
 
+  const xAt = (score) => padding.left + (clamp(score, 0, 100) / 100) * plotWidth;
+  const yAt = (index) => padding.top + (scored.length === 1
+    ? plotHeight / 2
+    : (index / (scored.length - 1)) * plotHeight);
+
   [0, 25, 50, 75, 100].forEach((score) => {
-    const y = padding.top + plotHeight - (score / 100) * plotHeight;
+    const x = xAt(score);
     const line = document.createElementNS(SVG_NS, "line");
-    line.setAttribute("x1", padding.left);
-    line.setAttribute("x2", width - padding.right);
-    line.setAttribute("y1", y);
-    line.setAttribute("y2", y);
+    line.setAttribute("x1", x);
+    line.setAttribute("x2", x);
+    line.setAttribute("y1", padding.top - 10);
+    line.setAttribute("y2", height - padding.bottom + 10);
     line.setAttribute("class", "chart-grid");
     const label = document.createElementNS(SVG_NS, "text");
-    label.setAttribute("x", padding.left - 9);
-    label.setAttribute("y", y + 3);
-    label.setAttribute("text-anchor", "end");
+    label.setAttribute("x", x);
+    label.setAttribute("y", 15);
+    label.setAttribute("text-anchor", "middle");
     label.setAttribute("class", "chart-label");
     label.textContent = score;
     svg.append(line, label);
   });
 
-  const xAt = (index) => padding.left + (scored.length === 1
-    ? plotWidth / 2
-    : (index / (scored.length - 1)) * plotWidth);
-  const yAt = (score) => padding.top + plotHeight - (score / 100) * plotHeight;
   const pathData = scored
-    .map((point, index) => `${index ? "L" : "M"}${xAt(index)},${yAt(point.score)}`)
+    .map((point, index) => `${index ? "L" : "M"}${xAt(point.score)},${yAt(index)}`)
     .join(" ");
   if (scored.length > 1) {
     const area = document.createElementNS(SVG_NS, "path");
-    area.setAttribute("d", `${pathData} L${xAt(scored.length - 1)},${padding.top + plotHeight} L${xAt(0)},${padding.top + plotHeight} Z`);
+    area.setAttribute(
+      "d",
+      `${pathData} L${padding.left},${yAt(scored.length - 1)} L${padding.left},${yAt(0)} Z`
+    );
     area.setAttribute("class", "chart-area");
     const line = document.createElementNS(SVG_NS, "path");
     line.setAttribute("d", pathData);
@@ -1062,21 +1155,47 @@ function drawHistory(points) {
 
   scored.forEach((point, index) => {
     const group = document.createElementNS(SVG_NS, "g");
-    group.setAttribute("class", "chart-point-button");
+    const isActive = point.scene.scene_id === state.activeSceneId;
+    group.setAttribute("class", `chart-point-button${isActive ? " active" : ""}`);
     group.setAttribute("role", "button");
     group.setAttribute("tabindex", "0");
     group.setAttribute(
       "aria-label",
       `Load ${dateLabel(point.date, { time: true })} observation, score ${point.score.toFixed(1)}`
     );
+
+    const hit = document.createElementNS(SVG_NS, "rect");
+    hit.setAttribute("x", "1");
+    hit.setAttribute("y", yAt(index) - 21);
+    hit.setAttribute("width", width - 2);
+    hit.setAttribute("height", "42");
+    hit.setAttribute("rx", "8");
+    hit.setAttribute("class", "chart-row-hit");
+
+    const date = document.createElementNS(SVG_NS, "text");
+    date.setAttribute("x", padding.left - 12);
+    date.setAttribute("y", yAt(index) + 4);
+    date.setAttribute("text-anchor", "end");
+    date.setAttribute("class", "chart-date-label");
+    date.textContent = dateLabel(point.date, { short: true });
+
     const circle = document.createElementNS(SVG_NS, "circle");
-    circle.setAttribute("cx", xAt(index));
-    circle.setAttribute("cy", yAt(point.score));
-    circle.setAttribute("r", point.scene.scene_id === state.activeSceneId ? "6" : "4.5");
-    circle.setAttribute("class", `chart-point${point.scene.scene_id === state.activeSceneId ? " active" : ""}`);
+    circle.setAttribute("cx", xAt(point.score));
+    circle.setAttribute("cy", yAt(index));
+    circle.setAttribute("r", isActive ? "7" : "5");
+    circle.setAttribute("class", `chart-point${isActive ? " active" : ""}`);
     const title = document.createElementNS(SVG_NS, "title");
     title.textContent = `${dateLabel(point.date, { time: true })} · ${point.score.toFixed(1)}/100 · ${point.label}`;
     circle.append(title);
+
+    const score = document.createElementNS(SVG_NS, "text");
+    const placeBefore = point.score >= 88;
+    score.setAttribute("x", xAt(point.score) + (placeBefore ? -11 : 11));
+    score.setAttribute("y", yAt(index) + 4);
+    score.setAttribute("text-anchor", placeBefore ? "end" : "start");
+    score.setAttribute("class", "chart-score-label");
+    score.textContent = Math.round(point.score);
+
     const activate = () => selectScene(point.scene.scene_id);
     group.addEventListener("click", activate);
     group.addEventListener("keydown", (event) => {
@@ -1085,19 +1204,8 @@ function drawHistory(points) {
         activate();
       }
     });
-    group.append(circle);
+    group.append(hit, date, circle, score);
     svg.append(group);
-  });
-
-  const labels = scored.length === 1 ? [scored[0]] : [scored[0], scored[scored.length - 1]];
-  labels.forEach((point, index) => {
-    const label = document.createElementNS(SVG_NS, "text");
-    label.setAttribute("x", index === 0 ? padding.left : width - padding.right);
-    label.setAttribute("y", height - 8);
-    label.setAttribute("text-anchor", index === 0 ? "start" : "end");
-    label.setAttribute("class", "chart-date-label");
-    label.textContent = dateLabel(point.date, { short: true, time: true });
-    svg.append(label);
   });
   container.append(svg);
 }

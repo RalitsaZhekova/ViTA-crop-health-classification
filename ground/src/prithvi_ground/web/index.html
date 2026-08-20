@@ -9,7 +9,7 @@
     <link rel="icon" type="image/png" href="/static/ViTA_satellite_icon.png?v=2">
     <link rel="apple-touch-icon" href="/static/ViTA_satellite_icon.png?v=2">
     <script src="/static/theme-init.js"></script>
-    <link rel="stylesheet" href="/static/styles.css?v=2">
+    <link rel="stylesheet" href="/static/styles.css?v=dark-region-select-1">
   </head>
   <body>
     <a class="skip-link" href="#main-content">Skip to crop intelligence</a>
@@ -80,7 +80,7 @@
           </article>
         </section>
 
-        <section class="intelligence-layout" aria-label="Satellite observation and selected area">
+        <section class="intelligence-layout" aria-label="Satellite observation and crop-condition history">
           <article class="viewer-card card">
             <header class="card-header viewer-header">
               <div>
@@ -134,79 +134,83 @@
             </footer>
           </article>
 
-          <aside class="area-card card" aria-labelledby="area-title">
-            <header class="card-header area-header">
+          <section class="history-card history-panel card" aria-labelledby="history-title">
+            <header class="history-header">
               <div>
-                <p class="eyebrow">Area insight</p>
-                <h2 id="area-title">Whole observation</h2>
+                <p class="eyebrow">Progress over time</p>
+                <h2 id="history-title">Crop condition history</h2>
+                <p id="history-scope">Whole-region scores. Select an area on the map to follow that zone through time.</p>
               </div>
-              <button id="clear-area" class="text-button hidden" type="button">Clear</button>
+              <span id="history-count" class="soft-badge">0 observations</span>
             </header>
 
-            <div class="area-score-block">
-              <div id="area-score-ring" class="area-score-ring"><strong id="area-score">—</strong><span>/100</span></div>
-              <div>
-                <span id="area-condition" class="condition-pill">No score</span>
-                <p id="area-guidance">Draw a box around a field or zone to see focused results.</p>
-              </div>
+            <div class="trajectory-heading">
+              <strong>Seasonal trajectory</strong>
+              <span>Score moves from attention to strong</span>
             </div>
+            <div id="history-chart" class="history-chart"></div>
+            <div id="history-strip" class="history-strip" aria-label="Observation timeline"></div>
+            <p class="history-note"><span aria-hidden="true">●</span> Choose a date to update the map and score. Confirm monitoring alerts in the field.</p>
 
-            <div class="area-facts">
-              <div><span>Selected area</span><strong id="area-size">Whole scene</strong></div>
-              <div><span>Crop evidence</span><strong id="area-coverage">—</strong></div>
-              <div><span>Area needing attention</span><strong id="area-alert">—</strong></div>
+            <div class="history-insights">
+              <article>
+                <span>Selected condition</span>
+                <strong id="history-latest">—</strong>
+                <small id="history-latest-label">No baseline yet</small>
+              </article>
+              <article>
+                <span>Change in period</span>
+                <strong id="history-change">—</strong>
+                <small id="history-change-label">Requires two observations</small>
+              </article>
+              <article id="baseline-card" class="baseline-card signal-building" aria-live="polite">
+                <span>Early-warning baseline</span>
+                <strong id="baseline-status">Building</strong>
+                <small id="baseline-message">More observations improve seasonal comparisons.</small>
+              </article>
             </div>
-
-            <div id="area-callout" class="area-callout neutral">
-              <span class="callout-icon" aria-hidden="true">i</span>
-              <p id="area-callout-copy">The score is a crop-condition screening signal, not a diagnosis.</p>
-            </div>
-
-            <details class="technical-details">
-              <summary>Supporting indicators</summary>
-              <div class="indicator-grid">
-                <div><span>Canopy vigor</span><strong id="area-ndvi">—</strong><small>NDVI</small></div>
-                <div><span>Chlorophyll</span><strong id="area-gndvi">—</strong><small>GNDVI</small></div>
-                <div><span>Dense canopy</span><strong id="area-evi">—</strong><small>EVI</small></div>
-                <div><span>Soil adjusted</span><strong id="area-savi">—</strong><small>SAVI</small></div>
-              </div>
-              <p id="area-method-note">Local values are calculated from the payload-measured analysis grid overlapping your selection.</p>
-            </details>
-          </aside>
+          </section>
         </section>
 
-        <section class="history-card card" aria-labelledby="history-title">
-          <header class="history-header">
+        <aside class="area-card health-breakdown card" aria-labelledby="area-title">
+          <header class="card-header area-header">
             <div>
-              <p class="eyebrow">Progress over time</p>
-              <h2 id="history-title">Crop condition history</h2>
-              <p id="history-scope">Whole-region scores. Select an area above to follow that same zone through time.</p>
+              <p class="eyebrow">Health-score breakdown</p>
+              <h2 id="area-title">Whole observation</h2>
             </div>
-            <span id="history-count" class="soft-badge">0 observations</span>
+            <button id="clear-area" class="text-button hidden" type="button">Clear</button>
           </header>
 
-          <div class="history-insights">
-            <article>
-              <span>Latest condition</span>
-              <strong id="history-latest">—</strong>
-              <small id="history-latest-label">No baseline yet</small>
-            </article>
-            <article>
-              <span>Change in period</span>
-              <strong id="history-change">—</strong>
-              <small id="history-change-label">Requires two observations</small>
-            </article>
-            <article class="baseline-card">
-              <span>Early-warning baseline</span>
-              <strong id="baseline-status">Building</strong>
-              <small id="baseline-message">More observations improve seasonal comparisons.</small>
-            </article>
+          <div class="area-score-block">
+            <div id="area-score-ring" class="area-score-ring"><strong id="area-score">—</strong><span>/100</span></div>
+            <div>
+              <span id="area-condition" class="condition-pill">No score</span>
+              <p id="area-guidance">Draw a box around a field or zone to see focused results.</p>
+            </div>
           </div>
 
-          <div id="history-chart" class="history-chart"></div>
-          <div id="history-strip" class="history-strip" aria-label="Observation timeline"></div>
-          <p class="history-note"><span aria-hidden="true">●</span> Click any date to load its satellite image. Alerts shown here are relative monitoring signals; field evidence is required before action.</p>
-        </section>
+          <div class="area-facts">
+            <div><span>Selected area</span><strong id="area-size">Whole scene</strong></div>
+            <div><span>Crop evidence</span><strong id="area-coverage">—</strong></div>
+            <div><span>Area needing attention</span><strong id="area-alert">—</strong></div>
+          </div>
+
+          <div id="area-callout" class="area-callout neutral">
+            <span class="callout-icon" aria-hidden="true">i</span>
+            <p id="area-callout-copy">The score is a crop-condition screening signal, not a diagnosis.</p>
+          </div>
+
+          <details class="technical-details">
+            <summary>Supporting indicators</summary>
+            <div class="indicator-grid">
+              <div><span>Canopy vigor</span><strong id="area-ndvi">—</strong><small>NDVI</small></div>
+              <div><span>Chlorophyll</span><strong id="area-gndvi">—</strong><small>GNDVI</small></div>
+              <div><span>Dense canopy</span><strong id="area-evi">—</strong><small>EVI</small></div>
+              <div><span>Soil adjusted</span><strong id="area-savi">—</strong><small>SAVI</small></div>
+            </div>
+            <p id="area-method-note">Local values are calculated from the payload-measured analysis grid overlapping your selection.</p>
+          </details>
+        </aside>
 
         <details class="observation-details card">
           <summary>
@@ -288,6 +292,6 @@
     </dialog>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="/static/app.js?v=seasonal-baseline-1" defer></script>
+    <script src="/static/app.js?v=history-workspace-4" defer></script>
   </body>
 </html>

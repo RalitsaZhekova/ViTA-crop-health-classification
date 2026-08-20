@@ -47,7 +47,18 @@ def test_web_application_exposes_client_dashboard_and_safe_run_api(tmp_path: Pat
     assert "Run crop analysis" in page.text
     assert 'id="theme-toggle"' in page.text
     assert 'src="/static/theme-init.js"' in page.text
-    assert 'src="/static/app.js?v=seasonal-baseline-1"' in page.text
+    assert 'href="/static/styles.css?v=dark-region-select-1"' in page.text
+    assert 'src="/static/app.js?v=history-workspace-4"' in page.text
+    assert 'class="history-card history-panel card"' in page.text
+    assert 'class="area-card health-breakdown card"' in page.text
+    assert 'id="baseline-card" class="baseline-card signal-building"' in page.text
+    assert "Selected condition" in page.text
+    assert page.text.index('class="viewer-card card"') < page.text.index(
+        'class="history-card history-panel card"'
+    ) < page.text.index('class="area-card health-breakdown card"')
+    assert page.text.index('class="trajectory-heading"') < page.text.index(
+        'class="history-insights"'
+    )
     assert (
         '<link rel="icon" type="image/png" '
         'href="/static/ViTA_satellite_icon.png?v=2">'
@@ -67,10 +78,20 @@ def test_web_application_exposes_client_dashboard_and_safe_run_api(tmp_path: Pat
     assert icon.status_code == 200
     assert icon.headers["content-type"] == "image/png"
 
-    app_script = client.get("/static/app.js?v=seasonal-baseline-1")
+    styles = client.get("/static/styles.css?v=dark-region-select-1")
+    assert styles.status_code == 200
+    assert 'html[data-theme="dark"] .header-context select option' in styles.text
+    assert "background-color: #13231c" in styles.text
+
+    app_script = client.get("/static/app.js?v=history-workspace-4")
     assert app_script.status_code == 200
     assert "isBaselineVigorScore" in app_script.text
-    assert "another season is needed" in app_script.text
+    assert "first eligible" in app_script.text
+    assert "Crop-condition trajectory from earlier to later observations" in app_script.text
+    assert "renderSummaryResult(result, selected)" in app_script.text
+    assert "point.date.valueOf() < selected.date.valueOf()" in app_script.text
+    assert "Strong improvement" in app_script.text
+    assert "Early review signal" in app_script.text
 
     response = client.post(
         "/api/v1/pipeline-runs",
