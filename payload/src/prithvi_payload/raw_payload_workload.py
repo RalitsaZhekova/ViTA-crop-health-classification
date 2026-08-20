@@ -323,10 +323,11 @@ def run_raw_payload_job(
             crop_model=crop,
             allow_experimental_raw_proxy=True,
             acquisition_metadata={
+                "provider": "raw_local",
                 "raw_payload_job": job_id,
                 "raw_source_sha256": alignment["source"]["sha256"],
-                "alignment_report": str(aligned_path.with_suffix(".alignment.json")),
-                "raw_proxy_report": str(proxy_path.with_suffix(".raw_proxy.json")),
+                "alignment_report": aligned_path.with_suffix(".alignment.json").name,
+                "raw_proxy_report": proxy_path.with_suffix(".raw_proxy.json").name,
             },
         )
         _synchronize_cuda()

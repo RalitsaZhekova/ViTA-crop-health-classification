@@ -34,7 +34,7 @@ def test_isolated_raw_job_creates_normal_downlink_bundle(
         observed["alignment"] = kwargs
         output.write_bytes(b"aligned")
         report = {
-            "source": {"sha256": "raw-sha"},
+            "source": {"sha256": "a" * 64},
             "execution": {
                 "resolved_device": "cuda",
                 "cuda_batched_phase_correlation": True,
@@ -115,6 +115,13 @@ def test_isolated_raw_job_creates_normal_downlink_bundle(
     assert observed["pipeline"]["allow_experimental_raw_proxy"] is True
     assert observed["pipeline"]["reflectance_scale"] == 1.0
     assert observed["pipeline"]["stop_after"] == "downlink"
+    assert observed["pipeline"]["acquisition_metadata"] == {
+        "provider": "raw_local",
+        "raw_payload_job": "raw-3408-test",
+        "raw_source_sha256": "a" * 64,
+        "alignment_report": "3408_Raw_aligned.alignment.json",
+        "raw_proxy_report": "3408_Raw_model_proxy.raw_proxy.json",
+    }
     assert (output_root / "raw-3408-test" / "downlink" / "scene.json").is_file()
     status = json.loads(
         (output_root / "raw-3408-test" / "raw-job.json").read_text(encoding="utf-8")

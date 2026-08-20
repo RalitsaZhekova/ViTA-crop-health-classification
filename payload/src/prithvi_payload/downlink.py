@@ -409,6 +409,22 @@ def _cell_bounds_wgs84(
     return [round(west, 8), round(south, 8), round(east, 8), round(north, 8)]
 
 
+def _apply_raw_local_display_contract(
+    geospatial: dict[str, Any],
+    grid: dict[str, Any],
+) -> None:
+    """Expose unqualified raw telemetry products in image space, not on the map."""
+    geospatial.update(
+        {
+            "bounds_wgs84": None,
+            "display_mode": "image",
+            "location_status": "unavailable",
+        }
+    )
+    for cell in grid.get("cells", []):
+        cell["bounds_wgs84"] = None
+
+
 def _build_interaction_grid(
     source: rasterio.DatasetReader,
     rasters: dict[str, rasterio.DatasetReader],
@@ -686,6 +702,8 @@ def build_downlink_bundle(
     artifacts = payload.get("artifacts", {})
     stage_metadata = payload.get("stage_metadata", {})
     intake = stage_metadata.get("intake", {})
+    acquisition = stage_metadata.get("acquisition")
+    raw_local = isinstance(acquisition, dict) and acquisition.get("provider") == "raw_local"
     condition_report_path = _resolve_asset(
         artifacts.get("condition", {}).get("report"), result_root, name="condition report"
     )
@@ -948,6 +966,11 @@ def build_downlink_bundle(
             "bounds_wgs84": wgs84_bounds,
             "web_overlay_contract": "north-up bounds; images share dimensions and pixel alignment",
         }
+        if raw_local:
+            # Telemetry-derived raw positioning is sufficient for reconstruction, but it is
+            # not a qualified geographic product. Keep the native image-grid description
+            # while preventing the ground UI from treating it as a map overlay.
+            _apply_raw_local_display_contract(geospatial, grid)
 
     manifest_started = time.perf_counter()
     assets = {
@@ -966,7 +989,6 @@ def build_downlink_bundle(
     }
     asset_bytes = sum(item["bytes"] for item in assets.values())
     crop_model = stage_metadata.get("crop", {}).get("model", {})
-    acquisition = stage_metadata.get("acquisition")
     if isinstance(acquisition, dict):
         source_provenance = dict(acquisition)
     else:
@@ -990,7 +1012,7 @@ def build_downlink_bundle(
         "algorithm_version": DOWNLINK_ALGORITHM_VERSION,
         "scene_id": payload.get("scene_id"),
         "region_id": condition_report.get("region_id"),
-        "sensor": payload.get("sensor"),
+        "sensor": "balkan-1-raw" if raw_local else payload.get("sensor"),
         "acquired_at": intake.get("acquired_at"),
         "status": condition_report.get("status"),
         "claim": "relative crop-condition screening; not an agronomic diagnosis",

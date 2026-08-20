@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 import rasterio
 from prithvi_payload.downlink import (
+    _apply_raw_local_display_contract,
     _build_interaction_grid,
     _build_overlay,
     _calibrated_balkan_rgb,
@@ -10,6 +11,26 @@ from prithvi_payload.downlink import (
     prepare_rgb_preview,
 )
 from rasterio.transform import from_origin
+
+
+def test_raw_local_display_contract_disables_geographic_overlay() -> None:
+    geospatial = {
+        "native_crs": "EPSG:32631",
+        "bounds_wgs84": [4.9, 43.4, 5.1, 43.6],
+    }
+    grid = {
+        "cells": [
+            {"id": "r00c00", "bounds_wgs84": [4.9, 43.4, 5.0, 43.5]},
+            {"id": "r00c01", "bounds_wgs84": [5.0, 43.4, 5.1, 43.5]},
+        ]
+    }
+
+    _apply_raw_local_display_contract(geospatial, grid)
+
+    assert geospatial["location_status"] == "unavailable"
+    assert geospatial["display_mode"] == "image"
+    assert geospatial["bounds_wgs84"] is None
+    assert all(cell["bounds_wgs84"] is None for cell in grid["cells"])
 
 
 def test_balkan_web_rgb_uses_validated_sentinel_curves(tmp_path, monkeypatch) -> None:
