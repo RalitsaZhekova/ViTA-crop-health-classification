@@ -5,7 +5,7 @@ param(
     [string]$SshTarget,
 
     [Parameter(Mandatory = $true)]
-    [ValidateSet('sentinel-2', 'balkan-1', 'balkan-1-raw')]
+    [ValidateSet('sentinel-2', 'sentinel-2-live', 'balkan-1', 'balkan-1-raw')]
     [string]$Sensor,
 
     [Parameter(Mandatory = $true)]
@@ -19,6 +19,9 @@ param(
     [string]$CropCalibration,
     [string]$AcquiredAt,
     [Nullable[double]]$ReflectanceScale,
+    [string]$BboxWgs84,
+    [string]$StartDate,
+    [string]$EndDate,
     [string]$JobId,
     [int]$SshPort = 22,
     [string]$IdentityFile,
@@ -67,7 +70,9 @@ foreach ($command in @('ssh', 'scp')) {
 }
 
 Assert-SafeId 'RegionId' $RegionId
-Assert-SafeRelativePath 'Input' $PayloadInput $false
+if ($Sensor -ne 'sentinel-2-live') {
+    Assert-SafeRelativePath 'Input' $PayloadInput $false
+}
 if ($Image) { Assert-SafeRelativePath 'Image' $Image $true }
 if ($CropCalibration) { Assert-SafeRelativePath 'CropCalibration' $CropCalibration $false }
 if ($Sensor -eq 'sentinel-2' -and -not $Image -and $PayloadInput -notmatch '\.(tif|tiff)$') {
@@ -76,9 +81,29 @@ if ($Sensor -eq 'sentinel-2' -and -not $Image -and $PayloadInput -notmatch '\.(t
 if ($Sensor -ne 'sentinel-2' -and $Image) {
     throw 'Image is only valid for Sentinel folder inputs.'
 }
+$bboxNumbers = $null
+if ($Sensor -eq 'sentinel-2-live') {
+    $bboxParts = $BboxWgs84 -split ','
+    if ($bboxParts.Count -ne 4) {
+        throw 'BboxWgs84 must contain west,south,east,north.'
+    }
+    $bboxNumbers = @($bboxParts | ForEach-Object {
+        [double]::Parse(
+            $_,
+            [Globalization.NumberStyles]::Float,
+            [Globalization.CultureInfo]::InvariantCulture
+        )
+    })
+    if ($StartDate -notmatch '^\d{4}-\d{2}-\d{2}$' -or $EndDate -notmatch '^\d{4}-\d{2}-\d{2}$') {
+        throw 'StartDate and EndDate must use YYYY-MM-DD.'
+    }
+} elseif ($BboxWgs84 -or $StartDate -or $EndDate) {
+    throw 'Area and date parameters are only valid for live Sentinel analysis.'
+}
 if (-not $JobId) {
     $prefix = switch ($Sensor) {
         'sentinel-2' { 'sentinel' }
+        'sentinel-2-live' { 'live-sentinel' }
         'balkan-1-raw' { 'raw' }
         default { 'balkan' }
     }
@@ -154,6 +179,11 @@ try {
     if ($CropCalibration) { $request.crop_calibration = ($CropCalibration -replace '\\', '/') }
     if ($AcquiredAt) { $request.acquired_at = $AcquiredAt }
     if ($null -ne $ReflectanceScale) { $request.reflectance_scale = $ReflectanceScale.Value }
+    if ($Sensor -eq 'sentinel-2-live') {
+        $request.bbox_wgs84 = $bboxNumbers
+        $request.start_date = $StartDate
+        $request.end_date = $EndDate
+    }
 
     Write-Host "Uplink: sending job metadata through the SSH tunnel (no image upload)."
     $response = Invoke-RestMethod `

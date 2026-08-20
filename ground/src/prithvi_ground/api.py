@@ -92,11 +92,12 @@ def create_app(
     async def security_headers(request: Request, call_next):
         response = await call_next(request)
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
-        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault(
             "Content-Security-Policy",
-            "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+            "default-src 'self'; img-src 'self' data: https://tile.openstreetmap.org; "
+            "style-src 'self' 'unsafe-inline'; "
             "script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'",
         )
         return response

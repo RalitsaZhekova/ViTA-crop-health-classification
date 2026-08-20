@@ -23,6 +23,8 @@ if [ -z "${VITA_RAW_ENGINE_CACHE_HOST:-}" ]; then
 fi
 export VITA_RAW_ENGINE_CACHE_HOST
 export VITA_RAW_OUTPUT_HOST="${VITA_RAW_OUTPUT_HOST:-$OPERATIONAL_ROOT/runtime/raw-payload}"
+export VITA_EE_AUTH_HOST="${VITA_EE_AUTH_HOST:-$OPERATIONAL_ROOT/runtime/earth-engine}"
+export VITA_EE_PROJECT="${VITA_EE_PROJECT:-vita-503208}"
 
 test -f "$COMPOSE_FILE" || { echo "ERROR: missing $COMPOSE_FILE" >&2; exit 1; }
 docker image inspect "$BASE_IMAGE" >/dev/null || {
@@ -39,6 +41,7 @@ test -f "$VITA_RAW_ENGINE_CACHE_HOST/tensorrt/direct/accepted.json" || {
     echo "ERROR: accepted TensorRT manifest is missing" >&2
     exit 1
 }
+mkdir -p "$VITA_EE_AUTH_HOST"
 
 raw_root="$(realpath -m "$OPERATIONAL_ROOT/runtime/raw-payload")"
 resolved_output="$(realpath -m "$VITA_RAW_OUTPUT_HOST")"

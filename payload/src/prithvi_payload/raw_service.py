@@ -8,6 +8,7 @@ import os
 import threading
 import time
 from contextlib import asynccontextmanager, contextmanager
+from datetime import date
 from pathlib import Path
 from typing import Any, Literal
 
@@ -17,9 +18,13 @@ import torch
 import torch.nn.functional as functional
 from fastapi import FastAPI, HTTPException
 from prithvi_shared.files import sha256_file
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.concurrency import run_in_threadpool
 
+from prithvi_payload.acquisition import (
+    EarthEngineAcquisitionProvider,
+    earth_engine_configuration,
+)
 from prithvi_payload.balkan_alignment import _batch_cross_correlate_shift_cuda
 from prithvi_payload.pipeline import run_scene
 from prithvi_payload.raw_payload_workload import (
@@ -41,10 +46,25 @@ class RawJobRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    sensor: Literal["balkan-1", "balkan-1-raw"]
+    sensor: Literal["balkan-1", "balkan-1-raw", "sentinel-2-live"]
     input: str = Field(min_length=1, max_length=512)
     region_id: str = Field(min_length=1, max_length=80)
     job_id: str = Field(min_length=1, max_length=80)
+    bbox_wgs84: tuple[float, float, float, float] | None = None
+    start_date: date | None = None
+    end_date: date | None = None
+
+    @model_validator(mode="after")
+    def validate_live_acquisition(self) -> RawJobRequest:
+        live_values = (self.bbox_wgs84, self.start_date, self.end_date)
+        if self.sensor == "sentinel-2-live":
+            if any(value is None for value in live_values):
+                raise ValueError("Live Sentinel analysis requires an area and date range")
+            if self.input != "earth-engine":
+                raise ValueError("Live Sentinel input must be earth-engine")
+        elif any(value is not None for value in live_values):
+            raise ValueError("Area and date range are only valid for live Sentinel analysis")
+        return self
 
 
 def _warm_alignment_cuda() -> dict[str, Any]:
@@ -111,6 +131,7 @@ class RawPayloadRuntime:
             "alignment_cuda_warmup": alignment_warmup,
             "models_preloaded": True,
         }
+        self.earth_engine_provider = EarthEngineAcquisitionProvider()
         self.startup_timing = {
             "pipeline_import_seconds": import_seconds,
             "alignment_cuda_warmup_seconds": alignment_warmup["seconds"],
@@ -126,6 +147,7 @@ class RawPayloadRuntime:
             "service": "vita-balkan-payload",
             "cuda_probe": {"status": "ready", "device": probe.device.type},
             "acceleration": self.acceleration,
+            "earth_engine": earth_engine_configuration(),
             "startup_timing_seconds": self.startup_timing,
         }
 
@@ -317,11 +339,82 @@ class RawPayloadRuntime:
             ],
         }
 
+    def _run_live_sentinel(self, request: RawJobRequest) -> dict[str, Any]:
+        if request.bbox_wgs84 is None or request.start_date is None or request.end_date is None:
+            raise ValueError("Live Sentinel analysis requires an area and date range")
+        output = self.output_root / request.job_id
+        if output.exists():
+            raise FileExistsError(f"Live Sentinel payload job already exists: {request.job_id}")
+        started = time.perf_counter()
+        acquired = self.earth_engine_provider.acquire(
+            bbox_wgs84=request.bbox_wgs84,
+            start_date=request.start_date,
+            end_date=request.end_date,
+            destination_root=output / "acquisition",
+        )
+        progress: list[str] = ["earth_engine_acquisition_complete"]
+        pipeline_started = time.perf_counter()
+        result = run_scene(
+            acquired.local_tiff_path,
+            sensor="sentinel-2",
+            output_root=output,
+            acquired_at=acquired.acquired_at,
+            scene_id=request.job_id,
+            band_order=("B02", "B03", "B04", "B08", "B8A"),
+            reflectance_scale=10_000.0,
+            stop_after="downlink",
+            region_id=request.region_id,
+            cloud_backend=self.cloud.backend,
+            cloud_config=self.cloud.config,
+            crop_model=self.crop,
+            condition_tile_size=int(os.environ.get("VITA_CONDITION_TILE_SIZE", "4096")),
+            progress_callback=progress.append,
+            acquisition_metadata=acquired.safe_provenance(),
+        )
+        pipeline_seconds = time.perf_counter() - pipeline_started
+        payload_seconds = time.perf_counter() - started
+        if result.get("status") != "DOWNLINK_READY":
+            raise RuntimeError(f"Pipeline stopped with status {result.get('status')}")
+        bundle = output / "downlink"
+        files = {
+            name: {
+                "bytes": (bundle / name).stat().st_size,
+                "sha256": sha256_file(bundle / name),
+            }
+            for name in ("scene.json", "scene.webp", "condition.png")
+        }
+        timings = _pipeline_timings(result, payload_seconds=payload_seconds)
+        timings.update(acquired.timing)
+        timings["accelerated_pipeline_seconds"] = pipeline_seconds
+        return {
+            "schema_version": "1.0",
+            "status": "DOWNLINK_READY",
+            "job_id": request.job_id,
+            "scene_id": result["scene_id"],
+            "sensor": "sentinel-2",
+            "region_id": request.region_id,
+            "bundle_relative": f"runs/{request.job_id}/downlink",
+            "files": files,
+            "payload_seconds": payload_seconds,
+            "under_two_seconds": payload_seconds < 2.0,
+            "under_five_seconds": payload_seconds < 5.0,
+            "pipeline_timing_seconds": timings,
+            "summary": result.get("summary", {}),
+            "progress": progress,
+            "stack": {
+                **self.acceleration,
+                "earth_engine_acquisition": True,
+                "earth_engine_collection": "COPERNICUS/S2_SR_HARMONIZED",
+            },
+        }
+
     def run(self, request: RawJobRequest) -> dict[str, Any]:
         if not SAFE_ID.fullmatch(request.job_id):
             raise ValueError("job_id must contain only letters, digits, dot, underscore or dash")
         if not SAFE_ID.fullmatch(request.region_id):
             raise ValueError("region_id must contain only letters, digits, dot, underscore or dash")
+        if request.sensor == "sentinel-2-live":
+            return self._run_live_sentinel(request)
         if request.sensor == "balkan-1-raw":
             return self._run_raw(request)
         return self._run_processed(request)

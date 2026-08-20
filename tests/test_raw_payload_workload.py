@@ -199,13 +199,18 @@ def test_warm_raw_service_is_separate_and_uses_read_only_operational_assets() ->
 
     assert compose["name"] == "vita-payload-raw-service"
     assert service["restart"] == "unless-stopped"
+    assert service["build"]["args"]["VITA_INSTALL_EARTH_ENGINE"] == "1"
     assert service["ports"] == ["127.0.0.1:${VITA_RAW_PAYLOAD_PORT:-8091}:8091"]
     assert any(volume.endswith(":/data:ro") for volume in service["volumes"])
     assert any(volume.endswith(":/operational-data:ro") for volume in service["volumes"])
     assert any(volume.endswith(":/models:ro") for volume in service["volumes"])
     assert any(volume.endswith(":/engine-cache:ro") for volume in service["volumes"])
+    assert any(volume.endswith(":/earth-engine-auth:ro") for volume in service["volumes"])
     assert service["environment"]["VITA_CROP_BACKEND"] == "tensorrt"
     assert service["environment"]["VITA_CLOUD_BACKEND"] == "tensorrt"
+    assert service["environment"]["VITA_EE_CREDENTIALS"] == (
+        "/earth-engine-auth/credentials.json"
+    )
 
 
 def test_raw_engine_builder_isolated_from_operational_service() -> None:

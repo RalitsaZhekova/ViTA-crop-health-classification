@@ -10,7 +10,8 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from math import cos, isfinite, radians
 from pathlib import Path
 from typing import Any
 
@@ -29,17 +30,35 @@ class PipelineLaunch:
     region_id: str
     input_path: str | None = None
     image: str | None = None
+    bbox_wgs84: tuple[float, float, float, float] | None = None
+    start_date: date | None = None
+    end_date: date | None = None
 
     @classmethod
     def from_payload(cls, payload: Any) -> PipelineLaunch:
         if not isinstance(payload, dict):
             raise PipelineLaunchError("The analysis request must be a JSON object.")
-        if set(payload) - {"sensor", "region_id", "input_path", "image"}:
+        if set(payload) - {
+            "sensor",
+            "region_id",
+            "input_path",
+            "image",
+            "bbox_wgs84",
+            "start_date",
+            "end_date",
+        }:
             raise PipelineLaunchError("The analysis request contains unsupported fields.")
 
         sensor = payload.get("sensor")
-        if sensor not in {"sentinel-2", "balkan-1", "balkan-1-raw"}:
-            raise PipelineLaunchError("Choose Sentinel-2, Balkan-1, or Balkan-1 raw.")
+        if sensor not in {
+            "sentinel-2",
+            "sentinel-2-live",
+            "balkan-1",
+            "balkan-1-raw",
+        }:
+            raise PipelineLaunchError(
+                "Choose stored Sentinel-2, live Sentinel-2, Balkan-1, or Balkan-1 raw."
+            )
         region_id = payload.get("region_id")
         if not isinstance(region_id, str) or not SAFE_ID.fullmatch(region_id):
             raise PipelineLaunchError(
@@ -52,7 +71,37 @@ class PipelineLaunch:
             raise PipelineLaunchError("A separate image file is only used with Sentinel-2 folders.")
         if sensor == "balkan-1-raw" and input_path and not SAFE_ID.fullmatch(input_path):
             raise PipelineLaunchError("Balkan-1 raw input must be a scene ID such as 3408.")
-        return cls(sensor=sensor, region_id=region_id, input_path=input_path, image=image)
+        bbox = _optional_bbox(payload.get("bbox_wgs84"))
+        start_date = _optional_date(payload.get("start_date"), name="Start date")
+        end_date = _optional_date(payload.get("end_date"), name="End date")
+        live_values = (bbox, start_date, end_date)
+        if sensor == "sentinel-2-live":
+            if input_path or image:
+                raise PipelineLaunchError(
+                    "Live Sentinel analysis uses the selected area, not a payload file path."
+                )
+            if any(value is None for value in live_values):
+                raise PipelineLaunchError(
+                    "Live Sentinel analysis requires an area and start/end dates."
+                )
+            assert start_date is not None and end_date is not None
+            if start_date > end_date:
+                raise PipelineLaunchError("Start date must not follow end date.")
+            if (end_date - start_date).days + 1 > 92:
+                raise PipelineLaunchError("The live Sentinel search may span at most 92 days.")
+        elif any(value is not None for value in live_values):
+            raise PipelineLaunchError(
+                "Area and date fields are only used by live Sentinel analysis."
+            )
+        return cls(
+            sensor=sensor,
+            region_id=region_id,
+            input_path=input_path,
+            image=image,
+            bbox_wgs84=bbox,
+            start_date=start_date,
+            end_date=end_date,
+        )
 
 
 def _optional_relative_path(
@@ -73,6 +122,40 @@ def _optional_relative_path(
     if filename_only and len(parts) != 1:
         raise PipelineLaunchError("Image must be a filename inside the selected Sentinel folder.")
     return value.replace("\\", "/")
+
+
+def _optional_bbox(value: Any) -> tuple[float, float, float, float] | None:
+    if value is None:
+        return None
+    if (
+        not isinstance(value, list)
+        or len(value) != 4
+        or any(isinstance(item, bool) or not isinstance(item, (int, float)) for item in value)
+    ):
+        raise PipelineLaunchError("Selected area must contain west, south, east and north.")
+    west, south, east, north = (float(item) for item in value)
+    if not all(isfinite(item) for item in (west, south, east, north)):
+        raise PipelineLaunchError("Selected area coordinates must be finite.")
+    if not (-180 <= west < east <= 180 and -90 <= south < north <= 90):
+        raise PipelineLaunchError("Selected area is outside valid longitude/latitude bounds.")
+    latitude_km = (north - south) * 110.574
+    longitude_km = (east - west) * 111.320 * cos(radians((south + north) / 2.0))
+    if min(latitude_km, longitude_km) < 0.6:
+        raise PipelineLaunchError("Select an area at least 0.6 km wide and high.")
+    if max(latitude_km, longitude_km) > 10.2:
+        raise PipelineLaunchError("Select an area no more than 10 km wide and high.")
+    return west, south, east, north
+
+
+def _optional_date(value: Any, *, name: str) -> date | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise PipelineLaunchError(f"{name} must use YYYY-MM-DD.")
+    try:
+        return date.fromisoformat(value)
+    except ValueError as error:
+        raise PipelineLaunchError(f"{name} must use YYYY-MM-DD.") from error
 
 
 def _utc_now() -> str:
@@ -114,7 +197,7 @@ class PipelineRunManager:
             re.fullmatch(r"[A-Za-z0-9._-]+@[A-Za-z0-9._-]+", raw_target)
         )
         if raw_available:
-            sensors.append("balkan-1-raw")
+            sensors.extend(("balkan-1-raw", "sentinel-2-live"))
         return {
             "available": True,
             "reason": None,
@@ -126,6 +209,16 @@ class PipelineRunManager:
                     if raw_available
                     else "Set VITA_JETSON_SSH_TARGET to enable warm Jetson analysis."
                 ),
+            },
+            "earth_engine": {
+                "available": raw_available,
+                "reason": (
+                    None
+                    if raw_available
+                    else "Set VITA_JETSON_SSH_TARGET to enable live Sentinel analysis."
+                ),
+                "maximum_search_days": 92,
+                "maximum_area_km": 10,
             },
         }
 
@@ -148,6 +241,7 @@ class PipelineRunManager:
                 raise PipelineLaunchError("An analysis is already running. Please let it finish.")
             prefix = {
                 "sentinel-2": "sentinel",
+                "sentinel-2-live": "live-sentinel",
                 "balkan-1": "balkan",
                 "balkan-1-raw": "raw",
             }[launch.sensor]
@@ -189,6 +283,7 @@ class PipelineRunManager:
             raise PipelineLaunchError("PowerShell is unavailable in this dashboard environment.")
         command = {
             "sentinel-2": "sentinel",
+            "sentinel-2-live": "earth-engine",
             "balkan-1": "balkan",
             "balkan-1-raw": "raw",
         }[launch.sensor]
@@ -211,6 +306,17 @@ class PipelineRunManager:
             arguments.extend(["-InputPath", launch.input_path])
         if launch.image:
             arguments.extend(["-Image", launch.image])
+        if launch.bbox_wgs84 is not None:
+            arguments.extend(
+                [
+                    "-BboxWgs84",
+                    ",".join(f"{value:.8f}" for value in launch.bbox_wgs84),
+                ]
+            )
+        if launch.start_date is not None:
+            arguments.extend(["-StartDate", launch.start_date.isoformat()])
+        if launch.end_date is not None:
+            arguments.extend(["-EndDate", launch.end_date.isoformat()])
         return arguments
 
     def _execute(self, run_id: str, launch: PipelineLaunch) -> None:
@@ -219,7 +325,11 @@ class PipelineRunManager:
             run_id,
             status="running",
             started_at=_utc_now(),
-            message="The payload is analyzing the observation…",
+            message=(
+                "The payload is finding a clear Sentinel-2 scene for the selected area…"
+                if launch.sensor == "sentinel-2-live"
+                else "The payload is analyzing the observation…"
+            ),
         )
         try:
             completed = subprocess.run(

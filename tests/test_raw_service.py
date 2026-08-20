@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from prithvi_payload import raw_service
+from prithvi_payload.acquisition import AcquiredSentinelScene
 
 
 def _raw_scene(root: Path, processed_root: Path, scene_id: str) -> None:
@@ -233,3 +235,99 @@ def test_unqualified_processed_scene_retains_safe_batch_one() -> None:
 
     assert backend.raw_fixed_patch_size == 1000
     assert backend.batch_size == 1
+
+
+def test_warm_runtime_acquires_live_sentinel_then_reuses_preloaded_models(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    output_root = tmp_path / "runtime" / "runs"
+    output_root.mkdir(parents=True)
+    source = tmp_path / "acquired-scene.tif"
+    source.write_bytes(b"sentinel source")
+    acquired = AcquiredSentinelScene(
+        local_tiff_path=source,
+        provider_scene_id="20260615T105621_20260615T110752_T31UFU",
+        product_id="S2B_MSIL2A_20260615T105621_N0511_R094_T31UFU_20260615T110752",
+        acquired_at="2026-06-15T10:56:21+00:00",
+        metadata_cloud_percentage=4.2,
+        requested_bbox_wgs84=(5.43, 52.50, 5.49, 52.54),
+        output_crs="EPSG:32631",
+        output_transform=(10.0, 0.0, 665000.0, 0.0, -10.0, 5820000.0),
+        sha256="a" * 64,
+        byte_size=15,
+        candidate_rank=1,
+        candidate_attempt_count=1,
+        timing={
+            "earth_engine_search_seconds": 0.2,
+            "earth_engine_download_seconds": 0.8,
+            "geotiff_validation_seconds": 0.1,
+            "total_acquisition_seconds": 1.1,
+        },
+    )
+    provider = SimpleNamespace(acquire=lambda **_kwargs: acquired)
+    backend = object()
+    config = object()
+    cloud = SimpleNamespace(backend=backend, config=config)
+    crop = object()
+    runtime = raw_service.RawPayloadRuntime.__new__(raw_service.RawPayloadRuntime)
+    runtime.output_root = output_root
+    runtime.cloud = cloud
+    runtime.crop = crop
+    runtime.acceleration = {
+        "cloud_backend": "tensorrt",
+        "crop_backend": "tensorrt",
+        "models_preloaded": True,
+    }
+    runtime.earth_engine_provider = provider
+    captured = {}
+
+    def fake_run_scene(input_path, **kwargs):
+        captured["input"] = input_path
+        captured.update(kwargs)
+        bundle = kwargs["output_root"] / "downlink"
+        bundle.mkdir(parents=True)
+        for name in ("scene.json", "scene.webp", "condition.png"):
+            (bundle / name).write_bytes(name.encode("utf-8"))
+        return {
+            "status": "DOWNLINK_READY",
+            "scene_id": kwargs["scene_id"],
+            "summary": {"crop": {"decision": "CLASSIFIED"}},
+            "stage_metadata": {},
+            "timing": {},
+        }
+
+    monkeypatch.setattr(raw_service, "run_scene", fake_run_scene)
+    response = runtime.run(
+        raw_service.RawJobRequest(
+            sensor="sentinel-2-live",
+            input="earth-engine",
+            region_id="selected-farm",
+            job_id="web-live-test",
+            bbox_wgs84=(5.43, 52.50, 5.49, 52.54),
+            start_date=date(2026, 6, 1),
+            end_date=date(2026, 7, 1),
+        )
+    )
+
+    assert response["status"] == "DOWNLINK_READY"
+    assert response["sensor"] == "sentinel-2"
+    assert response["stack"]["earth_engine_acquisition"] is True
+    assert response["pipeline_timing_seconds"]["total_acquisition_seconds"] == 1.1
+    assert captured["input"] == source
+    assert captured["sensor"] == "sentinel-2"
+    assert captured["cloud_backend"] is backend
+    assert captured["cloud_config"] is config
+    assert captured["crop_model"] is crop
+    assert captured["reflectance_scale"] == 10_000.0
+    assert captured["acquisition_metadata"]["provider"] == "earth_engine"
+
+
+def test_live_request_rejects_missing_acquisition_fields() -> None:
+    with pytest.raises(ValueError, match="requires an area and date range"):
+        raw_service.RawJobRequest(
+            sensor="sentinel-2-live",
+            input="earth-engine",
+            region_id="selected-farm",
+            job_id="web-live-test",
+        )

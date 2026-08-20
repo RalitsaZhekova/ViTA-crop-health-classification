@@ -7,17 +7,25 @@ FROM ${VITA_PAYLOAD_OVERLAY_BASE_IMAGE}
 USER root
 WORKDIR /opt/vita
 
+ARG VITA_INSTALL_EARTH_ENGINE=0
+
 COPY pyproject.toml ./
+COPY deploy/requirements-earth-engine.txt /tmp/requirements-earth-engine.txt
 COPY payload ./payload
 COPY shared ./shared
 COPY integration ./integration
 COPY ground ./ground
 
-RUN python -m pip install --no-cache-dir --no-deps . \
+RUN if [ "$VITA_INSTALL_EARTH_ENGINE" = "1" ]; then \
+        python -m pip install --no-cache-dir --requirement /tmp/requirements-earth-engine.txt; \
+    fi \
+    && python -m pip install --no-cache-dir --no-deps . \
     && python -m pip check \
-    && python -c "import prithvi_payload, tensorrt, torch; assert torch.cuda.is_available() is False or torch.version.cuda == '12.8'; assert tensorrt.__version__.startswith('10.8.'); print('Validated ViTA code overlay')"
+    && python -c "import prithvi_payload, tensorrt, torch; assert torch.cuda.is_available() is False or torch.version.cuda == '12.8'; assert tensorrt.__version__.startswith('10.8.'); print('Validated ViTA code overlay')" \
+    && if [ "$VITA_INSTALL_EARTH_ENGINE" = "1" ]; then \
+        python -c "import ee, google.auth, pyproj, requests; print('Validated Earth Engine acquisition dependencies')"; \
+    fi
 
 ARG VITA_PAYLOAD_UID=2002
 ARG VITA_PAYLOAD_GID=2002
 USER ${VITA_PAYLOAD_UID}:${VITA_PAYLOAD_GID}
-

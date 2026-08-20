@@ -1,13 +1,16 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('sentinel', 'balkan', 'raw', 'web', 'health', 'stop', 'help')]
+    [ValidateSet('sentinel', 'earth-engine', 'balkan', 'raw', 'web', 'health', 'stop', 'help')]
     [string]$Command = 'help',
 
     [string]$InputPath,
     [string]$Image,
     [string]$RegionId,
     [string]$JobId,
+    [string]$BboxWgs84,
+    [string]$StartDate,
+    [string]$EndDate,
     [int]$PayloadPort = 8090,
     [int]$RawPayloadPort = 8091,
     [int]$RawTunnelPort = 18091,
@@ -311,6 +314,7 @@ function Invoke-RemoteJetsonPipeline([string]$SensorName) {
     }
     $payloadInput = switch ($SensorName) {
         'sentinel-2' { if ($InputPath) { $InputPath } else { 'sentinel2' } }
+        'sentinel-2-live' { 'earth-engine' }
         'balkan-1' {
             if ($InputPath) { $InputPath } else { 'balkan1/preprocessed/3408_L1ORT.tif' }
         }
@@ -324,6 +328,7 @@ function Invoke-RemoteJetsonPipeline([string]$SensorName) {
     }
     $prefix = switch ($SensorName) {
         'sentinel-2' { 'sentinel' }
+        'sentinel-2-live' { 'live-sentinel' }
         'balkan-1' { 'balkan' }
         default { 'raw' }
     }
@@ -331,6 +336,8 @@ function Invoke-RemoteJetsonPipeline([string]$SensorName) {
         $RegionId
     } elseif ($SensorName -eq 'sentinel-2') {
         'flevoland-history'
+    } elseif ($SensorName -eq 'sentinel-2-live') {
+        'live-sentinel-area'
     } elseif ($SensorName -eq 'balkan-1') {
         'balkan-test-3408'
     } else {
@@ -366,6 +373,9 @@ function Invoke-RemoteJetsonPipeline([string]$SensorName) {
         -Image $resolvedImage `
         -RegionId $resolvedRegionId `
         -JobId $resolvedJobId `
+        -BboxWgs84 $BboxWgs84 `
+        -StartDate $StartDate `
+        -EndDate $EndDate `
         -RemoteProjectRoot $remoteProjectRoot `
         -RemoteRuntimeRoot $remoteRuntimeRoot `
         -RemotePayloadPort $remotePayloadPort `
@@ -457,6 +467,7 @@ switch ($Command) {
         if (Get-JetsonSshTarget) { Invoke-RemoteJetsonPipeline 'sentinel-2' }
         else { Invoke-LocalPipeline 'sentinel-2' }
     }
+    'earth-engine' { Invoke-RemoteJetsonPipeline 'sentinel-2-live' }
     'balkan' {
         if (Get-JetsonSshTarget) { Invoke-RemoteJetsonPipeline 'balkan-1' }
         else { Invoke-LocalPipeline 'balkan-1' }
@@ -474,6 +485,7 @@ switch ($Command) {
 ViTA local MVP
 
   .\vita.ps1 sentinel   Run Sentinel-2, print timings, and ingest for the web app
+  .\vita.ps1 earth-engine  Acquire a selected Sentinel-2 area on Jetson and analyze it
   .\vita.ps1 balkan     Run Balkan-1, print timings, and ingest for the web app
   .\vita.ps1 raw        Run a warm Jetson Balkan-1 raw scene and ingest it
   .\vita.ps1 web        Start the web app and open it in the browser

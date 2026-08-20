@@ -10,6 +10,7 @@ services:
         VITA_PAYLOAD_OVERLAY_BASE_IMAGE: ${VITA_RAW_PAYLOAD_BASE_IMAGE:-vita-payload:1.0.0}
         VITA_PAYLOAD_UID: ${VITA_RAW_HOST_UID:?set VITA_RAW_HOST_UID}
         VITA_PAYLOAD_GID: ${VITA_RAW_HOST_GID:?set VITA_RAW_HOST_GID}
+        VITA_INSTALL_EARTH_ENGINE: "1"
     runtime: nvidia
     user: "${VITA_RAW_HOST_UID}:${VITA_RAW_HOST_GID}"
     init: true
@@ -32,6 +33,8 @@ services:
       VITA_INPUT_ROOT: /data
       VITA_PROCESSED_INPUT_ROOT: /operational-data
       VITA_OUTPUT_ROOT: /runtime/runs
+      VITA_EE_PROJECT: ${VITA_EE_PROJECT:-vita-503208}
+      VITA_EE_CREDENTIALS: /earth-engine-auth/credentials.json
       PRITHVI_MODEL_DIR: /models
       OMNICLOUDMASK_MODEL_DIR: /models/omnicloudmask
       VITA_MODEL_CACHE_DIR: /engine-cache/torch-export
@@ -69,6 +72,7 @@ services:
       - ${VITA_RAW_MODEL_ASSETS_HOST:?set VITA_RAW_MODEL_ASSETS_HOST}:/models:ro
       - ${VITA_RAW_OUTPUT_HOST:?set VITA_RAW_OUTPUT_HOST}:/runtime
       - ${VITA_RAW_ENGINE_CACHE_HOST:?set VITA_RAW_ENGINE_CACHE_HOST}:/engine-cache:ro
+      - ${VITA_EE_AUTH_HOST:?set VITA_EE_AUTH_HOST}:/earth-engine-auth:ro
     tmpfs:
       - /tmp:size=2g,mode=1777
     healthcheck:

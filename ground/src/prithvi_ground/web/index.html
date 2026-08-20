@@ -9,7 +9,8 @@
     <link rel="icon" type="image/png" href="/static/ViTA_satellite_icon.png?v=2">
     <link rel="apple-touch-icon" href="/static/ViTA_satellite_icon.png?v=2">
     <script src="/static/theme-init.js"></script>
-    <link rel="stylesheet" href="/static/styles.css?v=region-listbox-1">
+    <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css?v=1.9.4">
+    <link rel="stylesheet" href="/static/styles.css?v=live-area-1">
   </head>
   <body>
     <a class="skip-link" href="#main-content">Skip to crop intelligence</a>
@@ -255,7 +256,8 @@
           <label>
             <span>Satellite source</span>
             <select id="analysis-sensor" name="sensor">
-              <option value="sentinel-2">Sentinel-2</option>
+              <option value="sentinel-2">Sentinel-2 · payload image</option>
+              <option value="sentinel-2-live">Sentinel-2 · select area</option>
               <option value="balkan-1">Balkan-1</option>
               <option value="balkan-1-raw">Balkan-1 raw</option>
             </select>
@@ -265,7 +267,7 @@
             <input id="analysis-region" name="region_id" required maxlength="80" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,79}" placeholder="north-field">
             <small>Reuse a region name to append history, or enter a new one for a separate region.</small>
           </label>
-          <label>
+          <label id="input-field">
             <span id="analysis-input-label">Payload input path <em>optional</em></span>
             <input id="analysis-input" name="input_path" maxlength="512" placeholder="sentinel2">
             <small id="analysis-input-help">Relative to the payload data folder. Leave blank for the demo input.</small>
@@ -275,6 +277,41 @@
             <input id="analysis-image" name="image" maxlength="256" placeholder="scene.tif">
             <small>Needed only when the Sentinel input is a folder.</small>
           </label>
+          <section id="live-area-fields" class="live-area-fields hidden" aria-labelledby="live-area-title">
+            <header class="live-area-header">
+              <div>
+                <span class="live-source-badge">Live Sentinel-2</span>
+                <h3 id="live-area-title">Choose the farm area</h3>
+                <p>The payload will find the clearest recent scene for this rectangle.</p>
+              </div>
+              <button id="draw-live-area" class="secondary-button compact" type="button">Redraw area</button>
+            </header>
+            <div id="live-area-map" class="live-area-map" aria-label="Map for selecting a Sentinel-2 analysis area"></div>
+            <div class="live-area-summary">
+              <div>
+                <span>Selected footprint</span>
+                <strong id="live-area-size">—</strong>
+              </div>
+              <div class="live-area-coordinates" aria-label="Selected bounding box">
+                <span>W <b id="live-west">—</b></span>
+                <span>S <b id="live-south">—</b></span>
+                <span>E <b id="live-east">—</b></span>
+                <span>N <b id="live-north">—</b></span>
+              </div>
+            </div>
+            <p id="live-area-status" class="live-area-status">Drag on the map after choosing “Redraw area”. Maximum 10 × 10 km.</p>
+            <div class="live-date-grid">
+              <label>
+                <span>Search from</span>
+                <input id="live-start-date" type="date" required>
+              </label>
+              <label>
+                <span>Search until</span>
+                <input id="live-end-date" type="date" required>
+              </label>
+            </div>
+            <small class="live-source-note">Clearest candidate from Sentinel-2 Surface Reflectance Harmonized. Download and inference run on the Jetson.</small>
+          </section>
           <div id="analysis-capability" class="capability-note">Checking pipeline availability…</div>
           <button id="start-analysis" class="primary-button full" type="submit">Start analysis</button>
         </div>
@@ -295,6 +332,7 @@
     </dialog>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="/static/app.js?v=eight-image-demo-2" defer></script>
+    <script src="/static/vendor/leaflet/leaflet.js?v=1.9.4"></script>
+    <script src="/static/app.js?v=live-area-1" defer></script>
   </body>
 </html>

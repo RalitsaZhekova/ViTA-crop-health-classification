@@ -21,8 +21,11 @@ const elementIds = [
   "analysis-progress", "usable-coverage", "usable-progress", "quality-list", "metric-grid",
   "scientific-claim", "manifest-link", "analysis-dialog", "analysis-form", "close-analysis",
   "analysis-fields", "analysis-sensor", "analysis-region", "analysis-input-label",
-  "analysis-input", "analysis-input-help", "image-field",
+  "analysis-input", "analysis-input-help", "input-field", "image-field",
   "analysis-image", "analysis-capability", "start-analysis", "analysis-progress-panel",
+  "live-area-fields", "live-area-map", "draw-live-area", "live-area-size",
+  "live-west", "live-south", "live-east", "live-north", "live-area-status",
+  "live-start-date", "live-end-date",
   "run-visual", "run-status-kicker", "run-status-title", "run-status-message", "run-elapsed",
   "run-payload-time", "view-result", "retry-analysis", "theme-color", "toast",
 ];
@@ -58,6 +61,12 @@ const state = {
   runPollTimer: null,
   runClockTimer: null,
   resultLoadedForRun: null,
+  liveAreaMap: null,
+  liveAreaRectangle: null,
+  liveAreaBounds: null,
+  liveAreaValid: false,
+  liveAreaDrawing: false,
+  liveAreaStart: null,
 };
 
 function isNumber(value) {
@@ -1326,20 +1335,193 @@ function setLayer(layer) {
   elements["viewer-transform"].classList.add(`layer-${layer}`);
 }
 
+function isoDateOffset(days) {
+  const value = new Date();
+  value.setUTCDate(value.getUTCDate() + days);
+  return value.toISOString().slice(0, 10);
+}
+
+function liveAreaDimensions(bounds) {
+  if (!validBounds(bounds)) return null;
+  const latitude = (bounds[1] + bounds[3]) / 2;
+  return {
+    widthKm: Math.abs(bounds[2] - bounds[0]) * 111.32 * Math.cos(latitude * Math.PI / 180),
+    heightKm: Math.abs(bounds[3] - bounds[1]) * 110.574,
+  };
+}
+
+function defaultLiveAreaBounds() {
+  const sceneBounds = state.manifest?.geospatial?.bounds_wgs84;
+  const source = validBounds(sceneBounds) ? sceneBounds : [5.43, 52.50, 5.51, 52.54];
+  const centerLongitude = (source[0] + source[2]) / 2;
+  const centerLatitude = (source[1] + source[3]) / 2;
+  const halfHeight = 2 / 110.574;
+  const halfWidth = 2 / (111.32 * Math.max(0.2, Math.cos(centerLatitude * Math.PI / 180)));
+  return [
+    clamp(centerLongitude - halfWidth, -179.999, 179.999),
+    clamp(centerLatitude - halfHeight, -89.999, 89.999),
+    clamp(centerLongitude + halfWidth, -179.999, 179.999),
+    clamp(centerLatitude + halfHeight, -89.999, 89.999),
+  ];
+}
+
+function updateLiveAreaStatus(bounds) {
+  const dimensions = liveAreaDimensions(bounds);
+  state.liveAreaValid = false;
+  elements["live-area-status"].classList.remove("valid", "invalid");
+  if (!dimensions) {
+    setText("live-area-size", "—");
+    setText("live-area-status", "Choose a rectangular farm area on the map.");
+    return;
+  }
+  setText(
+    "live-area-size",
+    `${dimensions.widthKm.toFixed(2)} × ${dimensions.heightKm.toFixed(2)} km`
+  );
+  const tooSmall = dimensions.widthKm < 0.6 || dimensions.heightKm < 0.6;
+  const tooLarge = dimensions.widthKm > 10 || dimensions.heightKm > 10;
+  if (tooSmall) {
+    elements["live-area-status"].classList.add("invalid");
+    setText("live-area-status", "This area is too small. Select at least 0.64 × 0.64 km.");
+  } else if (tooLarge) {
+    elements["live-area-status"].classList.add("invalid");
+    setText("live-area-status", "This area is too large. Keep both sides under 10 km.");
+  } else {
+    state.liveAreaValid = true;
+    elements["live-area-status"].classList.add("valid");
+    setText("live-area-status", "Area ready · the clearest matching observation will be analyzed.");
+  }
+}
+
+function setLiveAreaBounds(bounds, { fit = false } = {}) {
+  if (!validBounds(bounds)) return;
+  state.liveAreaBounds = bounds.map((value) => Number(value));
+  const [west, south, east, north] = state.liveAreaBounds;
+  setText("live-west", west.toFixed(5));
+  setText("live-south", south.toFixed(5));
+  setText("live-east", east.toFixed(5));
+  setText("live-north", north.toFixed(5));
+  updateLiveAreaStatus(state.liveAreaBounds);
+  if (!state.liveAreaMap || !window.L) return;
+  const leafletBounds = window.L.latLngBounds([[south, west], [north, east]]);
+  if (state.liveAreaRectangle) {
+    state.liveAreaRectangle.setBounds(leafletBounds);
+  } else {
+    state.liveAreaRectangle = window.L.rectangle(leafletBounds, {
+      color: "#2f9c6b",
+      weight: 2,
+      fillColor: "#62d094",
+      fillOpacity: 0.2,
+      interactive: false,
+    }).addTo(state.liveAreaMap);
+  }
+  if (fit) state.liveAreaMap.fitBounds(leafletBounds.pad(0.8), { animate: false, maxZoom: 14 });
+}
+
+function finishLiveAreaDrawing() {
+  state.liveAreaDrawing = false;
+  state.liveAreaStart = null;
+  elements["live-area-map"].classList.remove("draw-ready");
+  elements["draw-live-area"].textContent = "Redraw area";
+  state.liveAreaMap?.dragging.enable();
+  updateLiveAreaStatus(state.liveAreaBounds);
+}
+
+function beginLiveAreaDrawing() {
+  initializeLiveAreaMap();
+  if (!state.liveAreaMap) return;
+  if (state.liveAreaDrawing) {
+    finishLiveAreaDrawing();
+    return;
+  }
+  state.liveAreaDrawing = true;
+  state.liveAreaStart = null;
+  state.liveAreaMap.dragging.disable();
+  elements["live-area-map"].classList.add("draw-ready");
+  elements["draw-live-area"].textContent = "Cancel drawing";
+  elements["live-area-status"].classList.remove("valid", "invalid");
+  setText("live-area-status", "Drag from one corner of the farm area to the opposite corner.");
+}
+
+function initializeLiveAreaMap() {
+  if (state.liveAreaMap) {
+    window.setTimeout(() => state.liveAreaMap.invalidateSize(false), 0);
+    return;
+  }
+  if (!window.L) {
+    elements["live-area-status"].classList.add("invalid");
+    setText("live-area-status", "The area map could not be loaded. Refresh the dashboard and try again.");
+    return;
+  }
+  const bounds = state.liveAreaBounds || defaultLiveAreaBounds();
+  state.liveAreaMap = window.L.map(elements["live-area-map"], {
+    attributionControl: true,
+    boxZoom: false,
+    doubleClickZoom: true,
+    scrollWheelZoom: true,
+    zoomControl: true,
+  });
+  window.L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    maxZoom: 19,
+  }).addTo(state.liveAreaMap);
+  state.liveAreaMap.on("mousedown", (event) => {
+    if (!state.liveAreaDrawing || event.originalEvent?.button !== 0) return;
+    state.liveAreaStart = event.latlng;
+    event.originalEvent?.preventDefault();
+  });
+  state.liveAreaMap.on("mousemove", (event) => {
+    if (!state.liveAreaDrawing || !state.liveAreaStart) return;
+    setLiveAreaBounds([
+      Math.min(state.liveAreaStart.lng, event.latlng.lng),
+      Math.min(state.liveAreaStart.lat, event.latlng.lat),
+      Math.max(state.liveAreaStart.lng, event.latlng.lng),
+      Math.max(state.liveAreaStart.lat, event.latlng.lat),
+    ]);
+  });
+  state.liveAreaMap.on("mouseup", (event) => {
+    if (!state.liveAreaDrawing || !state.liveAreaStart) return;
+    setLiveAreaBounds([
+      Math.min(state.liveAreaStart.lng, event.latlng.lng),
+      Math.min(state.liveAreaStart.lat, event.latlng.lat),
+      Math.max(state.liveAreaStart.lng, event.latlng.lng),
+      Math.max(state.liveAreaStart.lat, event.latlng.lat),
+    ]);
+    finishLiveAreaDrawing();
+  });
+  setLiveAreaBounds(bounds, { fit: true });
+  window.setTimeout(() => state.liveAreaMap.invalidateSize(false), 0);
+}
+
+function validateLiveDates() {
+  const start = elements["live-start-date"].value;
+  const end = elements["live-end-date"].value;
+  if (!start || !end) return false;
+  const days = Math.round((new Date(`${end}T00:00:00Z`) - new Date(`${start}T00:00:00Z`)) / 86400000) + 1;
+  if (days < 1 || days > 92) {
+    showToast("Choose a valid search window of no more than 92 days.", true);
+    return false;
+  }
+  return true;
+}
+
 async function loadPipelineCapability() {
   try {
     state.pipelineCapability = await apiFetch(`${API}/pipeline-runs/capability`);
     const capability = state.pipelineCapability;
     const rawOption = elements["analysis-sensor"].querySelector('option[value="balkan-1-raw"]');
+    const liveOption = elements["analysis-sensor"].querySelector('option[value="sentinel-2-live"]');
     const rawAvailable = capability.sensors?.includes("balkan-1-raw");
+    const liveAvailable = capability.sensors?.includes("sentinel-2-live");
     if (rawOption) rawOption.disabled = !rawAvailable;
+    if (liveOption) liveOption.disabled = !liveAvailable;
     elements["analysis-capability"].classList.toggle("unavailable", !capability.available);
     setText(
       "analysis-capability",
       capability.available
-        ? rawAvailable
-          ? "Ready for Sentinel-2, Balkan-1, and warm Jetson raw analysis."
-          : "Ready for Sentinel-2 and Balkan-1. Warm Jetson raw analysis is not configured."
+        ? rawAvailable && liveAvailable
+          ? "Ready for stored Sentinel-2, Balkan-1, raw Balkan-1, and live-area analysis."
+          : "The standard pipeline is ready; optional warm Jetson analysis routes are not fully configured."
         : capability.reason
     );
     elements["start-analysis"].disabled = !capability.available;
@@ -1362,6 +1544,7 @@ async function openAnalysisDialog() {
     updateImageField();
   }
   if (!elements["analysis-dialog"].open) elements["analysis-dialog"].showModal();
+  if (elements["analysis-sensor"].value === "sentinel-2-live") initializeLiveAreaMap();
 }
 
 function showAnalysisFields() {
@@ -1378,10 +1561,23 @@ function showRunPanel() {
 function updateImageField() {
   const sensor = elements["analysis-sensor"].value;
   const sentinel = sensor === "sentinel-2";
+  const live = sensor === "sentinel-2-live";
   const raw = sensor === "balkan-1-raw";
+  elements["analysis-dialog"].classList.toggle("live-mode", live);
+  elements["input-field"].classList.toggle("hidden", live);
   elements["image-field"].classList.toggle("hidden", !sentinel);
+  elements["live-area-fields"].classList.toggle("hidden", !live);
+  elements["live-start-date"].disabled = !live;
+  elements["live-end-date"].disabled = !live;
   if (!sentinel) elements["analysis-image"].value = "";
-  if (raw) {
+  if (live) {
+    elements["analysis-input"].value = "";
+    if (!elements["live-end-date"].value) elements["live-end-date"].value = isoDateOffset(0);
+    if (!elements["live-start-date"].value) elements["live-start-date"].value = isoDateOffset(-59);
+    elements["live-end-date"].max = isoDateOffset(0);
+    elements["live-start-date"].max = elements["live-end-date"].value;
+    if (elements["analysis-dialog"].open) initializeLiveAreaMap();
+  } else if (raw) {
     elements["analysis-input-label"].innerHTML = "Raw scene ID <em>optional</em>";
     elements["analysis-input"].placeholder = "3408";
     setText(
@@ -1415,6 +1611,16 @@ async function startAnalysis(event) {
   };
   const inputPath = elements["analysis-input"].value.trim();
   const image = elements["analysis-image"].value.trim();
+  if (payload.sensor === "sentinel-2-live") {
+    if (!state.liveAreaValid || !validBounds(state.liveAreaBounds)) {
+      showToast("Select a valid area between 0.64 km and 10 km per side.", true);
+      return;
+    }
+    if (!validateLiveDates()) return;
+    payload.bbox_wgs84 = state.liveAreaBounds;
+    payload.start_date = elements["live-start-date"].value;
+    payload.end_date = elements["live-end-date"].value;
+  }
   if (inputPath) payload.input_path = inputPath;
   if (image && payload.sensor === "sentinel-2") payload.image = image;
   elements["start-analysis"].disabled = true;
@@ -1504,7 +1710,7 @@ function renderPipelineRun() {
   } else {
     setText("run-status-kicker", "Payload analysis");
     setText("run-status-title", run.status === "queued" ? "Preparing the analysis…" : "Analyzing the observation…");
-    setText("run-status-message", "The dashboard will update automatically when the observation is ready.");
+    setText("run-status-message", run.message || "The dashboard will update automatically when the observation is ready.");
   }
 }
 
@@ -1518,6 +1724,7 @@ function viewRunResult() {
 function retryAnalysis() {
   state.pipelineRun = null;
   showAnalysisFields();
+  updateImageField();
 }
 
 elements["region-trigger"].addEventListener("click", () => {
@@ -1562,6 +1769,10 @@ elements["new-analysis"].addEventListener("click", openAnalysisDialog);
 elements["empty-new-analysis"].addEventListener("click", openAnalysisDialog);
 elements["close-analysis"].addEventListener("click", () => elements["analysis-dialog"].close());
 elements["analysis-sensor"].addEventListener("change", updateImageField);
+elements["draw-live-area"].addEventListener("click", beginLiveAreaDrawing);
+elements["live-end-date"].addEventListener("change", () => {
+  elements["live-start-date"].max = elements["live-end-date"].value;
+});
 elements["analysis-form"].addEventListener("submit", startAnalysis);
 elements["view-result"].addEventListener("click", viewRunResult);
 elements["retry-analysis"].addEventListener("click", retryAnalysis);
