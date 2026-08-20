@@ -152,7 +152,7 @@ def test_jetson_acceptance_accepts_checksum_bound_direct_tensorrt(
                     "patch_size": 845,
                     "minimum_batch_size": 1,
                     "maximum_batch_size": 4,
-                    "precision": "fp16",
+                    "precision": "fp32",
                 },
                 {
                     "patch_size": 1000,
@@ -239,7 +239,7 @@ def test_jetson_acceptance_rejects_cloud_scene_parity_regression(
                     "patch_size": patch_size,
                     "minimum_batch_size": 1,
                     "maximum_batch_size": maximum_batch_size,
-                    "precision": "fp32" if patch_size == 1000 else "fp16",
+                    "precision": "fp32" if patch_size in {845, 1000} else "fp16",
                 }
                 for patch_size, maximum_batch_size in (
                     (845, 4),

@@ -186,7 +186,7 @@ def test_direct_tensorrt_reuses_only_checksum_bound_matching_cloud_profiles(
         target=target,
         source_precision="fp16",
         profiles=[
-            (845, 4, "fp16"),
+            (845, 4, "fp32"),
             (869, 4, "fp16"),
             (891, 4, "fp16"),
             (1000, 1, "fp32"),

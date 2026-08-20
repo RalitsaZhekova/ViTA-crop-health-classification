@@ -23,6 +23,8 @@ from cloud_detection.tensorrt_backend import (
     CLOUD_MAX_AGGREGATE_CLASS_MISMATCH,
     CLOUD_MAX_SCENE_CLASS_MISMATCH,
     REVIEWED_CLOUD_BASE_PATCH_SIZE,
+    REVIEWED_CLOUD_DEFAULT_PRECISION_PATCH_SIZES,
+    REVIEWED_CLOUD_PROMOTED_PRECISION_PATCH_SIZES,
     REVIEWED_CLOUD_QUALIFICATION_SCENE_COUNT,
     REVIEWED_CLOUD_SCENE_BATCH_SIZES,
     REVIEWED_CLOUD_SCENE_PATCH_SIZES,
@@ -1891,27 +1893,29 @@ def build(manifest_path: Path = DEFAULT_MANIFEST_PATH) -> dict[str, Any]:
     )
     cloud_precision = os.environ.get("VITA_CLOUD_TRT_PRECISION", "fp16").strip().casefold()
     _precision_dtype(cloud_precision, name="VITA_CLOUD_TRT_PRECISION")
-    sentinel_cloud_precision = os.environ.get(
+    promoted_cloud_precision = os.environ.get(
         "VITA_CLOUD_SENTINEL_TRT_PRECISION",
         "fp32",
     ).strip().casefold()
     _precision_dtype(
-        sentinel_cloud_precision,
+        promoted_cloud_precision,
         name="VITA_CLOUD_SENTINEL_TRT_PRECISION",
     )
     reviewed_precisions = dict(REVIEWED_CLOUD_SCENE_PRECISIONS)
-    if (
-        any(
-            reviewed_precisions[patch_size] != cloud_precision
-            for patch_size in reviewed_precisions
-            if patch_size != REVIEWED_CLOUD_BASE_PATCH_SIZE
-        )
-        or reviewed_precisions[REVIEWED_CLOUD_BASE_PATCH_SIZE]
-        != sentinel_cloud_precision
-    ):
+    configured_precisions = {
+        **{
+            patch_size: cloud_precision
+            for patch_size in REVIEWED_CLOUD_DEFAULT_PRECISION_PATCH_SIZES
+        },
+        **{
+            patch_size: promoted_cloud_precision
+            for patch_size in REVIEWED_CLOUD_PROMOTED_PRECISION_PATCH_SIZES
+        },
+    }
+    if reviewed_precisions != configured_precisions:
         raise TensorRTBuildError(
             "Cloud TensorRT precision settings do not match the reviewed "
-            "FP16-Balkan/FP32-Sentinel contract"
+            "default/promoted profile contract"
         )
 
     print("[preflight] direct TensorRT dependencies and trtexec passed", flush=True)

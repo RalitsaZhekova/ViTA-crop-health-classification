@@ -188,7 +188,7 @@ def test_reviewed_cloud_batches_match_operational_payload_tiles() -> None:
         1000: 1,
     }
     assert dict(REVIEWED_CLOUD_SCENE_PRECISIONS) == {
-        845: "fp16",
+        845: "fp32",
         869: "fp16",
         891: "fp16",
         1000: "fp32",

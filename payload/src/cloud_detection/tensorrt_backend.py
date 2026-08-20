@@ -19,12 +19,14 @@ REVIEWED_CLOUD_SCENE_BATCH_SIZES = ((845, 4), (869, 4), (891, 4), (1000, 1))
 REVIEWED_CLOUD_SCENE_PATCH_SIZES = tuple(
     patch_size for patch_size, _ in REVIEWED_CLOUD_SCENE_BATCH_SIZES
 )
-# The larger, multi-patch Balkan profiles retain the qualified FP16 speedup.
-# The Brazil Sentinel qualification scene crosses too many class boundaries in
-# strongly typed FP16, so its single 1000 px operational tile uses FP32. This is
-# a profile-local precision promotion, not a relaxed semantic acceptance gate.
+# The 869/891 Balkan profiles retain the qualified FP16 speedup. The 845 Balkan
+# profile and the 1000 Sentinel profile cross too many class boundaries in
+# strongly typed FP16, so those profiles use FP32. These are profile-local
+# precision promotions, not relaxed semantic acceptance gates.
+REVIEWED_CLOUD_DEFAULT_PRECISION_PATCH_SIZES = (869, 891)
+REVIEWED_CLOUD_PROMOTED_PRECISION_PATCH_SIZES = (845, 1000)
 REVIEWED_CLOUD_SCENE_PRECISIONS = (
-    (845, "fp16"),
+    (845, "fp32"),
     (869, "fp16"),
     (891, "fp16"),
     (1000, "fp32"),
