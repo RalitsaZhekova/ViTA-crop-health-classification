@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
+import google.auth
 import numpy as np
 import pytest
 import rasterio
@@ -11,9 +14,41 @@ from prithvi_payload.acquisition.earth_engine import (
     EarthEngineAcquisitionProvider,
     _normalise_geotiff,
     _parse_candidates,
+    initialize_earth_engine,
 )
 from prithvi_payload.acquisition.errors import AcquisitionError
 from prithvi_payload.acquisition.grid import calculate_target_grid
+
+
+def test_initialize_earth_engine_preserves_adc_scopes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    credentials_path = tmp_path / "credentials.json"
+    credentials_path.write_text("{}", encoding="utf-8")
+    credential = object()
+    captured: dict[str, object] = {}
+
+    def load_credentials(path: str, **kwargs: object) -> tuple[object, None]:
+        captured["path"] = path
+        captured["load_kwargs"] = kwargs
+        return credential, None
+
+    def initialize(**kwargs: object) -> None:
+        captured["initialize_kwargs"] = kwargs
+
+    monkeypatch.setenv("VITA_EE_PROJECT", "vita-503208")
+    monkeypatch.setenv("VITA_EE_CREDENTIALS", str(credentials_path))
+    monkeypatch.setattr(google.auth, "load_credentials_from_file", load_credentials)
+    monkeypatch.setitem(sys.modules, "ee", SimpleNamespace(Initialize=initialize))
+
+    initialize_earth_engine()
+
+    assert captured["path"] == str(credentials_path)
+    assert captured["load_kwargs"] == {}
+    assert captured["initialize_kwargs"] == {
+        "credentials": credential,
+        "project": "vita-503208",
+    }
 
 
 def test_live_area_grid_is_ten_metre_utm_and_bounded() -> None:

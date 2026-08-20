@@ -20,7 +20,6 @@ import requests
 from prithvi_payload.acquisition.errors import AcquisitionError
 from prithvi_payload.acquisition.grid import TargetGrid, calculate_target_grid
 
-EARTH_ENGINE_SCOPE = "https://www.googleapis.com/auth/earthengine"
 EARTH_ENGINE_COLLECTION = "COPERNICUS/S2_SR_HARMONIZED"
 EARTH_ENGINE_SOURCE_BANDS = ("B2", "B3", "B4", "B8", "B8A")
 EARTH_ENGINE_BANDS = ("B02", "B03", "B04", "B08", "B8A")
@@ -110,8 +109,7 @@ def initialize_earth_engine() -> None:
         import google.auth
 
         credentials, _ = google.auth.load_credentials_from_file(
-            os.environ.get("VITA_EE_CREDENTIALS", "/earth-engine-auth/credentials.json"),
-            scopes=[EARTH_ENGINE_SCOPE],
+            os.environ.get("VITA_EE_CREDENTIALS", "/earth-engine-auth/credentials.json")
         )
         ee.Initialize(credentials=credentials, project=configuration["project"])
     except Exception:
