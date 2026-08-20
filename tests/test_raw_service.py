@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from prithvi_payload import raw_service
 
 
@@ -112,7 +113,11 @@ def test_warm_runtime_runs_processed_balkan_with_dynamic_accepted_profile(
     )
     output_root = tmp_path / "runtime" / "runs"
     output_root.mkdir(parents=True)
-    backend = SimpleNamespace(patch_size=1000, raw_fixed_patch_size=1000)
+    backend = SimpleNamespace(
+        patch_size=1000,
+        raw_fixed_patch_size=1000,
+        batch_size=1,
+    )
     cloud = SimpleNamespace(backend=backend, config=object())
     crop = object()
     runtime = raw_service.RawPayloadRuntime.__new__(raw_service.RawPayloadRuntime)
@@ -120,13 +125,27 @@ def test_warm_runtime_runs_processed_balkan_with_dynamic_accepted_profile(
     runtime.output_root = output_root
     runtime.cloud = cloud
     runtime.crop = crop
-    runtime.acceleration = {"cloud_backend": "tensorrt", "crop_backend": "tensorrt"}
+    runtime.acceleration = {
+        "cloud_backend": "tensorrt",
+        "crop_backend": "tensorrt",
+        "cloud_scene_patch_sizes": {
+            "balkan1/preprocessed/3408_L1ORT.tif": 869,
+        },
+        "cloud_profiles": [
+            {
+                "patch_size": 869,
+                "minimum_batch_size": 1,
+                "maximum_batch_size": 4,
+            }
+        ],
+    }
     captured = {}
 
     def fake_run_scene(input_path, **kwargs):
         captured["input"] = input_path
         captured.update(kwargs)
         assert backend.raw_fixed_patch_size is None
+        assert backend.batch_size == 4
         bundle = kwargs["output_root"] / "downlink"
         bundle.mkdir(parents=True)
         for name in ("scene.json", "scene.webp", "condition.png"):
@@ -156,4 +175,61 @@ def test_warm_runtime_runs_processed_balkan_with_dynamic_accepted_profile(
     assert captured["cloud_backend"] is backend
     assert captured["crop_model"] is crop
     assert backend.raw_fixed_patch_size == 1000
+    assert backend.batch_size == 1
     assert set(response["files"]) == {"scene.json", "scene.webp", "condition.png"}
+
+
+def test_processed_cloud_profile_restores_raw_contract_after_failure() -> None:
+    backend = SimpleNamespace(
+        patch_size=1000,
+        raw_fixed_patch_size=1000,
+        batch_size=1,
+    )
+    runtime = raw_service.RawPayloadRuntime.__new__(raw_service.RawPayloadRuntime)
+    runtime.cloud = SimpleNamespace(backend=backend)
+    runtime.acceleration = {
+        "cloud_scene_patch_sizes": {
+            "balkan1/preprocessed/3458_L1ORT.tif": 845,
+        },
+        "cloud_profiles": [
+            {
+                "patch_size": 845,
+                "minimum_batch_size": 1,
+                "maximum_batch_size": 4,
+            }
+        ],
+    }
+
+    with pytest.raises(
+        RuntimeError,
+        match="synthetic failure",
+    ), runtime._processed_cloud_profile_selection(
+        "balkan1/preprocessed/3458_L1ORT.tif"
+    ):
+        assert backend.raw_fixed_patch_size is None
+        assert backend.batch_size == 4
+        raise RuntimeError("synthetic failure")
+
+    assert backend.raw_fixed_patch_size == 1000
+    assert backend.batch_size == 1
+
+
+def test_unqualified_processed_scene_retains_safe_batch_one() -> None:
+    backend = SimpleNamespace(
+        patch_size=1000,
+        raw_fixed_patch_size=1000,
+        batch_size=1,
+    )
+    runtime = raw_service.RawPayloadRuntime.__new__(raw_service.RawPayloadRuntime)
+    runtime.cloud = SimpleNamespace(backend=backend)
+    runtime.acceleration = {
+        "cloud_scene_patch_sizes": {},
+        "cloud_profiles": [],
+    }
+
+    with runtime._processed_cloud_profile_selection("balkan1/preprocessed/new.tif"):
+        assert backend.raw_fixed_patch_size is None
+        assert backend.batch_size == 1
+
+    assert backend.raw_fixed_patch_size == 1000
+    assert backend.batch_size == 1

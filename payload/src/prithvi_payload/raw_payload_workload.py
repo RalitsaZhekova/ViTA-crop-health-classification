@@ -123,6 +123,9 @@ def _load_warm_accelerated_models() -> tuple[Any, PayloadCropModel, dict[str, An
         "cloud_backend": cloud_backend,
         "cloud_engine_count": cloud.backend.tensorrt_engine_count,
         "cloud_profiles": cloud.backend.tensorrt_profiles,
+        "cloud_scene_patch_sizes": dict(
+            manifest["models"]["cloud"].get("scene_patch_sizes", {})
+        ),
         "cloud_warmups": cloud_warmups,
         "cloud_raw_fixed_patch_size": fixed_cloud_patch_size,
         "crop_backend": crop.backend,

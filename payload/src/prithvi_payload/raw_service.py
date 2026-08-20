@@ -161,17 +161,48 @@ class RawPayloadRuntime:
         return paths
 
     @contextmanager
-    def _processed_cloud_profile_selection(self):
-        """Use reviewed dynamic Balkan profiles while the serialized job runs."""
+    def _processed_cloud_profile_selection(self, relative_input: str):
+        """Use the reviewed dynamic profile and batch while a processed job runs."""
 
         backend = self.cloud.backend
         fixed_patch_size = getattr(backend, "raw_fixed_patch_size", None)
         if fixed_patch_size != backend.patch_size:
             raise RuntimeError("The raw cloud TensorRT profile is not active")
+        raw_batch_size = int(backend.batch_size)
+        if raw_batch_size != 1:
+            raise RuntimeError("The raw cloud TensorRT batch-one contract is not active")
+        normalized_input = relative_input.replace("\\", "/")
+        scene_patch_sizes = self.acceleration.get("cloud_scene_patch_sizes", {})
+        selected_patch_size = (
+            scene_patch_sizes.get(normalized_input)
+            if isinstance(scene_patch_sizes, dict)
+            else None
+        )
+        processed_batch_size = raw_batch_size
+        if isinstance(selected_patch_size, int):
+            matching_profiles = [
+                profile
+                for profile in self.acceleration.get("cloud_profiles", [])
+                if isinstance(profile, dict)
+                and profile.get("patch_size") == selected_patch_size
+            ]
+            if len(matching_profiles) != 1:
+                raise RuntimeError(
+                    "The processed Balkan cloud profile is missing from the accepted manifest"
+                )
+            processed_batch_size = int(
+                matching_profiles[0]["maximum_batch_size"]
+            )
+            if processed_batch_size < 1:
+                raise RuntimeError(
+                    "The processed Balkan cloud profile has an invalid batch contract"
+                )
         backend.raw_fixed_patch_size = None
+        backend.batch_size = processed_batch_size
         try:
             yield
         finally:
+            backend.batch_size = raw_batch_size
             backend.raw_fixed_patch_size = fixed_patch_size
 
     def _run_processed(self, request: RawJobRequest) -> dict[str, Any]:
@@ -190,7 +221,7 @@ class RawPayloadRuntime:
             raise FileExistsError(f"Balkan payload job already exists: {request.job_id}")
         progress: list[str] = []
         started = time.perf_counter()
-        with self._processed_cloud_profile_selection():
+        with self._processed_cloud_profile_selection(request.input):
             result = run_scene(
                 source,
                 sensor="balkan-1",
