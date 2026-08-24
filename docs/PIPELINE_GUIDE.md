@@ -1,6 +1,6 @@
 # ViTA pipeline and optimization guide
 
-This guide describes the two MVP pipelines, their code contracts, the warm local
+This guide describes the ViTA pipelines, their code contracts, the warm local
 workflow, every implemented performance optimization, the timing report, and the
 three-file web handoff. The science path is the same locally and in the Jetson
 container; only the configured inference backend and transport differ.
@@ -13,9 +13,14 @@ and production acceptance, see [DEPLOYMENT_JETSON.md](DEPLOYMENT_JETSON.md).
 From the repository root in PowerShell:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv\Scripts\python.exe -m pip install -e ".[dev,earth-engine]"
 .\vita.ps1 sentinel
 .\vita.ps1 balkan
+.\vita.ps1 raw
+.\vita.ps1 earth-engine `
+  -BboxWgs84 "5.43,52.50,5.49,52.54" `
+  -StartDate 2026-06-01 `
+  -EndDate 2026-07-01
 .\vita.ps1 web
 ```
 
@@ -24,18 +29,28 @@ Those are the normal local commands:
 - `sentinel` uses `data\sentinel2\S2_20260712T170851_T14TPL_cloudy.tif`;
 - `balkan` uses `data\balkan1\preprocessed\3408_L1ORT.tif` and its adjacent
   `*.crop_calibration.json` file;
+- `raw` reconstructs and analyzes the locally stored Balkan-1 raw scene `3408`;
+- `earth-engine` downloads and analyzes the best bounded Sentinel-2 observation for
+  the supplied WGS84 box and dates;
 - each run prints the complete payload timing breakdown and ingests its downlink;
 - `web` starts the ground application and opens
   [http://127.0.0.1:8000/](http://127.0.0.1:8000/).
 
-The first pipeline command starts one background payload service and waits until model
-loading, fixed-input preparation, and CUDA warmup finish. Later commands reuse that
-service. Check or stop services created by the script with:
+The first pipeline command starts one PC-only background payload service and waits
+until model loading, fixed-input preparation, CUDA model warmup, and raw alignment
+warmup finish. All four routes reuse that single model stack. Check or stop services
+created by the script with:
 
 ```powershell
 .\vita.ps1 health
 .\vita.ps1 stop
 ```
+
+PC-local raw jobs also reuse a content-addressed preprocessing cache. The first run
+per unchanged raw scene performs CUDA band alignment and CPU/GDAL model-grid
+reconstruction. Subsequent jobs validate the source and implementation fingerprints,
+hard-link the immutable preprocessing products into the new job, and rerun the full
+model/condition/downlink path. The Jetson raw runtime does not enable this PC cache.
 
 Override only what differs from the proof-of-concept defaults:
 
@@ -54,6 +69,8 @@ The existing interfaces are preserved:
 
 - `vita-mvp sentinel ...` and `vita-mvp balkan ...` run a new one-shot Python process;
 - `vita-payload-server` exposes `GET /healthz` and `POST /v1/jobs`;
+- `vita-pc-payload-server` is the separate, local PyTorch CUDA service used by
+  `vita.ps1` when no Jetson SSH target is configured;
 - `scripts/ground/Invoke-VitaPayload.ps1` calls the service over SSH and downloads the
   bundle;
 - the payload and ground Docker Compose deployments remain under `deploy/`.

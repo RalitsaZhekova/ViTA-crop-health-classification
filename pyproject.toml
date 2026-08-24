@@ -42,6 +42,7 @@ vita-balkan-align = "prithvi_payload.balkan_alignment:main"
 vita-balkan-raw-proxy = "prithvi_payload.balkan_raw_proxy:main"
 vita-raw-payload = "prithvi_payload.raw_payload_workload:main"
 vita-raw-payload-server = "prithvi_payload.raw_service:main"
+vita-pc-payload-server = "prithvi_payload.pc_service:main"
 vita-payload-server = "prithvi_payload.service:main"
 
 [tool.setuptools.packages.find]

@@ -137,6 +137,89 @@ def test_isolated_raw_job_creates_normal_downlink_bundle(
         )
 
 
+def test_isolated_raw_job_reuses_validated_preprocessed_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inputs = _input_files(tmp_path)
+    prepared_root = tmp_path / "prepared"
+    prepared_root.mkdir()
+    prepared = {
+        "aligned": prepared_root / "aligned.tif",
+        "alignment_report": prepared_root / "alignment.json",
+        "proxy": prepared_root / "proxy.tif",
+        "proxy_report": prepared_root / "proxy.json",
+        "proxy_calibration": prepared_root / "proxy.crop_calibration.json",
+    }
+    prepared["aligned"].write_bytes(b"aligned")
+    prepared["alignment_report"].write_text(
+        json.dumps(
+            {
+                "source": {"sha256": "a" * 64},
+                "execution": {
+                    "resolved_device": "cuda",
+                    "cuda_batched_phase_correlation": True,
+                    "cuda_fused_four_band_warp": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    prepared["proxy"].write_bytes(b"proxy")
+    prepared["proxy_report"].write_text(
+        json.dumps(
+            {
+                "execution": {
+                    "reconstruction_backend": "gdal-average-band-parallel",
+                    "band_workers": 2,
+                    "cpu_thread_budget": 8,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    prepared["proxy_calibration"].write_text(
+        json.dumps({"acquired_at": "2026-06-16T12:00:00+00:00"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        raw_payload_workload,
+        "align_balkan_geotiff",
+        lambda *_args, **_kwargs: pytest.fail("alignment must be reused"),
+    )
+    monkeypatch.setattr(
+        raw_payload_workload,
+        "build_raw_model_proxy",
+        lambda *_args, **_kwargs: pytest.fail("proxy must be reused"),
+    )
+    monkeypatch.setattr(raw_payload_workload, "_synchronize_cuda", lambda: None)
+
+    def fake_pipeline(_source: Path, **kwargs):
+        bundle = kwargs["output_root"] / "downlink"
+        bundle.mkdir()
+        for name in raw_payload_workload.DOWNLINK_FILES:
+            (bundle / name).write_bytes(name.encode("ascii"))
+        return {"status": "DOWNLINK_READY", "scene_id": kwargs["scene_id"], "summary": {}}
+
+    monkeypatch.setattr(raw_payload_workload, "run_scene", fake_pipeline)
+    response = raw_payload_workload.run_raw_payload_job(
+        **inputs,
+        output_root=tmp_path / "runs",
+        job_id="raw-cache-hit",
+        region_id="raw-cache-field",
+        preloaded_cloud=SimpleNamespace(backend=object(), config={}),
+        preloaded_crop=object(),
+        preloaded_acceleration={"cloud_backend": "pytorch", "crop_backend": "pytorch"},
+        preprocessed_paths=prepared,
+    )
+
+    assert response["status"] == "DOWNLINK_READY"
+    assert response["acceleration"]["raw_preprocess_cache_hit"] is True
+    assert response["timing_seconds"]["cuda_alignment_seconds"] == 0.0
+    assert response["timing_seconds"]["raw_model_reconstruction_seconds"] == 0.0
+    assert response["acceleration"]["raw_model_reconstruction_band_workers"] == 2
+
+
 def test_cuda_alignment_contract_fails_closed() -> None:
     with pytest.raises(RuntimeError, match="required CUDA execution contract"):
         raw_payload_workload._assert_cuda_alignment(

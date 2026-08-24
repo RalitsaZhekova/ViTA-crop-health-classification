@@ -193,11 +193,35 @@ class PipelineRunManager:
             os.environ.get("VITA_JETSON_SSH_TARGET", "").strip()
             or os.environ.get("VITA_RAW_SSH_TARGET", "").strip()
         )
-        raw_available = bool(
+        jetson_available = bool(
             re.fullmatch(r"[A-Za-z0-9._-]+@[A-Za-z0-9._-]+", raw_target)
         )
+        local_switch = os.environ.get("VITA_LOCAL_ACCELERATION_ENABLED")
+        if local_switch is None:
+            local_enabled = os.name == "nt"
+        else:
+            local_enabled = local_switch.strip().casefold() in {"1", "true", "yes", "on"}
+        local_server_candidates = (
+            self.repository_root / ".venv" / "Scripts" / "vita-pc-payload-server.exe",
+            self.repository_root / ".venv" / "bin" / "vita-pc-payload-server",
+        )
+        local_available = local_enabled and any(
+            candidate.is_file() for candidate in local_server_candidates
+        )
+        raw_available = jetson_available or local_available
+        local_credentials = self.repository_root / "secrets" / "earth-engine.json"
+        configured_credentials = os.environ.get("VITA_EE_CREDENTIALS", "").strip()
+        earth_engine_available = jetson_available or (
+            local_available
+            and (
+                local_credentials.is_file()
+                or (bool(configured_credentials) and Path(configured_credentials).is_file())
+            )
+        )
         if raw_available:
-            sensors.extend(("balkan-1-raw", "sentinel-2-live"))
+            sensors.append("balkan-1-raw")
+        if earth_engine_available:
+            sensors.append("sentinel-2-live")
         return {
             "available": True,
             "reason": None,
@@ -207,15 +231,15 @@ class PipelineRunManager:
                 "reason": (
                     None
                     if raw_available
-                    else "Set VITA_JETSON_SSH_TARGET to enable warm Jetson analysis."
+                    else "Install the PC-local runtime or configure a Jetson SSH target."
                 ),
             },
             "earth_engine": {
-                "available": raw_available,
+                "available": earth_engine_available,
                 "reason": (
                     None
-                    if raw_available
-                    else "Set VITA_JETSON_SSH_TARGET to enable live Sentinel analysis."
+                    if earth_engine_available
+                    else "Configure local Earth Engine credentials or a Jetson SSH target."
                 ),
                 "maximum_search_days": 92,
                 "maximum_area_km": 10,
@@ -231,9 +255,13 @@ class PipelineRunManager:
         if not capability["available"]:
             raise PipelineLaunchError(str(capability["reason"]))
         if launch.sensor not in capability.get("sensors", []):
-            raw = capability.get("raw", {})
+            feature = (
+                capability.get("earth_engine", {})
+                if launch.sensor == "sentinel-2-live"
+                else capability.get("raw", {})
+            )
             raise PipelineLaunchError(
-                str(raw.get("reason") or "The selected sensor is unavailable.")
+                str(feature.get("reason") or "The selected sensor is unavailable.")
             )
 
         with self._lock:

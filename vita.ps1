@@ -94,7 +94,13 @@ function Get-ListeningProcessId([int]$Port) {
 
 function Start-LocalPayload {
     $health = Get-Health
-    if ($health -and $health.status -eq 'ready') { return $health }
+    if (
+        $health -and
+        $health.status -eq 'ready' -and
+        $health.service -eq 'vita-pc-payload'
+    ) {
+        return $health
+    }
 
     $listenerPid = Get-ListeningProcessId $PayloadPort
     if ($listenerPid) {
@@ -109,7 +115,7 @@ function Start-LocalPayload {
             }
         }
         if ($recordedListenerPid -and $listenerPid -eq $recordedListenerPid) {
-            Write-Host 'The recorded payload service failed its active CUDA readiness probe; restarting it.'
+            Write-Host 'Restarting the recorded payload service with the unified PC-local runtime.'
             Stop-RecordedProcess $recordPath 'payload service'
             foreach ($attempt in 1..50) {
                 if (-not (Get-ListeningProcessId $PayloadPort)) { break }
@@ -123,7 +129,7 @@ function Start-LocalPayload {
         }
     }
 
-    $payloadServer = Get-LocalTool 'vita-payload-server'
+    $payloadServer = Get-LocalTool 'vita-pc-payload-server'
     $runs = Join-Path $localRoot 'runs'
     $analysisCache = Join-Path $localRoot 'cache\balkan-analysis'
     $engineCache = Join-Path $runtimeRoot 'engines'
@@ -134,6 +140,7 @@ function Start-LocalPayload {
     $childEnvironment = [ordered]@{
         CUDA_REQUIRED = Get-EnvironmentDefault 'CUDA_REQUIRED' '1'
         VITA_INPUT_ROOT = Join-Path $repositoryRoot 'data'
+        VITA_PROCESSED_INPUT_ROOT = Join-Path $repositoryRoot 'data'
         VITA_OUTPUT_ROOT = $runs
         VITA_BALKAN_ANALYSIS_CACHE_DIR = $analysisCache
         VITA_BALKAN_OVERVIEW_FAST_PATH = '1'
@@ -149,6 +156,7 @@ function Start-LocalPayload {
         VITA_CLOUD_WARMUP_PATCH_SIZES = Get-EnvironmentDefault 'VITA_CLOUD_WARMUP_PATCH_SIZES' '869'
         VITA_WARMUP = '1'
         VITA_CPU_THREADS = Get-EnvironmentDefault 'VITA_CPU_THREADS' '8'
+        VITA_RAW_PROXY_BAND_WORKERS = Get-EnvironmentDefault 'VITA_RAW_PROXY_BAND_WORKERS' '2'
         VITA_CONDITION_TILE_SIZE = Get-EnvironmentDefault 'VITA_CONDITION_TILE_SIZE' '4096'
         VITA_CONDITION_METRIC_THREADS = Get-EnvironmentDefault 'VITA_CONDITION_METRIC_THREADS' '4'
         VITA_CONDITION_EXACT_PERCENTILES = Get-EnvironmentDefault 'VITA_CONDITION_EXACT_PERCENTILES' '1'
@@ -160,6 +168,33 @@ function Start-LocalPayload {
         VITA_COMPACT_PAYLOAD_PIPELINE = Get-EnvironmentDefault 'VITA_COMPACT_PAYLOAD_PIPELINE' '1'
         PRITHVI_MODEL_DIR = Join-Path $repositoryRoot 'payload\models'
         OMNICLOUDMASK_MODEL_DIR = Join-Path $repositoryRoot 'payload\models\omnicloudmask'
+    }
+    $earthEngineCredentials = Get-EnvironmentDefault 'VITA_EE_CREDENTIALS' ''
+    if ([string]::IsNullOrWhiteSpace($earthEngineCredentials)) {
+        $repositoryCredentials = Join-Path $repositoryRoot 'secrets\earth-engine.json'
+        if (Test-Path -LiteralPath $repositoryCredentials) {
+            $earthEngineCredentials = $repositoryCredentials
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($earthEngineCredentials)) {
+        $childEnvironment.VITA_EE_CREDENTIALS = $earthEngineCredentials
+        $earthEngineProject = Get-EnvironmentDefault 'VITA_EE_PROJECT' ''
+        if (
+            [string]::IsNullOrWhiteSpace($earthEngineProject) -and
+            (Test-Path -LiteralPath $earthEngineCredentials)
+        ) {
+            try {
+                $credentialRecord = Get-Content `
+                    -LiteralPath $earthEngineCredentials `
+                    -Raw | ConvertFrom-Json
+                $earthEngineProject = [string]$credentialRecord.project_id
+            } catch {
+                throw "Could not read Earth Engine credentials at $earthEngineCredentials."
+            }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($earthEngineProject)) {
+            $childEnvironment.VITA_EE_PROJECT = $earthEngineProject
+        }
     }
     $balkanInput = Join-Path $repositoryRoot 'data\balkan1\preprocessed\3408_L1ORT.tif'
     if (Test-Path -LiteralPath $balkanInput) {
@@ -179,7 +214,7 @@ function Start-LocalPayload {
                 'Process'
             )
         }
-        Write-Host 'Starting the warm local payload service; first startup loads and warms both models.'
+        Write-Host 'Starting the unified PC-local CUDA service; first startup loads and warms both models.'
         $server = Start-HiddenProcess `
             $payloadServer `
             @('--host', '127.0.0.1', '--port', [string]$PayloadPort)
@@ -220,6 +255,9 @@ function Write-TimingBreakdown($Response) {
     $rows = @(
         @('intake_seconds', 'Scene intake'),
         @('shared_analysis_grid_seconds', 'Balkan shared grid'),
+        @('total_acquisition_seconds', 'Earth Engine acquisition'),
+        @('raw_cuda_alignment_seconds', 'Raw CUDA alignment'),
+        @('raw_model_reconstruction_seconds', 'Raw model reconstruction'),
         @('cloud_plan_seconds', 'Cloud planning'),
         @('cloud_stage_seconds', 'Cloud stage'),
         @('cloud_inference_seconds', '  Cloud inference'),
@@ -246,7 +284,13 @@ function Write-TimingBreakdown($Response) {
 
 function Invoke-LocalPipeline([string]$SensorName) {
     $null = Start-LocalPayload
-    $prefix = if ($SensorName -eq 'sentinel-2') { 'local-sentinel' } else { 'local-balkan' }
+    $prefix = switch ($SensorName) {
+        'sentinel-2' { 'local-sentinel' }
+        'sentinel-2-live' { 'local-live-sentinel' }
+        'balkan-1' { 'local-balkan' }
+        'balkan-1-raw' { 'local-raw-balkan' }
+        default { throw "Unsupported local sensor: $SensorName" }
+    }
     $resolvedJobId = if ($JobId) {
         $JobId
     } else {
@@ -259,26 +303,58 @@ function Invoke-LocalPipeline([string]$SensorName) {
         sensor = $SensorName
         region_id = if ($RegionId) {
             $RegionId
-        } elseif ($SensorName -eq 'sentinel-2') {
-            'flevoland-history'
         } else {
-            'balkan-test-3408'
+            switch ($SensorName) {
+                'sentinel-2' { 'flevoland-history' }
+                'sentinel-2-live' { 'live-sentinel-area' }
+                'balkan-1' { 'balkan-test-3408' }
+                'balkan-1-raw' { 'balkan-raw-3408' }
+            }
         }
         job_id = $resolvedJobId
     }
-    if ($SensorName -eq 'sentinel-2') {
-        $request.input = if ($InputPath) { $InputPath } else { 'sentinel2' }
-        $request.image = if ($Image) {
-            $Image
-        } else {
-            'S2_20260814T104624_T31UFU_flevoland-latest-2026.tif'
+    switch ($SensorName) {
+        'sentinel-2' {
+            $request.input = if ($InputPath) { $InputPath } else { 'sentinel2' }
+            $request.image = if ($Image) {
+                $Image
+            } else {
+                'S2_20260814T104624_T31UFU_flevoland-latest-2026.tif'
+            }
         }
-    } else {
-        if ($Image) { throw '-Image is only valid for Sentinel-2.' }
-        $request.input = if ($InputPath) {
-            $InputPath
-        } else {
-            'balkan1/preprocessed/3408_L1ORT.tif'
+        'sentinel-2-live' {
+            if ($Image -or $InputPath) {
+                throw 'Live Sentinel selection accepts a bounding box and dates, not -InputPath or -Image.'
+            }
+            if (
+                [string]::IsNullOrWhiteSpace($BboxWgs84) -or
+                [string]::IsNullOrWhiteSpace($StartDate) -or
+                [string]::IsNullOrWhiteSpace($EndDate)
+            ) {
+                throw 'Live Sentinel selection requires -BboxWgs84, -StartDate, and -EndDate.'
+            }
+            $bboxValues = @($BboxWgs84 -split ',' | ForEach-Object {
+                [double]::Parse($_.Trim(), [Globalization.CultureInfo]::InvariantCulture)
+            })
+            if ($bboxValues.Count -ne 4) {
+                throw '-BboxWgs84 must contain west,south,east,north.'
+            }
+            $request.input = 'earth-engine'
+            $request.bbox_wgs84 = $bboxValues
+            $request.start_date = $StartDate
+            $request.end_date = $EndDate
+        }
+        'balkan-1' {
+            if ($Image) { throw '-Image is only valid for Sentinel-2.' }
+            $request.input = if ($InputPath) {
+                $InputPath
+            } else {
+                'balkan1/preprocessed/3408_L1ORT.tif'
+            }
+        }
+        'balkan-1-raw' {
+            if ($Image) { throw '-Image is only valid for Sentinel-2.' }
+            $request.input = if ($InputPath) { $InputPath } else { '3408' }
         }
     }
 
@@ -438,7 +514,7 @@ function Stop-RecordedProcess([string]$RecordPath, [string]$Name) {
     $record = Get-Content -LiteralPath $RecordPath -Raw | ConvertFrom-Json
     $listenerPid = Get-ListeningProcessId ([int]$record.port)
     if ($listenerPid -and $listenerPid -eq [int]$record.listener_pid) {
-        Stop-Process -Id $listenerPid -Force
+        Stop-Process -Id $listenerPid -Force -ErrorAction SilentlyContinue
         Write-Host "Stopped $Name listener PID $listenerPid."
     }
     if ($record.starter_pid -and $record.starter_pid -ne $record.listener_pid) {
@@ -447,7 +523,7 @@ function Stop-RecordedProcess([string]$RecordPath, [string]$Name) {
             $starter -and
             $starter.StartTime.ToUniversalTime().ToString('o') -eq $record.starter_start_time
         ) {
-            Stop-Process -Id $starter.Id -Force
+            Stop-Process -Id $starter.Id -Force -ErrorAction SilentlyContinue
         }
     }
     Remove-Item -LiteralPath $RecordPath -Force
@@ -467,12 +543,18 @@ switch ($Command) {
         if (Get-JetsonSshTarget) { Invoke-RemoteJetsonPipeline 'sentinel-2' }
         else { Invoke-LocalPipeline 'sentinel-2' }
     }
-    'earth-engine' { Invoke-RemoteJetsonPipeline 'sentinel-2-live' }
+    'earth-engine' {
+        if (Get-JetsonSshTarget) { Invoke-RemoteJetsonPipeline 'sentinel-2-live' }
+        else { Invoke-LocalPipeline 'sentinel-2-live' }
+    }
     'balkan' {
         if (Get-JetsonSshTarget) { Invoke-RemoteJetsonPipeline 'balkan-1' }
         else { Invoke-LocalPipeline 'balkan-1' }
     }
-    'raw' { Invoke-RemoteJetsonPipeline 'balkan-1-raw' }
+    'raw' {
+        if (Get-JetsonSshTarget) { Invoke-RemoteJetsonPipeline 'balkan-1-raw' }
+        else { Invoke-LocalPipeline 'balkan-1-raw' }
+    }
     'web' { Start-LocalWeb }
     'health' {
         $health = Get-Health
@@ -485,13 +567,15 @@ switch ($Command) {
 ViTA local MVP
 
   .\vita.ps1 sentinel   Run Sentinel-2, print timings, and ingest for the web app
-  .\vita.ps1 earth-engine  Acquire a selected Sentinel-2 area on Jetson and analyze it
+  .\vita.ps1 earth-engine  Acquire a selected Sentinel-2 area and analyze it
   .\vita.ps1 balkan     Run Balkan-1, print timings, and ingest for the web app
-  .\vita.ps1 raw        Run a warm Jetson Balkan-1 raw scene and ingest it
+  .\vita.ps1 raw        Run a Balkan-1 raw scene and ingest it
   .\vita.ps1 web        Start the web app and open it in the browser
-  .\vita.ps1 health     Show the warm payload acceleration state
+  .\vita.ps1 health     Show the warm PC payload acceleration state
   .\vita.ps1 stop       Stop local services started by this script
 
+All four analysis commands run locally by default on the PC CUDA service.
+Live Sentinel also takes -BboxWgs84 west,south,east,north, -StartDate, and -EndDate.
 Optional overrides: -InputPath, -Image, -RegionId, -JobId, -PayloadPort, -RawPayloadPort, -WebPort
 Set VITA_JETSON_SSH_TARGET=user@jetson to run all dashboard analyses on the Jetson.
 '@

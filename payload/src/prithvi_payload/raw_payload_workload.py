@@ -12,6 +12,7 @@ import gc
 import json
 import os
 import re
+import shutil
 import time
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,13 @@ from prithvi_payload.tensorrt_runtime import load_accepted_manifest
 SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
 BALKAN_RAW_BAND_ORDER = ("BLUE", "GREEN", "RED", "NIR", "PAN")
 DOWNLINK_FILES = ("scene.json", "scene.webp", "condition.png")
+PREPROCESSED_RAW_FILES = (
+    "aligned",
+    "alignment_report",
+    "proxy",
+    "proxy_report",
+    "proxy_calibration",
+)
 
 
 def _write_json(path: Path, value: dict[str, Any]) -> None:
@@ -59,6 +67,15 @@ def _require_safe_id(value: str, *, label: str) -> str:
 def _synchronize_cuda() -> None:
     if torch.cuda.is_available():
         torch.cuda.synchronize()
+
+
+def _materialize_preprocessed_file(source: Path, destination: Path) -> None:
+    """Create a job-local hard link, falling back to a normal file copy."""
+
+    try:
+        os.link(source, destination)
+    except OSError:
+        shutil.copy2(source, destination)
 
 
 def _load_warm_accelerated_models() -> tuple[Any, PayloadCropModel, dict[str, Any]]:
@@ -166,6 +183,7 @@ def run_raw_payload_job(
     preloaded_cloud: Any | None = None,
     preloaded_crop: PayloadCropModel | None = None,
     preloaded_acceleration: dict[str, Any] | None = None,
+    preprocessed_paths: dict[str, str | Path] | None = None,
 ) -> dict[str, Any]:
     """Create one isolated raw-derived downlink bundle without touching service state."""
 
@@ -213,61 +231,98 @@ def run_raw_payload_job(
     timings: dict[str, float] = {}
 
     try:
-        _write_json(
-            status_path,
-            {
-                "schema_version": "1.0",
-                "status": "ALIGNING_RAW_BANDS",
-                "job_id": job_id,
-                "region_id": region_id,
-            },
-        )
-        _synchronize_cuda()
-        stage_started = time.perf_counter()
-        alignment = align_balkan_geotiff(
-            inputs["raw"],
-            aligned_path,
-            explicit_band_order=BALKAN_RAW_BAND_ORDER,
-            metadata_path=inputs["metadata"],
-            band_start_row_scale=band_start_row_scale,
-            band_start_axis=band_start_axis,
-            config=AlignmentConfig(
-                measurement_tile_size=512,
-                global_search_radius_px=96,
-                minimum_confidence=0.25,
-                device="cuda",
-                warp_tile_size=warp_tile_size,
-                compression=compression,
-                build_overviews=False,
-            ),
-            require_georeferencing=False,
-        )
-        _synchronize_cuda()
-        timings["cuda_alignment_seconds"] = time.perf_counter() - stage_started
-        _assert_cuda_alignment(alignment)
-
-        _write_json(
-            status_path,
-            {
-                "schema_version": "1.0",
-                "status": "RECONSTRUCTING_MODEL_GRID",
-                "job_id": job_id,
-                "region_id": region_id,
-                "timing_seconds": dict(timings),
-            },
-        )
-        stage_started = time.perf_counter()
-        proxy = build_raw_model_proxy(
-            aligned_path,
-            proxy_path,
-            alignment_report_path=aligned_path.with_suffix(".alignment.json"),
-            radiometric_diagnostics_path=inputs["radiometric_diagnostics"],
-            position_path=inputs["position"],
-            attitude_path=inputs["attitude"],
-            parent_calibration_path=inputs["parent_calibration"],
-        )
-        timings["raw_model_reconstruction_seconds"] = time.perf_counter() - stage_started
         proxy_calibration = proxy_path.with_name(f"{proxy_path.stem}.crop_calibration.json")
+        alignment_report = aligned_path.with_suffix(".alignment.json")
+        proxy_report = proxy_path.with_suffix(".raw_proxy.json")
+        preprocess_cache_hit = preprocessed_paths is not None
+        if preprocess_cache_hit:
+            if set(preprocessed_paths) != set(PREPROCESSED_RAW_FILES):
+                raise ValueError(
+                    "preprocessed_paths must contain the complete raw preprocessing set"
+                )
+            prepared = {
+                name: _require_file(path, label=f"Prepared raw {name}")
+                for name, path in preprocessed_paths.items()
+            }
+            _write_json(
+                status_path,
+                {
+                    "schema_version": "1.0",
+                    "status": "REUSING_PREPROCESSED_RAW_GRID",
+                    "job_id": job_id,
+                    "region_id": region_id,
+                },
+            )
+            for name, destination in {
+                "aligned": aligned_path,
+                "alignment_report": alignment_report,
+                "proxy": proxy_path,
+                "proxy_report": proxy_report,
+                "proxy_calibration": proxy_calibration,
+            }.items():
+                _materialize_preprocessed_file(prepared[name], destination)
+            alignment = json.loads(alignment_report.read_text(encoding="utf-8"))
+            proxy = json.loads(proxy_report.read_text(encoding="utf-8"))
+            _assert_cuda_alignment(alignment)
+            timings["cuda_alignment_seconds"] = 0.0
+            timings["raw_model_reconstruction_seconds"] = 0.0
+        else:
+            _write_json(
+                status_path,
+                {
+                    "schema_version": "1.0",
+                    "status": "ALIGNING_RAW_BANDS",
+                    "job_id": job_id,
+                    "region_id": region_id,
+                },
+            )
+            _synchronize_cuda()
+            stage_started = time.perf_counter()
+            alignment = align_balkan_geotiff(
+                inputs["raw"],
+                aligned_path,
+                explicit_band_order=BALKAN_RAW_BAND_ORDER,
+                metadata_path=inputs["metadata"],
+                band_start_row_scale=band_start_row_scale,
+                band_start_axis=band_start_axis,
+                config=AlignmentConfig(
+                    measurement_tile_size=512,
+                    global_search_radius_px=96,
+                    minimum_confidence=0.25,
+                    device="cuda",
+                    warp_tile_size=warp_tile_size,
+                    compression=compression,
+                    build_overviews=False,
+                ),
+                require_georeferencing=False,
+            )
+            _synchronize_cuda()
+            timings["cuda_alignment_seconds"] = time.perf_counter() - stage_started
+            _assert_cuda_alignment(alignment)
+
+            _write_json(
+                status_path,
+                {
+                    "schema_version": "1.0",
+                    "status": "RECONSTRUCTING_MODEL_GRID",
+                    "job_id": job_id,
+                    "region_id": region_id,
+                    "timing_seconds": dict(timings),
+                },
+            )
+            stage_started = time.perf_counter()
+            proxy = build_raw_model_proxy(
+                aligned_path,
+                proxy_path,
+                alignment_report_path=alignment_report,
+                radiometric_diagnostics_path=inputs["radiometric_diagnostics"],
+                position_path=inputs["position"],
+                attitude_path=inputs["attitude"],
+                parent_calibration_path=inputs["parent_calibration"],
+            )
+            timings["raw_model_reconstruction_seconds"] = (
+                time.perf_counter() - stage_started
+            )
         calibration = json.loads(proxy_calibration.read_text(encoding="utf-8"))
         acquired_at = calibration.get("acquired_at")
         if not isinstance(acquired_at, str) or not acquired_at:
@@ -293,6 +348,7 @@ def run_raw_payload_job(
             cloud, crop, acceleration = _load_warm_accelerated_models()
             timings["model_load_and_warmup_seconds"] = time.perf_counter() - stage_started
         acceleration["models_preloaded"] = models_preloaded
+        acceleration["raw_preprocess_cache_hit"] = preprocess_cache_hit
 
         _write_json(
             status_path,

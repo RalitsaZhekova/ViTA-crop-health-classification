@@ -306,6 +306,32 @@ def test_raw_pipeline_launch_uses_separate_command_when_jetson_is_configured(
     assert command[-2:] == ["-InputPath", "3408"]
 
 
+def test_local_pc_runtime_enables_raw_and_live_dashboard_workflows(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    script = tmp_path / "vita.ps1"
+    script.write_text("# test entry point\n", encoding="utf-8")
+    server = tmp_path / ".venv" / "Scripts" / "vita-pc-payload-server.exe"
+    server.parent.mkdir(parents=True)
+    server.write_bytes(b"test launcher")
+    credentials = tmp_path / "secrets" / "earth-engine.json"
+    credentials.parent.mkdir()
+    credentials.write_text('{"project_id":"test-project"}', encoding="utf-8")
+    manager = PipelineRunManager(tmp_path)
+    monkeypatch.setattr(manager, "_powershell_executable", lambda: "powershell.exe")
+    monkeypatch.setenv("VITA_LOCAL_ACCELERATION_ENABLED", "1")
+    monkeypatch.delenv("VITA_JETSON_SSH_TARGET", raising=False)
+    monkeypatch.delenv("VITA_RAW_SSH_TARGET", raising=False)
+
+    capability = manager.capability()
+
+    assert capability["raw"]["available"] is True
+    assert capability["earth_engine"]["available"] is True
+    assert "balkan-1-raw" in capability["sensors"]
+    assert "sentinel-2-live" in capability["sensors"]
+
+
 def test_live_sentinel_launch_uses_only_bounded_area_metadata(
     tmp_path: Path,
     monkeypatch,
