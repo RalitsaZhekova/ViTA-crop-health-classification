@@ -1,4 +1,4 @@
-# ViTA crop-intelligence MVP — local Windows setup
+# ViTA crop-intelligence MVP - local Windows setup
 
 ViTA runs cloud detection, crop classification, crop-condition analysis, and web
 packaging for Sentinel-2 and Balkan-1 imagery. This tutorial is for local execution on
@@ -19,7 +19,7 @@ and place them in the exact folders described below.
 Clone the repository and open it in PowerShell:
 
 ```powershell
-git clone <REPOSITORY-URL> prithvi_crop_head_starter
+git clone https://github.com/RalitsaZhekova/ViTA-crop-health-classification.git prithvi_crop_head_starter
 cd prithvi_crop_head_starter
 ```
 
@@ -46,9 +46,10 @@ window open so the virtual environment remains active.
 
 ### Fine-tuned Prithvi crop model
 
-Obtain the project's fine-tuned crop checkpoint from the project owner or its model
-artifact release. A generic Prithvi foundation checkpoint is **not** a replacement.
-Place it at:
+Download `prithvi_crop_binary_single_frame_v1_weights.pt` from the
+[Prithvi crop-model release](https://github.com/RalitsaZhekova/ViTA-crop-health-classification/releases/tag/crop-model-v1).
+A generic Prithvi foundation checkpoint is **not** a replacement. Place the downloaded
+file at:
 
 ```text
 payload/models/prithvi_crop_binary_single_frame_v1_weights.pt
@@ -71,13 +72,31 @@ Get-FileHash `
 
 ### OmniCloudMask cloud models
 
-Obtain the two OmniCloudMask V4 checkpoints and place them in
-`payload/models/omnicloudmask/` with these exact names:
+Download both checkpoints from the
+[OmniCloudMask V4 release](https://github.com/RalitsaZhekova/ViTA-crop-health-classification/releases/tag/omnicloudmask-v4)
+and place them in `payload/models/omnicloudmask/` with these exact names:
 
 ```text
 PM_model_OCM_7.97_R_G_NIR_3_smp_edgenext_small.usi_in1k_PT_state.safetensors
 PM_model_OCM_7.97_R_G_NIR_3_smp_regnety_004.pycls_in1k_PT_state.safetensors
 ```
+
+Required SHA-256 checksums:
+
+```text
+edgenext: d5fe67ad00f6fdb73eb8382ad925849e97fb82cedb46225344afff1a734a9c1d
+regnety:  7f6e4202e17ee73efa4aba7abb5c34f4f90a9f7eb42480820714994dff2db660
+```
+
+Verify both downloads:
+
+```powershell
+Get-FileHash .\payload\models\omnicloudmask\*.safetensors -Algorithm SHA256
+```
+
+OmniCloudMask is credited to
+[Nick Wright and contributors](https://github.com/NickWright/OmniCloudMask); the
+software and weights are MIT-licensed.
 
 The application checks all model checksums and fails rather than using a missing or
 different checkpoint.
@@ -101,12 +120,20 @@ download is not automatically interchangeable with this prepared GeoTIFF.
 
 ### Preprocessed Balkan-1
 
-Place the preprocessed image and its matching calibration sidecar here:
+Download the sidecar matching your scene from the
+[Balkan-1 calibration release](https://github.com/RalitsaZhekova/ViTA-crop-health-classification/releases/tag/balkan1-calibrations-v1).
+The release contains validated calibrations for scenes `3033`, `3036`, `3215`, `3283`,
+`3370`, `3408`, and `3458`. Place the independently obtained preprocessed image and its
+matching calibration sidecar together, for example:
 
 ```text
 data/balkan1/preprocessed/3408_L1ORT.tif
 data/balkan1/preprocessed/3408_L1ORT.crop_calibration.json
 ```
+
+Do not rename either file. Every calibration is bound to the exact source TIFF by byte
+size and SHA-256; a different or modified TIFF will be rejected. The release contains
+calibration metadata only and does not include Balkan-1 imagery.
 
 ### Raw Balkan-1
 
